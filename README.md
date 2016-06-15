@@ -36,10 +36,26 @@ Starts by calling PlatformInit
     default_platform = v8::platform::CreateDefaultPlatform(v8_thread_pool_size);
     V8::InitializePlatform(default_platform);
     V8::Initialize();
-
+    ...
+    Init(&argc, const_cast<const char**>(argv), &exec_argc, &exec_argv);
 
 #### PlatformInit()
 From what I understand this mainly sets up things like signals and file descriptor limits.
+
+#### Init
+Init has some libuv code that looks familiar to what I played around with in [learning-libuv](https://github.com/danbev/learning-libuv).
+
+    uv_async_init(uv_default_loop(),
+                 &dispatch_debug_messages_async,
+                 DispatchDebugMessagesAsyncCallback);
+
+Now I've not used `uv_async_init` but looking a the docs this is done to allow a different thread to wake up the event loop and have the
+callback invoked. uv_async_init looks like this:
+
+    int uv_async_init(uv_loop_t* loop, uv_async_t* async, uv_async_cb async_cb)
+
+To understand this better this standalone [example](https://github.com/danbev/learning-libuv/blob/master/thread.cc) helped my clarify things a bit.
+
 
 #### NodeInstanceData
 In the Start method we can see a block with the creation of a new NodeInstanceData instance:
