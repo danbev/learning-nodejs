@@ -56,6 +56,27 @@ callback invoked. uv_async_init looks like this:
 
 To understand this better this standalone [example](https://github.com/danbev/learning-libuv/blob/master/thread.cc) helped my clarify things a bit.
 
+    uv_unref(reinterpret_cast<uv_handle_t*>(&dispatch_debug_messages_async));
+
+I believe this is done so that the ref count of the dispatch_debug_message_async handle is decremented. If this handle is the only thing 
+referened that would cause the event loop to be considered alive and it will continue to iterate.
+
+    ParseArgs(argc, argv, exec_argc, exec_argv, &v8_argc, &v8_argv);
+
+Parses the command line arguments passed. If you want to inspect them you can use:
+
+    p *(char(*)[1]) new_v8_argv
+
+This is something that I've not seen before either:
+
+    if (v8_is_profiling) {
+        uv_loop_configure(uv_default_loop(), UV_LOOP_BLOCK_SIGNAL, SIGPROF);
+    }
+
+What does uv_loop_configure do?
+It sets additional loop options. This [example](https://github.com/danbev/learning-libuv/blob/master/configure.cc) was used to look a little closer 
+at it.
+
 
 #### NodeInstanceData
 In the Start method we can see a block with the creation of a new NodeInstanceData instance:
