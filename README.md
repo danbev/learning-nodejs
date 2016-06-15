@@ -8,11 +8,14 @@ You'll need to have checked out the node.js source.
 
     $ ./configure --debug
     $ make -C out BUILDTYPE=Debug
-   
+
 After compiling (with debugging enabled) start node using lldb:
 
     $ cd node/out/Debug
-    $ lldb node
+    $ lldb ./node
+
+Node used Generate Your Projects (gyp) for which I was not familare with so there is a 
+example project in [gyp](./gyp) to look into it.
 
 ### Starting Node
 To start and stop at first line in a js program use:
@@ -64,14 +67,15 @@ A new Isolate is created. Remember that an Isolate is an independant copy of the
     Environment* env = CreateEnvironment(isolate, context, instance_data);
 
 #### CreateEnvironment(isolate, context, instance_data)
-...
-Local<FunctionTemplate> process_template = FunctionTemplate::New(isolate);
-process_template->SetClassName(FIXED_ONE_BYTE_STRING(isolate, "process"));
-...
-SetupProcessObject(env, argc, argv, exec_argc, exec_argv);
 
-This looks like the node process object is being created here. 
-All the JavaScript built-in objects are provided by the V8 runtime but the process object is not one of them. So here we are doing the same as in the hello-world example above but naming the object 'process'
+    Local<FunctionTemplate> process_template = FunctionTemplate::New(isolate);
+    process_template->SetClassName(FIXED_ONE_BYTE_STRING(isolate, "process"));
+    ...
+    SetupProcessObject(env, argc, argv, exec_argc, exec_argv);
+
+This looks like the node `process` object is being created here. 
+All the JavaScript built-in objects are provided by the V8 runtime but the process object is not one of them. So here we are doing 
+the same as in the hello-world example above but naming the object 'process'
 
     auto maybe = process->SetAccessor(env->context(),
                                  env->title_string(),
@@ -85,70 +89,75 @@ Notice that SetAccessor returns an "optional" MayBe type.
     READONLY_PROPERTY(process,
        "version",
        FIXED_ONE_BYTE_STRING(env->isolate(), NODE_VERSION));
+
 The above is adding properties to the 'process' object. The first being version and then:
-process.moduleLoadList
-process.versions[
-http_parser,
-node,
-v8,
-vu,
-zlib,
-ares,
-icu,
-modules
-]
-process.icu_data_dir
-process.arch
-process.platform
-process.release
-process.release.name
-process.release.lts
-process.release.sourceUrl
-process.release.headersUrl
 
-process.env
-process.pid
-process.features
+    process.moduleLoadList
+    process.versions[
+      http_parser,
+      node,
+      v8,
+      vu,
+      zlib,
+      ares,
+      icu,
+      modules
+    ]
+    process.icu_data_dir
+    process.arch
+    process.platform
+    process.release
+    process.release.name
+    process.release.lts
+    process.release.sourceUrl
+    process.release.headersUrl
+
+    process.env
+    process.pid
+    process.features
 
 
 
-2943   READONLY_PROPERTY(process,
-2944                     "moduleLoadList",
-2945                     env->module_load_list_array());
+   READONLY_PROPERTY(process,
+                     "moduleLoadList",
+                     env->module_load_list_array());
 I was not aware of this one but process.moduleLoadList will return an array of modules loaded.
 
-READONLY_PROPERTY(process, "versions", versions);
+     READONLY_PROPERTY(process, "versions", versions);
+
 Next up is process.versions which on my local machine returns:
 
-> process.versions
-{ http_parser: '2.5.2',
-  node: '4.4.3',
-  v8: '4.5.103.35',
-  uv: '1.8.0',
-  zlib: '1.2.8',
-  ares: '1.10.1-DEV',
-  icu: '56.1',
-  modules: '46',
-  openssl: '1.0.2g' }
+    > process.versions
+    { http_parser: '2.5.2',
+      node: '4.4.3',
+      v8: '4.5.103.35',
+      uv: '1.8.0',
+      zlib: '1.2.8',
+      ares: '1.10.1-DEV',
+      icu: '56.1',
+      modules: '46',
+      openssl: '1.0.2g' }
 
-After setting up all the object (SetupProcessObject) this methods returns. There is still no sign of the loading of the 'node.js' script. This is done in LoadEnvironment.
+After setting up all the object (SetupProcessObject) this methods returns. There is still no sign of the loading of the 'node.js' script. 
+This is done in LoadEnvironment.
 
-#### LoadEnvironment(
+#### LoadEnvironment
 
-Local<String> script_name = FIXED_ONE_BYTE_STRING(env->isolate(), "node.js");
+    Local<String> script_name = FIXED_ONE_BYTE_STRING(env->isolate(), "bootstrap_node.js");
 
 #### lib/internal/bootstrap_node.js
-This is the file that is loaded by LoadEnvironment as "node.js". The name node.js is also what you can see in the debugger. This is executed aswell.
+This is the file that is loaded by LoadEnvironment as "bootstrap_node.js". 
 I read that this file is actually precompiled, where/how?
-This file is referenced in node.gyp and is used with the target node_js2c. This target calls tools/js2c.py which is a tool for converting JavaScript source code into C-Style char arrays. This target will process all the library_files specified in the variables section which lib/internal/bootstrap_node.js is one of. The output of this out/Debug/obj/gen/node_natives.h, depending on the type of build being performed. So lib/internal/bootstrap_node.js will beccome internal_bootstrap_node_native in node_natives.h. 
+
+This file is referenced in node.gyp and is used with the target node_js2c. This target calls tools/js2c.py which is a tool for converting 
+JavaScript source code into C-Style char arrays. This target will process all the library_files specified in the variables section which 
+lib/internal/bootstrap_node.js is one of. The output of this out/Debug/obj/gen/node_natives.h, depending on the type of build being performed. 
+So lib/internal/bootstrap_node.js will beccome internal_bootstrap_node_native in node_natives.h. 
 This is then later included in src/node_javascript.cc 
+
 We can see the contents of this in lldb using:
 
     (lldb) p internal_bootstrap_node_native
-
-#### Generate Your Project (gyp)
-https://gyp.gsrc.io/
-
 
 Notes:
 When Node.js starts up it does many things similar to what we did in our hello-world

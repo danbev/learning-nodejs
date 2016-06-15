@@ -21,3 +21,8 @@ Make:
 
     $ $ ./build/makefiles/out/Default/example
 
+### gyp configuration notes
+
+Within a variables section, keys named with percent sign (%) suffixes mean that the variable should be set 
+only if it is undefined at the time it is processed.
+
