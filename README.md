@@ -77,6 +77,25 @@ What does uv_loop_configure do?
 It sets additional loop options. This [example](https://github.com/danbev/learning-libuv/blob/master/configure.cc) was used to look a little closer 
 at it.
 
+After that detour we are back in the Start method, and the next line is:
+
+    default_platform = v8::platform::CreateDefaultPlatform(v8_thread_pool_size);
+    (lldb) p v8_thread_pool_size
+    (int) $30 = 4
+
+We can find the implementation of this in `deps/v8/src/libplatform/default-platform.cc`.
+The call is the same as was used in the hello_world example except here the size of the thread pool is being passed in 
+and in the hello_world the nog arguments method was called. I only skimmed this part when I was working through that 
+example so it might be good to figure out what is going on here.
+An instance of DefaultPlatform is created and then its SetThreadPoolSize method is called with v8_thread_pool_size. When
+the size is not given it will default to `p SysInfo::NumberOfProcessors()`. 
+Next, EnsureInitialized is called which does a check to see if the instance has already been initilized and if not:
+
+     for (int i = 0; i < thread_pool_size_; ++i)
+       thread_pool_.push_back(new WorkerThread(&queue_));
+
+
+
 
 #### NodeInstanceData
 In the Start method we can see a block with the creation of a new NodeInstanceData instance:
