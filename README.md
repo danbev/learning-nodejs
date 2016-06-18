@@ -94,7 +94,40 @@ Next, EnsureInitialized is called which does a check to see if the instance has 
      for (int i = 0; i < thread_pool_size_; ++i)
        thread_pool_.push_back(new WorkerThread(&queue_));
 
+This will create new workers and threads for them. This call finds its was down into deps/v8/src/base/platform/platform-posix.c
+and its Thread::Start method:
 
+    result = pthread_create(&data_->thread_, &attr, ThreadEntry, this);    
+
+We can see this is where the creation and starting of a new thread is done. The first argument is the pthread_t to associate with
+the function ThreadEntry which is the top level entry point for the new thread. 
+The second argument are additional attributes. The third argument is the function as already mentioned and the fourth parameter is
+the argument to the function. So we can see that ThreadEntry takes the current instance as an argument (well it takes a void pointer):
+
+    static void* ThreadEntry(void* arg) {
+      Thread* thread = reinterpret_cast<Thread*>(arg);
+
+We can verify this by inspecting the threads before and after 
+the calls.
+Before:
+
+    (lldb) thread list
+    Process 4614 stopped
+    * thread #1: tid = 0xe0d19a, 0x0000000100f80cc1 node`v8::base::Thread::Start(this=0x0000000103206110) + 321 at platform-posix.cc:618, queue = 'com.apple.main-thread', stop reason = step over
+      thread #2: tid = 0xe0d2f2, 0x00007fff858affae libsystem_kernel.dylib`semaphore_wait_trap + 10
+
+After: 
+
+    (lldb) thread list
+    Process 4669 stopped
+    * thread #1: tid = 0xe0e3a7, 0x0000000100f80cdb node`v8::base::Thread::Start(this=0x0000000103206530) + 347 at platform-posix.cc:619, queue = 'com.apple.main-thread', stop reason = step over
+      thread #2: tid = 0xe0e46d, 0x00007fff858affae libsystem_kernel.dylib`semaphore_wait_trap + 10
+      thread #3: tid = 0xe0f230, 0x0000000100f81570 node`v8::base::Thread::data(this=0x0000000103206530) at platform.h:463
+
+What does one of these thread do?
+Lets set a breakpoint in the ThreadEntry method:
+
+    (lldb) breakpoint set --file platform-posix.cc --line 582
 
 
 #### NodeInstanceData
