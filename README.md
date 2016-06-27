@@ -138,7 +138,7 @@ any thread calling uv_sem_wait will block until it becomes non-zero.
       uv_sem_wait(&debug_semaphore);
       TryStartDebugger();
     } 
-   return nullptr;
+    return nullptr;
 
 So this thread will just wait until uv_sem_post(&debug_semaphore) is called. So where is that done? That is done in EnableDebugSignalHandler
 
@@ -327,7 +327,7 @@ the same as in the hello-world example above but naming the object 'process'
                                  ProcessTitleGetter,
                                  ProcessTitleSetter,
                                  env->as_external());
-   CHECK(maybe.FromJust());
+    CHECK(maybe.FromJust());
 
 Notice that SetAccessor returns an "optional" MayBe type.
 
@@ -363,7 +363,7 @@ The above is adding properties to the 'process' object. The first being version 
 
 
 
-   READONLY_PROPERTY(process,
+    READONLY_PROPERTY(process,
                      "moduleLoadList",
                      env->module_load_list_array());
 I was not aware of this one but process.moduleLoadList will return an array of modules loaded.
@@ -424,8 +424,8 @@ To run the test use the following command:
 The -j is the number of processes to use.
 
 #### Mac firewall exceptions
-On mac you might find it popping up dialogs about the firwall blocking access to the 'node' and 'cctest' applications when running
-the tests. You can add exceptions by pointing to the 'node/node' executable and 'node/out/Release/cctest'. Just adding this 
+On mac you might find it popping up dialogs about the firwall blocking access to the `node` and `cctest` applications when running
+the tests. You can add exceptions by pointing to the `node/node` executable and `node/out/Release/cctest`. Just adding this 
 comment as it was not obvious at the time which node executable to exclude.
 
 
