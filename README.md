@@ -17,6 +17,14 @@ After compiling (with debugging enabled) start node using lldb:
 Node used Generate Your Projects (gyp) for which I was not familare with so there is a 
 example project in [gyp](./gyp) to look into it.
 
+#### Compiling with a different version of libuv
+What I'd like to do is use my local fork of libuv instead of the one in the deps
+directory. I think the way to do this is to `make install` and then run configure with the following options:
+
+    $ ./configure --debug --shared-libuv --shared-libuv-includes=/usr/local/include
+
+The location of the library is `/usr/local/lib`, and `/usr/local/include` for the headers on my machine.
+
 ### Starting Node
 To start and stop at first line in a js program use:
 
@@ -419,5 +427,31 @@ The -j is the number of processes to use.
 On mac you might find it popping up dialogs about the firwall blocking access to the 'node' and 'cctest' applications when running
 the tests. You can add exceptions by pointing to the 'node/node' executable and 'node/out/Release/cctest'. Just adding this 
 comment as it was not obvious at the time which node executable to exclude.
+
+
+### Tasks
+
+#### Remove need to specify a no-operation immediate_idle_handle
+When calling setImmediate, this will schedule the callback passed in to be scheduled for execution after I/O events:
+
+    setImmediate(function() {
+	console.log("In immediate...");
+    });
+
+Currently this is done by using a libuv uv_check_handle. Since checks are performed after polling for I/O, if there 
+are no idle handle or prepare handle (need to check this) then the I/O polling would block as there would be nothing
+for the event loop to process until there is an I/O event. But if we have an idle handler there is something for the 
+event loop to do which will cause the poll timeout to be zero and the event loop will not block on I/O.
+
+In src/node.cc there is currently an empty uv_idle_handle callback (IdleImmediateDummy) for this which could be removed 
+if it was possible to pass in a NULL callback. Currently there is a check in libuv checcing if the callback is null and this might not be able to change. 
+
+My first idea was to overload the function but C does not suppport overloading, so perhaps having a new function named something like:
+
+     uv_idle_start_nop(&handle)
+
+Another option might be to make uv_idle_start an varargs function and if the only one argument is passed (not null but actually missing) then assume that a nop-callback. But looking into a variadic function there is no way to know when there if an argument was provided or not (of the optional arguments that is). 
+Currently I'm only adding a function for uv_idle_start_nop to uv-common.c to try this out and see if I can get some feedback on a better place for this.
+
 
 
