@@ -25,6 +25,11 @@ directory. I think the way to do this is to `make install` and then run configur
 
 The location of the library is `/usr/local/lib`, and `/usr/local/include` for the headers on my machine.
 
+
+### Running the tests
+
+    $ make -j4 test
+
 ### Starting Node
 To start and stop at first line in a js program use:
 
@@ -75,9 +80,6 @@ function called.
 ### DispatchDebugMessagesAsyncCallback
 If the debugger is not running this function will start it. This will print 'Starting debugger agent.' if it was not started. It will then start processing
 debugger messages.
-
-
-
 
     ParseArgs(argc, argv, exec_argc, exec_argv, &v8_argc, &v8_argv);
 
@@ -404,12 +406,159 @@ We can see the contents of this in lldb using:
 
     (lldb) p internal_bootstrap_node_native
 
-Notes:
-When Node.js starts up it does many things similar to what we did in our hello-world
-example. After intializing the Platform it need to inject objects, for example the
-'process' object. V8 brings the complete JavaScript engine and environement with all
-the builtin objects, but Node.js is more than that. All the additional functionality 
-that Node.js brings (https://nodejs.org/docs/latest/api/index.html) are also available.
+
+### Loading of builtins
+I wanted to know how builtins, like tcp\_wrap and others are loaded.
+Lets take a look at the following line from src/tcp_wrap.cc:
+
+    NODE_MODULE_CONTEXT_AWARE_BUILTIN(tcp_wrap, node::TCPWrap::Initialize)
+
+Now, setting a breakpoint on this like and printing the thread backtrace gives:
+
+    -> 436 	NODE_MODULE_CONTEXT_AWARE_BUILTIN(tcp_wrap, node::TCPWrap::Initialize)
+    (lldb) bt
+    * thread #1: tid = 0x18d8053, 0x0000000100d1056b node`_register_tcp_wrap() + 11 at tcp_wrap.cc:436, queue = 'com.apple.main-thread', stop reason = breakpoint 5.1
+      * frame #0: 0x0000000100d1056b node`_register_tcp_wrap() + 11 at tcp_wrap.cc:436
+        frame #1: 0x00007fff5fc1310b dyld`ImageLoaderMachO::doModInitFunctions(ImageLoader::LinkContext const&) + 265
+        frame #2: 0x00007fff5fc13284 dyld`ImageLoaderMachO::doInitialization(ImageLoader::LinkContext const&) + 40
+        frame #3: 0x00007fff5fc0f8bd dyld`ImageLoader::recursiveInitialization(ImageLoader::LinkContext const&, unsigned int, ImageLoader::InitializerTimingList&, ImageLoader::UninitedUpwards&) + 305
+        frame #4: 0x00007fff5fc0f743 dyld`ImageLoader::processInitializers(ImageLoader::LinkContext const&, unsigned int, ImageLoader::InitializerTimingList&, ImageLoader::UninitedUpwards&) + 127
+        frame #5: 0x00007fff5fc0f9b3 dyld`ImageLoader::runInitializers(ImageLoader::LinkContext const&, ImageLoader::InitializerTimingList&) + 75
+        frame #6: 0x00007fff5fc020f1 dyld`dyld::initializeMainExecutable() + 208
+        frame #7: 0x00007fff5fc05d98 dyld`dyld::_main(macho_header const*, unsigned long, int, char const**, char const**, char const**, unsigned long*) + 3596
+        frame #8: 0x00007fff5fc01276 dyld`dyldbootstrap::start(macho_header const*, int, char const**, long, macho_header const*, unsigned long*) + 512
+        frame #9: 0x00007fff5fc01036 dyld`_dyld_start + 54
+
+First things to note is that `NODE_MODULE_CONTEXT_AWARE_BUILDIN` is a macro defined in node.h which takes a `modname` and `regfunc` argument. This in turn calls another macro function named `NODE_MODULE_CONTEXT_AWARE_X`.
+This macro is invoked with the following arguments:
+
+    NODE_MODULE_CONTEXT_AWARE_X(modname, regfunc, NULL, NM_F_BUILTIN)
+
+We already know that modname is tcp_wrap and that regfunc is node::TCPWrap::Initialize. 
+
+#### NODE\_MODULE\_CONTEXT\_AWARE\_X
+
+    #define NODE_MODULE_CONTEXT_AWARE_X(modname, regfunc, priv, flags)    \
+      extern "C" {                                                        \
+        static node::node_module _module =                                \
+        {                                                                 \
+          NODE_MODULE_VERSION,                                            \
+          flags,                                                          \
+          NULL,                                                           \
+          __FILE__,                                                       \
+          NULL,                                                           \
+          (node::addon_context_register_func) (regfunc),                  \
+          NODE_STRINGIFY(modname),                                        \
+          priv,                                                           \
+          NULL                                                            \
+        };                                                                \
+        NODE_C_CTOR(_register_ ## modname) {                              \
+          node_module_register(&_module);                                 \
+        }                                                                 \
+    }
+    
+First, extern "C" means that C linkage should be used and no C++ name mangling should occur. This is saying that everything in the block should have this kind of linkage.
+With that out of the way we can focus on the contents of the block.
+
+        static node::node_module _module =                                \
+        {                                                                 \
+          NODE_MODULE_VERSION,                                            \
+          flags,                                                          \
+          NULL,                                                           \
+          __FILE__,                                                       \
+          NULL,                                                           \
+          (node::addon_context_register_func) (regfunc),                  \
+          NODE_STRINGIFY(modname),                                        \
+          priv,                                                           \
+          NULL                                                            \
+        };                                                                \
+
+We are creating a static variable (it exists for the lifetime of the program, but the name is not visible outside of the block. node_module is a struct in node.h and looks like this:
+
+    struct node_module {
+      int nm_version;
+      unsigned int nm_flags;
+      void* nm_dso_handle;
+      const char* nm_filename;
+      node::addon_register_func nm_register_func;
+      node::addon_context_register_func nm_context_register_func;
+      const char* nm_modname;
+      void* nm_priv;
+      struct node_module* nm_link;
+    };
+
+So we have created a struct with the values above. Next we have:
+
+    NODE_C_CTOR(_register_ ## modname) {                              \
+      node_module_register(&_module);                                 \
+    }                                                                 \
+
+NODE\_C\_CTOR is another macro function
+
+
+#### NODE\_C\_CTOR
+
+    #define NODE_C_CTOR(fn)                                               \
+      static void fn(void) __attribute__((constructor));                  \
+      static void fn(void)
+    #endif
+
+In our case the value passed as is `_register_tcp_wrap`. ## will concatenate two symbols. So that leaves us with:
+    
+      static void _register_tcp_wrap(void) __attribute__((constructor));                  \
+      static void _register_tcp_wrap(void)
+
+Lets start with \_\_attribute\_\_((constructor)), what is this all about?  
+In shared object files there are special sections which contains references to functions marked with constructor attributes. The attributes are a gcc feature. When the library gets loaded the dynamic loader program checks whether such sections exist and calls these functions.
+The constructor attribute causes the function to be called automatically before execution enters main ().
+
+Now that we know that lets look at these two lines:
+
+      static void _register_tcp_wrap(void) __attribute__((constructor));                  \
+      static void _register_tcp_wrap(void)
+
+The first is the declaration of a function and the second line is the implementation. You have to remember that the macro is expanded by the preprocessor so we have to look at the call as well:
+
+    NODE_C_CTOR(_register_ ## modname) {                              \
+      node_module_register(&_module);                                 \
+    }                                                                 \
+
+So this would become something like:
+
+    static void _register_tcp_wrap(void) __attribute__((constructor));                  
+    static void _register_tcp_wrap(void) {
+      node_module_register(&_module);                                 
+    }
+
+To verify this we can run the preprocessor:
+
+    $ clang -E src/tcp_wrap.cc
+    ...
+    extern "C" { 
+      static node::node_module _module = { 
+        48, 
+        0x01, 
+        __null, 
+        "src/tcp_wrap.cc", 
+        __null, 
+        (node::addon_context_register_func) (node::TCPWrap::Initialize), 
+        "tcp_wrap", 
+        __null, 
+        __null 
+      }; 
+       static void _register_tcp_wrap(void) __attribute__((constructor)); 
+       static void _register_tcp_wrap(void) { 
+         node_module_register(&_module); 
+       } 
+    }
+
+### node\_module\_register
+In this case since are call looked like this:
+
+    NODE_MODULE_CONTEXT_AWARE_X(modname, regfunc, NULL, NM_F_BUILTIN)
+
+the module will be added to the list of modlist_builtin. Note that this is a linked list.
+
 
 
 ### Running jslint
@@ -453,5 +602,9 @@ My first idea was to overload the function but C does not suppport overloading, 
 Another option might be to make uv_idle_start an varargs function and if the only one argument is passed (not null but actually missing) then assume that a nop-callback. But looking into a variadic function there is no way to know when there if an argument was provided or not (of the optional arguments that is). 
 Currently I'm only adding a function for uv_idle_start_nop to uv-common.c to try this out and see if I can get some feedback on a better place for this.
 
+This task did not come to anything yet. Perhaps with libuv 2.0 libuv might accepts a null callback.
+
+
+### tcp\_wrap and pipe\_wrap
 
 
