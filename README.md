@@ -552,6 +552,39 @@ To verify this we can run the preprocessor:
        } 
     }
 
+Looking closer at the OnConnect implementations I see that the difference is very minor. This mostly boils down
+to how the that handling of a status error is tackled, either return early and duplicate the client callbacks (with
+the arg[1] being undefined in the case of an unsuccesful accept.
+
+On difference that did stand out was this in pipewrap.cc
+
+    ASSIGN_OR_RETURN_UNWRAP(&wrap, client_obj);
+
+
+Compared to this in tcpwrap.cc:
+
+    TCPWrap* wrap = Unwrap<TCPWrap>(client_obj);
+
+    #define ASSIGN_OR_RETURN_UNWRAP(ptr, obj, ...)                                  \
+    do {                                                                            \
+      *ptr =  Unwrap<typename node::remove_reference<decltype(**ptr)>::type>(obj);  \
+      if (*ptr == nullptr)                                                          \
+        return __VA_ARGS__;                                                         \
+    } while (0)
+
+What does this do?
+
+
+Thinking about the inheritance tree of pipewrap and tcpwrap:
+class TCPWrap : public StreamWrap
+class StreamWrap : public HandleWrap, public StreamBase
+class HandleWrap : public AsyncWrap {
+
+class PipeWrap : public StreamWrap
+class StreamWrap : public HandleWrap, public StreamBase
+class HandleWrap : public AsyncWrap {
+
+
 ### node\_module\_register
 In this case since are call looked like this:
 
@@ -606,5 +639,113 @@ This task did not come to anything yet. Perhaps with libuv 2.0 libuv might accep
 
 
 ### tcp\_wrap and pipe\_wrap
+Lets take a look at the following statement:
 
+    var TCPConnectWrap = process.binding('tcp_wrap').TCPConnectWrap;
+    var req = new TCPConnectWrap();
+    
+We know from before that `binding` is set as function on the process object. This was done in SetupProcessObject in node.cc:
+
+    env->SetMethod(process, "binding", Binding);
+
+So we are invoking the Binding function in node.cc with the argument 'tcp_wrap':
+
+    static void Binding(const FunctionCallbackInfo<Value>& args) {
+
+Binding will extract the first (and only) argument which is the name of the module. 
+Every environment seems to have a cache, and if the module is in this cache it is returned:
+
+    Local<Object> cache = env->binding_cache_object();
+
+It will also create a instance of Local<Object> exports which is the object that will be returned.
+
+    Local<Object> exports;
+
+So, when the tcp_wrap.cc was Initialized (see section about Builtins):
+
+    // Create FunctionTemplate for TCPConnectWrap.
+    Local<FunctionTemplate> cwt = FunctionTemplate::New(env->isolate(), NewConnectWrap);
+    cwt->InstanceTemplate()->SetInternalFieldCount(1);
+    cwt->SetClassName(FIXED_ONE_BYTE_STRING(env->isolate(), "TCPConnectWrap"));
+    target->Set(FIXED_ONE_BYTE_STRING(env->isolate(), "TCPConnectWrap"), cwt->GetFunction());
+
+What is going on here. We create a new FunctionTemplate NewConnectWrap, this is then added to the target (the object that we are initializing).
+What is confusing me here is that NewConnectWrap only does a check:
+
+   static inline void NewConnectWrap(const FunctionCallbackInfo<Value>& args) {
+    CHECK(args.IsConstructCall());
+   } 
+
+So this is only checking that the passed in args can be used as a constructor (using new in JavaScript)?  
+Notice that target is of type Local<Object>. 
+
+    Local<Object> exports;
+    ....
+    exports = Object::New(env->isolate());
+    ...
+    mod->nm_context_register_func(exports, unused, env->context(), mod->nm_priv);
+
+exports is what is returned to the caller. 
+
+    args.GetReturnValue().Set(exports);
+
+And we access the TCPConnectWrap member, which is a function which can be used as 
+a constructor by using new. Lets start with where is ConnectWrap called?
+It is called from tcp_wrap.cc and its Connect method.
+ConnectWrap extends ReqWrap which extens AsyncWrap which extens BaseObject
+
+    req.oncomplete = function(status, client_, req_) {
+    
+
+
+### tcp\_wrap.cc
+In `OnConnect` I found the following:
+
+    TCPWrap* tcp_wrap = static_cast<TCPWrap*>(handle->data);
+    ....
+    Local<Object> client_obj = Instantiate(env, static_cast<AsyncWrap*>(tcp_wrap));
+
+I'm not sure this cast is needed as we have already have a TCPWrap instance
+
+    Local<Object> client_obj = Instantiate(env, tcp_wrap);
+    
+class TCPWrap : public StreamWrap
+class StreamWrap : public HandleWrap, public StreamBase
+class HandleWrap : public AsyncWrap {
+
+As far as I can tell TCPWrap is of type AsyncWrap. Looking at src/pipe_wrap.cc which has a very similar OnConnect method
+(which I'm going to take a stab at refactoring) but does not have this cast.
+
+
+### Refactoring tcpwrap and pipewrap
+// TODO(bnoordhuis) maybe share with TCPWrap?
+This comment exist on pipewarp OnConnect
+
+
+    void PipeWrap::OnConnection(uv_stream_t* handle, int status) {
+    PipeWrap* pipe_wrap = static_cast<PipeWrap*>(handle->data);
+    CHECK_EQ(&pipe_wrap->handle_, reinterpret_cast<uv_pipe_t*>(handle));
+
+The reinterpret_cast operator changes one data type into another. Recall how the types of libuv have a type of c inheritance allowing 
+casting.
+
+    /*
+     * uv_pipe_t is a subclass of uv_stream_t.
+     *
+     * Representing a pipe stream or pipe server. On Windows this is a Named
+     * Pipe. On Unix this is a Unix domain socket.
+     */
+    struct uv_pipe_s {
+      UV_HANDLE_FIELDS
+      UV_STREAM_FIELDS
+      int ipc; /* non-zero if this pipe is used for passing handles */
+      UV_PIPE_PRIVATE_FIELDS
+   };
+
+The main difference that I've been able to find is in pipewrap `status` is checked:
+
+    if (status != 0) {
+      pipe_wrap->MakeCallback(env->onconnection_string(), arraysize(argv), argv);
+      return;
+   } 
 
