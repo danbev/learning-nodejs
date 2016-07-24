@@ -14,7 +14,7 @@ After compiling (with debugging enabled) start node using lldb:
     $ cd node/out/Debug
     $ lldb ./node
 
-Node used Generate Your Projects (gyp) for which I was not familare with so there is a 
+Node uses Generate Your Projects (gyp) for which I was not familare with so there is a 
 example project in [gyp](./gyp) to look into it.
 
 #### Compiling with a different version of libuv
@@ -145,7 +145,7 @@ any thread calling uv_sem_wait will block until it becomes non-zero.
 So this thread will just wait until uv_sem_post(&debug_semaphore) is called. So where is that done? That is done in EnableDebugSignalHandler
 
 ### EnableDebugSignalHandler
-This is where we signal the semaphore which will increment the counter, and any threads in the wait queue will no run. So our thread that is
+This is where we signal the semaphore which will increment the counter, and any threads in the wait queue will now run. So our thread that is
 blocked waiting for this debug_semaphore will be able to proceed and TryStartDebugger will be called.
 
     uv_sem_post(&debug_semaphore);
@@ -214,7 +214,7 @@ After that detour we are back in the Start method, and the next line is:
 
 We can find the implementation of this in `deps/v8/src/libplatform/default-platform.cc`.
 The call is the same as was used in the hello_world example except here the size of the thread pool is being passed in 
-and in the hello_world the nog arguments method was called. I only skimmed this part when I was working through that 
+and in the hello_world the no arguments method was called. I only skimmed this part when I was working through that 
 example so it might be good to figure out what is going on here.
 An instance of DefaultPlatform is created and then its SetThreadPoolSize method is called with v8_thread_pool_size. When
 the size is not given it will default to `p SysInfo::NumberOfProcessors()`. 
@@ -223,7 +223,7 @@ Next, EnsureInitialized is called which does a check to see if the instance has 
      for (int i = 0; i < thread_pool_size_; ++i)
        thread_pool_.push_back(new WorkerThread(&queue_));
 
-This will create new workers and threads for them. This call finds its was down into deps/v8/src/base/platform/platform-posix.c
+This will create new workers and threads for them. This call finds its way down into deps/v8/src/base/platform/platform-posix.c
 and its Thread::Start method:
 
     LockGuard<Mutex> lock_guard(&data_->thread_creation_mutex_);
@@ -748,4 +748,6 @@ The main difference that I've been able to find is in pipewrap `status` is check
       pipe_wrap->MakeCallback(env->onconnection_string(), arraysize(argv), argv);
       return;
    } 
+
+
 
