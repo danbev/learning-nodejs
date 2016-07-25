@@ -832,3 +832,22 @@ Add the test as an include in main.cc, and then compile using:
 Run the test:
 
     ./base-object_test
+
+
+#### Trouble shooting
+After making sure that I can include the 'base-object.h' header I get the following error when compiling:
+
+    In file included from test/main.cc:2:
+    test/base-object_test.cc:9:3: error: use of undeclared identifier 'node'
+    node::BaseObject bo;
+     ^
+    1 error generated.
+    make: *** [test/base-object_test] Error 1
+
+After taking a closer look at `src/base-object.j` I noticed this line:
+
+    #if defined(NODE_WANT_INTERNALS) && NODE_WANT_INTERNALS
+
+I've not set this in the test, so there is not much being included by the preprocessor.
+Adding `#define NODE_WANT_INTERNALS 1` should fix this.
+
