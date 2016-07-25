@@ -1,0 +1,6 @@
+lib
+deps
+*.dSYM
+*.swp
+*.swo
+test/base-object_test

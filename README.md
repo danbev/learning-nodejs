@@ -4,7 +4,7 @@ The sole purpose of this project is to aid in learning Node.js internals.
 ## Prerequisites
 You'll need to have checked out the node.js source.
 
-### Compiling node with debug enbled:
+### Compiling Node.js with debug enbled:
 
     $ ./configure --debug
     $ make -C out BUILDTYPE=Debug
@@ -26,7 +26,7 @@ directory. I think the way to do this is to `make install` and then run configur
 The location of the library is `/usr/local/lib`, and `/usr/local/include` for the headers on my machine.
 
 
-### Running the tests
+### Running the Node.js tests
 
     $ make -j4 test
 
@@ -749,5 +749,86 @@ The main difference that I've been able to find is in pipewrap `status` is check
       return;
    } 
 
+### src/stream_wrap.cc
+Looking into a task where the public member field req_ in src/req_wrap.cc is to be made private, I came accross the 
+following method:
 
+    286 void StreamWrap::AfterShutdown(uv_shutdown_t* req, int status) {
+    287   ShutdownWrap* req_wrap = ContainerOf(&ShutdownWrap::req_, req);
+    288   HandleScope scope(req_wrap->env()->isolate());
+    289   Context::Scope context_scope(req_wrap->env()->context());
+    290   req_wrap->Done(status);
+    291 }
 
+What I did for the public req_ member is made it private and then added a public accessor method for it. This was easy
+to update in most places but in src/stream_wrap.cc we have the following line:
+
+   ShutdownWrap* req_wrap = ContainerOf(&ShutdownWrap::req_, req);
+
+What exactly is going on here?
+Lets start by looking at the parameters that ContainerOf takes (src/util-inl.h):
+
+    126 template <typename Inner, typename Outer>
+    127 inline ContainerOfHelper<Inner, Outer> ContainerOf(Inner Outer::*field,
+    128                                                    Inner* pointer) {
+    129   return ContainerOfHelper<Inner, Outer>(field, pointer);
+    130 }
+
+So, it takes a pointer to a field of the outer type, which is req. req is of type uv_shutdown_t*. Since I made that field
+private this will no longer work. Lets backup a min to understand what we are trying to accomplish here. We want to get a pointer to a ShutdownWrap. 
+The invocation of ContainerOf(&ShutdownWrap::req_, req) leaves out the template parameters which the compiler will infer them. The type of req_ will be of type T, the type which was used to cret
+
+    class StreamWrap : public HandleWrap, public StreamBase
+    class HandleWrap : public AsyncWrap 
+    class AsyncWrap : public BaseObject
+    class BaseObject
+
+## Compiling the test in this project
+First step is that Google Test needs to be added. Follow the steps in "Adding Google test to the project" before proceeding.
+
+### Building and running the tests
+
+    make check 
+
+### Clean
+
+    make clean
+
+## Adding Google test to the project
+
+### Build the gtest lib:
+
+    $ mkdir lib
+    $ mkdir deps ; cd deps
+    $ git clone git@github.com:google/googletest.git
+    $ cd googletest/googletest
+    $ mkdir build ; cd build
+    $ clang -I`pwd`/../include -I`pwd`/../ -pthread -c `pwd`/../src/gtest-all.cc
+    $ ar -rv libgtest.a gtest-all.o
+    $ cp libgtest.a ../../../../lib
+
+### Writing a test file
+
+    $ mkdir test
+    $ vi main.cc
+    #include "gtest/gtest.h"
+    #include "base-object_test.cc"
+
+    int main(int argc, char* argv[]) {
+      ::testing::InitGoogleTest(&argc, argv);
+      return RUN_ALL_TESTS();
+    }
+
+    $ vi base-object_test.cc
+    #include "gtest/gtest.h"
+
+    TEST(BaseObject, base) {
+    }
+
+Add the test as an include in main.cc, and then compile using:
+
+    $ clang++ -I`pwd`/../deps/googletest/googletest/include -pthread main.cc ../lib/libgtest.a -o base-object_test
+
+Run the test:
+
+    ./base-object_test
