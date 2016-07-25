@@ -803,9 +803,13 @@ First step is that Google Test needs to be added. Follow the steps in "Adding Go
     $ git clone git@github.com:google/googletest.git
     $ cd googletest/googletest
     $ mkdir build ; cd build
-    $ clang -I`pwd`/../include -I`pwd`/../ -pthread -c `pwd`/../src/gtest-all.cc
+    $ c++ -std=gnu++0x -stdlib=libstdc++ -I`pwd`/../include -I`pwd`/../ -pthread -c `pwd`/../src/gtest-all.cc
     $ ar -rv libgtest.a gtest-all.o
     $ cp libgtest.a ../../../../lib
+
+We will be linking against Node.js which is build (on mac) using c++ and using the GNU Standard library. 
+Before OS X 10.9.x the default was libstdc++, but after OS X 10.9.x the default is libc++. I'm ususing 10.11.5 so the default would be libc++ in my case. I ran into an issue when compiling and not explicitely specifying `-stdlib=libstdc++` as this would mix two different standard library implementations. 
+Instead of our program crashing at runtime we get a link time error. libc++ uses a C++11 language feature called inline namespace to change the ABI of std::string without impacting the API of std::string. That is, to you std::string looks the same. But to the linker, std::string is being mangled as if it is in namespace std::__1. Thus the linker knows that std::basic_string and std::__1::basic_string are two different data structures (the former coming from gcc's libstdc++ and the latter coming from libc++).
 
 ### Writing a test file
 
@@ -850,16 +854,3 @@ After taking a closer look at `src/base-object.j` I noticed this line:
 
 I've not set this in the test, so there is not much being included by the preprocessor.
 Adding `#define NODE_WANT_INTERNALS 1` should fix this.
-
-#### tr1/type_traits file not found
-
-    node/src/util.h:15:10: fatal error: 'tr1/type_traits' file not found
-    #include <tr1/type_traits>  // NOLINT(build/c++tr1)
-         ^
-    1 error generated.
-
-I add set the C++ Standard Library to libc++, in which case <type_traits> should be used and not <tr1/type_traits>. 
-libc++ gives you a C++11 library, whereas libstdc++ gives you a C++03 library with tr1 support.
-
-    -stdlib=libstdc++
-
