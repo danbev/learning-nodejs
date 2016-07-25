@@ -1,5 +1,6 @@
 #include "gtest/gtest.h"
 #include "base-object_test.cc"
+#include "environment_test.cc"
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);

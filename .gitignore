@@ -4,3 +4,4 @@ deps
 *.swp
 *.swo
 test/base-object_test
+test/environment_test
