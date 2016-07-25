@@ -1,5 +1,6 @@
 NODE_HOME ?= /Users/danielbevenius/work/nodejs/node
 node_build_dir = $(NODE_HOME)/out/Debug
+node_include_dir = $(NODE_HOME)/src
 v8_build_dir = $(node_build_dir)
 v8_include_dir = $(NODE_HOME)/deps/v8/include
 
@@ -9,7 +10,7 @@ check: test/base-object_test
 	./test/base-object_test
 
 test/base-object_test: test/base-object_test.cc
-	$ clang++ -std=c++0x -O0 -g -I`pwd`/deps/googletest/googletest/include -I$(v8_include_dir) $(v8_libs) -pthread test/main.cc lib/libgtest.a -o test/base-object_test
+	$ clang++ -std=c++0x -O0 -g -I`pwd`/deps/googletest/googletest/include -I$(node_include_dir) -I$(v8_include_dir) $(v8_libs) -pthread test/main.cc lib/libgtest.a -o test/base-object_test
 
 .PHONY: clean
 
