@@ -1,0 +1,3 @@
+--recurse=yes
+--exclude=.git
+--exclude=deps

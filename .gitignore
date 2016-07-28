@@ -1,5 +1,6 @@
 lib
 deps
+tags
 *.dSYM
 *.swp
 *.swo
