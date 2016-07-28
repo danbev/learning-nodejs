@@ -829,7 +829,7 @@ Instead of our program crashing at runtime we get a link time error. libc++ uses
     TEST(BaseObject, base) {
     }
 
-Add the test as an include in main.cc, and then compile using:
+then compile using:
 
     $ clang++ -I`pwd`/../deps/googletest/googletest/include -pthread main.cc ../lib/libgtest.a -o base-object_test
 
