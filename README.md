@@ -592,6 +592,56 @@ In this case since are call looked like this:
 
 the module will be added to the list of modlist_builtin. Note that this is a linked list.
 
+### IsolateData
+Has a public constructor that takes a pointer to Isolate, a pointer to uv_loop_t, and a pointer to uint32 zero_fill_field.
+An IsolateData instance also has a number of public methods
+
+    #define VP(PropertyName, StringValue) V(v8::Private, PropertyName, StringValue)
+    #define VS(PropertyName, StringValue) V(v8::String, PropertyName, StringValue)
+    #define V(TypeName, PropertyName, StringValue)                                \
+      inline v8::Local<TypeName> PropertyName(v8::Isolate* isolate) const;
+      PER_ISOLATE_PRIVATE_SYMBOL_PROPERTIES(VP)
+      PER_ISOLATE_STRING_PROPERTIES(VS)
+    #undef V
+    #undef VS
+    #undef VP
+
+What is happening here is that we are declaring methods for each for the PER_ISOLATE_PRIVATE_SYMBOL_PROPERTIES. Since VP is being 
+passed and the type for those methods is v8::Private there will be the following methods:
+
+    v8::Local<Private> alpn_buffer_private_symbol(v8::Isolate* isolate) const;
+    v8::Local<Private> arrow_message_private_symbol(v8::Isolate* isolate) const;
+    ...
+But what is the StringValue used for? This must be in the definition which can be found in src/env-inl.h:
+
+    inline IsolateData::IsolateData(v8::Isolate* isolate, uv_loop_t* event_loop,
+                                  uint32_t* zero_fill_field)
+      :
+    #define V(PropertyName, StringValue)                                          \
+      PropertyName ## _(                                                        \
+          isolate,                                                              \
+          v8::Private::New(                                                     \
+              isolate,                                                          \
+              v8::String::NewFromOneByte(                                       \
+                  isolate,                                                      \
+                  reinterpret_cast<const uint8_t*>(StringValue),                \
+                  v8::NewStringType::kInternalized,                             \
+                  sizeof(StringValue) - 1).ToLocalChecked())),
+    PER_ISOLATE_PRIVATE_SYMBOL_PROPERTIES(V)
+    #undef V
+    #define V(PropertyName, StringValue)                                          \
+      PropertyName ## _(                                                        \
+          isolate,                                                              \
+          v8::String::NewFromOneByte(                                           \
+              isolate,                                                          \
+              reinterpret_cast<const uint8_t*>(StringValue),                    \
+              v8::NewStringType::kInternalized,                                 \
+              sizeof(StringValue) - 1).ToLocalChecked()),
+      PER_ISOLATE_STRING_PROPERTIES(V)
+    #undef V
+
+This is the definition of the IsolateData constructor, and it is setting each of the private member fields
+to the StringValue. I created an [example](https://github.com/danbev/learning-cpp11/blob/master/src/fundamentals/macros/macros.cc) to try this out.
 
 
 ### Running jslint
