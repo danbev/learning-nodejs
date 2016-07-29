@@ -33,6 +33,7 @@ node_obj = $(node_obj_dir)/async-wrap.o                    \
 	$(node_obj_dir)/backtrace_posix.o                  \
 	$(node_obj_dir)/cares_wrap.o                       \
 	$(node_obj_dir)/connection_wrap.o                  \
+	$(node_obj_dir)/connect_wrap.o                     \
 	$(node_obj_dir)/debug-agent.o                      \
 	$(node_obj_dir)/env.o                              \
 	$(node_obj_dir)/fs_event_wrap.o                    \
