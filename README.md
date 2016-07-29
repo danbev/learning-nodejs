@@ -434,7 +434,7 @@ This macro is invoked with the following arguments:
 
     NODE_MODULE_CONTEXT_AWARE_X(modname, regfunc, NULL, NM_F_BUILTIN)
 
-We already know that modname is tcp_wrap and that regfunc is node::TCPWrap::Initialize. 
+We already know that modname is `tcp_wrap` and that `regfunc` is node::TCPWrap::Initialize. 
 
 #### NODE\_MODULE\_CONTEXT\_AWARE\_X
 
@@ -493,7 +493,8 @@ So we have created a struct with the values above. Next we have:
       node_module_register(&_module);                                 \
     }                                                                 \
 
-NODE\_C\_CTOR is another macro function
+## will concatenate two symbols. In our case the value passed  is `_register_tcp_wrap`.
+NODE\_C\_CTOR is another macro function (see below).
 
 
 #### NODE\_C\_CTOR
@@ -503,7 +504,7 @@ NODE\_C\_CTOR is another macro function
       static void fn(void)
     #endif
 
-In our case the value passed as is `_register_tcp_wrap`. ## will concatenate two symbols. So that leaves us with:
+In our case the value of fn is `_register_tcp_wrap`. ## will concatenate two symbols. So that leaves us with:
     
       static void _register_tcp_wrap(void) __attribute__((constructor));                  \
       static void _register_tcp_wrap(void)
@@ -552,49 +553,240 @@ To verify this we can run the preprocessor:
        } 
     }
 
-Looking closer at the OnConnect implementations I see that the difference is very minor. This mostly boils down
-to how the that handling of a status error is tackled, either return early and duplicate the client callbacks (with
-the arg[1] being undefined in the case of an unsuccesful accept.
-
-On difference that did stand out was this in pipewrap.cc
-
-    ASSIGN_OR_RETURN_UNWRAP(&wrap, client_obj);
-
-
-Compared to this in tcpwrap.cc:
-
-    TCPWrap* wrap = Unwrap<TCPWrap>(client_obj);
-
-    #define ASSIGN_OR_RETURN_UNWRAP(ptr, obj, ...)                                  \
-    do {                                                                            \
-      *ptr =  Unwrap<typename node::remove_reference<decltype(**ptr)>::type>(obj);  \
-      if (*ptr == nullptr)                                                          \
-        return __VA_ARGS__;                                                         \
-    } while (0)
-
-What does this do?
-
-
-Thinking about the inheritance tree of pipewrap and tcpwrap:
-class TCPWrap : public StreamWrap
-class StreamWrap : public HandleWrap, public StreamBase
-class HandleWrap : public AsyncWrap {
-
-class PipeWrap : public StreamWrap
-class StreamWrap : public HandleWrap, public StreamBase
-class HandleWrap : public AsyncWrap {
-
-
 ### node\_module\_register
-In this case since are call looked like this:
+In this case since our call looked like this:
 
     NODE_MODULE_CONTEXT_AWARE_X(modname, regfunc, NULL, NM_F_BUILTIN)
 
-the module will be added to the list of modlist_builtin. Note that this is a linked list.
+Notice the `NM_F_BUILTIN`, this module will be added to the list of modlist_builtin. Note that this is a linked list.
+There is also `NM_F_LINKED` which are "Linked" modules includes as part of the node project.
+What are the differences here? 
+TODO: answer this question
+
+
+### Environment
+To create an Environment we need to have an v8::Isolate instance and also an IsolateData instance:
+
+     inline Environment(IsolateData* isolate_data, v8::Local<v8::Context> context);
+
+See IsolateData for details about that class and the members that are proxies through via an Environment instance.
+
+An Environment has a number of nested classes:
+
+    AsyncHooks
+    AsyncHooksCallbackScope
+    DomainFlag
+    TickInfo
+
+The above nested classes calls the `DISALLOW_COPY_AND_ASSIGN` macro, for example:
+
+    DISALLOW_COPY_AND_ASSIGN(TickInfo);
+This macro used `= delete` for the copy and assignement operator functions:
+
+    #define DISALLOW_COPY_AND_ASSIGN(TypeName) \
+    TypeName(const TypeName&) = delete;      \
+    void operator=(const TypeName&) = delete
+
+The last nested class is: 
+
+    HandleCleanup
+
+Environment also has a number of static methods:
+
+    static inline Environment* GetCurrent(v8::Isolate* isolate);
+
+This got me wondering, how can we get an Environment from an Isolate, an Isolate is a V8 thing
+and an Environment a Node thing.
+
+    inline Environment* Environment::GetCurrent(v8::Isolate* isolate) {
+      return GetCurrent(isolate->GetCurrentContext());
+    }
+So we are going to use the current context to get the Environment pointer, but the context is also a V8 concept, not a node.js concept.
+
+    inline Environment* Environment::GetCurrent(v8::Local<v8::Context> context) {
+     return static_cast<Environment*>(context->GetAlignedPointerFromEmbedderData(kContextEmbedderDataIndex));
+    }
+
+Alright, now we are getting somewhere. Lets take a closer look at `context->GetAlignedPointerFromEmbedderData(kContextEmbedderDataIndex)`.
+We have to look at the EnvironmentConstructor to see where this is set:
+
+    inline Environment::Environment(IsolateData* isolate_data, v8::Local<v8::Context> context) 
+    ...
+    AssignToContext(context);
+
+    static const int kContextEmbedderDataIndex = 5;
+
+    inline void Environment::AssignToContext(v8::Local<v8::Context> context) {
+      context->SetAlignedPointerInEmbedderData(kContextEmbedderDataIndex, this);
+    }
+So this how the Environment is associated with the context, and this enable us to get the environement for a context above. The argument to `SetAlignedPointerInEmbedderData` is a void pointer so it can be anything you want. The data is stored in a V8 FixedArray, the kContextEmbedderDataIndex is the index into this array (I think, still learning here).
+TODO: read up on how this FixedArray and alignment works.
+
+There are also static methods to get the Environment using a context.
+
+#### ENVIRONMENT_STRONG_PERSISTENT_PROPERTIES
+    #define V(PropertyName, TypeName)                                             \
+      inline v8::Local<TypeName> PropertyName() const;                            \
+      inline void set_ ## PropertyName(v8::Local<TypeName> value);
+      ENVIRONMENT_STRONG_PERSISTENT_PROPERTIES(V)
+    #undef V
+The above is defining getters and setter for all the properties in `ENVIRONMENT_STRONG_PERSISTENT_PROPERTIES`. Lets take a look at one:
+
+    V(tcp_constructor_template, v8::FunctionTemplate)
+
+Like before these are only the defintions, the declarations can be found in src/env-inl.h:
+
+    #define V(PropertyName, TypeName)                                             \
+      inline v8::Local<TypeName> Environment::PropertyName() const {              \
+        return StrongPersistentToLocal(PropertyName ## _);                        \
+      }                                                                           \
+      inline void Environment::set_ ## PropertyName(v8::Local<TypeName> value) {  \
+        PropertyName ## _.Reset(isolate(), value);                                \
+      }
+      ENVIRONMENT_STRONG_PERSISTENT_PROPERTIES(V)
+    #undef V 
+
+So, in the case of `tcp_constructor_template` this would become:
+
+    inline v8::Local<v8::FunctionTemplate> Environment::tcp_constructor_template() const {              
+      return StrongPersistentToLocal(tcp_constructor_template_);                        
+    }                                                                           
+    inline void Environment::set_tcp_constructor_template(v8::Local<v8::FunctionTempalate> value) {  
+      tcp_constructor_template_.Reset(isolate(), value);                                
+    }
+
+So where is this setter called?   
+It is called from `TCPWrap::Initialize`:
+
+    env->set_tcp_constructor_template(t); 
+
+And when is `TCPWrap::Initialize` called?  
+From Binding in `node.cc`:
+
+    ...
+    mod->nm_context_register_func(exports, unused, env->context(), mod->nm_priv);
+
+Recall (from `Loading of builtins`) how a module is registred:
+
+    NODE_MODULE_CONTEXT_AWARE_BUILTIN(tcp_wrap, node::TCPWrap::Initialize)
+
+The `nm_context_register_func` is `node::TCPWrap::Initialize`.
+
+
+### TCPWrap::Initialize
+First thing that happens is that the Environment is retreived using the current context.
+
+Next, a function template is created:
+
+    Local<FunctionTemplate> t = env->NewFunctionTemplate(New);
+
+NewFunctionTempalte in env.h specified a default value for the second parameter `v8::Local<v8::Signature>() so it does not have to be specified. Just to be clear `New` is the address of the function and we are just passing that to the NewFunctionTemplate method. It will use that address when creating a new FunctionTemplate:
+
+     v8::Local<v8::External> external = as_external();
+     return v8::FunctionTemplate::New(isolate(), callback, external, signature);
+
+    (lldb) p callback
+    (v8::FunctionCallback) $0 = 0x0000000100db8540 (node`node::TCPWrap::New(v8::FunctionCallbackInfo<v8::Value> const&) at tcp_wrap.cc:107)
+
+So `t` is a function template, a blueprint for a single function. You create an instance of the template by calling `GetFunction`. Recall that in JavaScript to create a new type of object you use a function. When this function is used as a constructor, using new, the returned object will be an instance of the InstanceTemplate (ObjectTemplate) that will be discussed shortly.
+
+    t->SetClassName(FIXED_ONE_BYTE_STRING(env->isolate(), "TCP"));
+
+The class name is is used for printing objects created with the function created from the
+FunctionTemplate as its constructor.
+
+     t->InstanceTemplate()->SetInternalFieldCount(1);
+
+`InstanceTemplate` returns the ObjectTemplate associated with the FunctionTemplate. Every FunctionTemplate has one. Like mentioned before this is the object that is returned after having used the FunctionTemplate as a constructor.
+I'm not exactly sure what `SetInternalFieldCount(1)` is doing, looks like has something to to with making sure there is a constructor.
+
+Next, the ObjectTemplate is set up. First a number of properties are configured:
+
+    t->InstanceTemplate()->Set(String::NewFromUtf8(env->isolate(), "reading"),
+                               Boolean::New(env->isolate(), false));
+
+Then, a number of prototype methods are set:
+ 
+    env->SetProtoMethod(t, "close", HandleWrap::Close);
+
+Alright, lets take a look at this `SetProtoMethod` method: 
+
+    inline void Environment::SetProtoMethod(v8::Local<v8::FunctionTemplate> that,
+                                         const char* name,
+                                         v8::FunctionCallback callback) {
+    v8::Local<v8::Signature> signature = v8::Signature::New(isolate(), that);
+    v8::Local<v8::FunctionTemplate> t = NewFunctionTemplate(callback, signature);
+    // kInternalized strings are created in the old space.
+    const v8::NewStringType type = v8::NewStringType::kInternalized;
+    v8::Local<v8::String> name_string =
+       v8::String::NewFromUtf8(isolate(), name, type).ToLocalChecked();
+    that->PrototypeTemplate()->Set(name_string, t);
+    t->SetClassName(name_string);  // NODE_SET_PROTOTYPE_METHOD() compatibility.
+   }
+
+A `Signature` has the following class documentation: "A Signature specifies which receiver is valid for a function.". So the receiver is set to be `that` which is `t` our newly created FunctionTemplate.
+Next, we are creating a FunctionTemplate for the call back `HandleWrap::Close` with the signature just created.
+Then, we will set the function template as a PrototypeTemplate. Again we see `t->SetClassName` which I believe is for when this is printed.
+There are few more prototype methods that use HandleWrap callbacks:
+    
+    env->SetProtoMethod(t, "ref", HandleWrap::Ref);
+    env->SetProtoMethod(t, "unref", HandleWrap::Unref);
+    env->SetProtoMethod(t, "hasRef", HandleWrap::HasRef);
+
+So have have a class called `HandleWrap`, which I think requires a section of its own.
+
+After this we find the following line:
+
+    StreamWrap::AddMethods(env, t, StreamBase::kFlagHasWritev);
+
+This method is defined in stream_wrap.cc:
+
+    env->SetProtoMethod(target, "setBlocking", SetBlocking);
+    StreamBase::AddMethods<StreamWrap>(env, target, flags);
+
+I've been wondering about the class names that end with Wrap and what they are wrapping. My thinking now is that they are wrapping libuv things. For instance, take StreamWrap, in libuv src/unix/stream.c which is what SetBlocking calls:
+
+     void StreamWrap::SetBlocking(const FunctionCallbackInfo<Value>& args) {
+       StreamWrap* wrap;
+       ASSIGN_OR_RETURN_UNWRAP(&wrap, args.Holder());
+
+       CHECK_GT(args.Length(), 0);
+       if (!wrap->IsAlive())
+         return args.GetReturnValue().Set(UV_EINVAL);
+
+       bool enable = args[0]->IsTrue();
+       args.GetReturnValue().Set(uv_stream_set_blocking(wrap->stream(), enable));
+    }
+
+Lets take a look at `ASSIGN_OR_RETURN_UNWRAP`: 
+
+    #define ASSIGN_OR_RETURN_UNWRAP(ptr, obj, ...)                                \
+      do {                                                                        \
+        *ptr =                                                                    \
+            Unwrap<typename node::remove_reference<decltype(**ptr)>::type>(obj);  \
+        if (*ptr == nullptr)                                                      \
+          return __VA_ARGS__;                                                     \
+   } while (0)
+
+So what would this look like after the preprocessor has processed it (need to double check this):
+
+    *wrap = Unwrap<uv_stream_t>(obj);
+    if (*wrap == nullptr)
+       return __VA_ARGS__;
+
+
+What does `__VA_ARGS__` do?   
+I've seen this before with variadic methods in c, but not sure what it means to return it
+
+### HandleWrap
+HandleWrap extends AsyncWrap
+
+### AsyncWrap
+
 
 ### IsolateData
 Has a public constructor that takes a pointer to Isolate, a pointer to uv_loop_t, and a pointer to uint32 zero_fill_field.
-An IsolateData instance also has a number of public methods
+An IsolateData instance also has a number of public methods:
 
     #define VP(PropertyName, StringValue) V(v8::Private, PropertyName, StringValue)
     #define VS(PropertyName, StringValue) V(v8::String, PropertyName, StringValue)
@@ -612,7 +804,10 @@ passed and the type for those methods is v8::Private there will be the following
     v8::Local<Private> alpn_buffer_private_symbol(v8::Isolate* isolate) const;
     v8::Local<Private> arrow_message_private_symbol(v8::Isolate* isolate) const;
     ...
-But what is the StringValue used for? This must be in the definition which can be found in src/env-inl.h:
+But what is the StringValue used for?  
+The StringValue is actually not used here, see [#7905](https://github.com/nodejs/node/pull/7905) for details.
+
+The StringValue is used in the definition though which can be found in src/env-inl.h:
 
     inline IsolateData::IsolateData(v8::Isolate* isolate, uv_loop_t* event_loop,
                                   uint32_t* zero_fill_field)
@@ -641,7 +836,24 @@ But what is the StringValue used for? This must be in the definition which can b
     #undef V
 
 This is the definition of the IsolateData constructor, and it is setting each of the private member fields
-to the StringValue. I created an [example](https://github.com/danbev/learning-cpp11/blob/master/src/fundamentals/macros/macros.cc) to try this out.
+to the StringValue. I created an [example](https://github.com/danbev/learning-cpp11/blob/master/src/fundamentals/macros/macros.cc) to try this out. While it might not be easy on the eyes this does have a major advantage of not having to maintain all of these accessor methods. Adding a new one is simply a matter of adding an entry to the macro.
+
+So now that we understand the macro, lets take a look at the actual information that this class stores/provides.  
+All the property accessors defined above are available using he IsolateData instance but also they can be called using an Environment instance which just passes the calls through to the IsolateData instance.
+The per isolate private members are the following:
+
+    V(alpn_buffer_private_symbol, "node:alpnBuffer")
+    V(npn_buffer_private_symbol, "node:npnBuffer")
+    V(selected_npn_buffer_private_symbol, "node:selectedNpnBuffer")
+
+The above are used by node_crypto.cc which makes sense as Application Level Protocol Negotiation (ALPN) is an TLS protocol, as it Next Prototol Negotiation (NPN).
+
+    V(arrow_message_private_symbol, "node:arrowMessage")
+Not sure exactly what this does but from a quick search it looks like it has to do with exception handling and printing of error messages. TODO: revisit this later.
+
+An IsolateData (and also an Environement as it proxies these members)  actually has a lot of members, too many to list here it is easy to do a search for them.
+
+
 
 
 ### Running jslint
