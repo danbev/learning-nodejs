@@ -778,10 +778,45 @@ So what would this look like after the preprocessor has processed it (need to do
 What does `__VA_ARGS__` do?   
 I've seen this before with variadic methods in c, but not sure what it means to return it
 
+### BaseObject
+
+    inline BaseObject(Environment* env, v8::Local<v8::Object> handle);
+
+I'm thinking that the handle is the Node representation of a libuv handle. The 
+
+    inline v8::Persistent<v8::Object>& persistent();
+
+A persistent handle lives on the heap just like a local handle but it does not correspond
+to C++ scopes. You have to explicitly call Persistent::Reset. 
+
+
 ### HandleWrap
 HandleWrap extends AsyncWrap
 
 ### AsyncWrap
+AsyncWrap extends BaseObject.
+Going with my assumption that this wraps an libuv async handle. From the libuv documentation: 
+"Async handles allow the user to “wakeup” the event loop and get a callback called from another thread."
+
+AsyncWrap has a enum of provider types:
+
+    enum ProviderType {
+    #define V(PROVIDER)                                                           \
+      PROVIDER_ ## PROVIDER,
+      NODE_ASYNC_PROVIDER_TYPES(V)
+    #undef V
+  };
+The provider type is passed when constructing an instance of AsyncWrap:
+
+    inline AsyncWrap(Environment* env,
+                   v8::Local<v8::Object> object,
+                   ProviderType provider,
+                   AsyncWrap* parent = nullptr);
+
+
+    v8::Local<v8::Function> init_fn = env->async_hooks_init_function();
+
+You may remember seeing this `async_hooks_init_function` in
 
 
 ### IsolateData
