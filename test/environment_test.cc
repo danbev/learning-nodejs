@@ -4,6 +4,8 @@
 #include "libplatform/libplatform.h"
 #include "env.h"
 
+#ifndef ARRAY_BUFFER_ALLOCATOR_
+#define ARRAY_BUFFER_ALLOCATOR_
 class ArrayBufferAllocator : public v8::ArrayBuffer::Allocator {
   public:
     virtual void* Allocate(size_t length) {
@@ -17,6 +19,7 @@ class ArrayBufferAllocator : public v8::ArrayBuffer::Allocator {
       free(data);
     }
 };
+#endif
 
 TEST(Environment, env) {
   v8::Platform* platform = v8::platform::CreateDefaultPlatform();
