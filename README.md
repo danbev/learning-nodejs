@@ -782,7 +782,7 @@ I've seen this before with variadic methods in c, but not sure what it means to 
 
     inline BaseObject(Environment* env, v8::Local<v8::Object> handle);
 
-I'm thinking that the handle is the Node representation of a libuv handle. The 
+I'm thinking that the handle is the Node representation of a libuv handle. 
 
     inline v8::Persistent<v8::Object>& persistent();
 
@@ -791,7 +791,82 @@ to C++ scopes. You have to explicitly call Persistent::Reset.
 
 
 ### HandleWrap
-HandleWrap extends AsyncWrap
+HandleWrap represents a libuv handle. Take the following functions:
+
+    static void Close(const v8::FunctionCallbackInfo<v8::Value>& args);
+    static void Ref(const v8::FunctionCallbackInfo<v8::Value>& args);
+    static void Unref(const v8::FunctionCallbackInfo<v8::Value>& args);
+    static void HasRef(const v8::FunctionCallbackInfo<v8::Value>& args);
+
+There are libuv counter parts for these in uv_handle_t:
+
+    void uv_close(uv_handle_t* handle, uv_close_cb close_cb)
+    void uv_ref(uv_handle_t* handle)
+    void uv_unref(uv_handle_t* handle)
+    int uv_has_ref(const uv_handle_t* handle)
+
+In HandleWrap's constructor the HandleWrap is added to the queue of HandleWraps in the Environment:
+    
+    handle__->data = this;
+    HandleScope scope(env->isolate());
+    Wrap(object, this);
+    env->handle_wrap_queue()->PushBack(this);
+
+    inline void Wrap(v8::Local<v8::Object> handle) {
+      assert(persistent().IsEmpty());
+      assert(handle->InternalFieldCount() > 0);
+      handle->SetAlignedPointerInInternalField(0, this);
+      persistent().Reset(v8::Isolate::GetCurrent(), handle);
+      MakeWeak();
+   }
+
+persistent().Reset will destroy the underlying storage cell if it is non-empty, and create
+a new one the handle.
+MakeWeak:
+
+     inline void MakeWeak(void) {
+       persistent().SetWeak(this, WeakCallback, v8::WeakCallbackType::kParameter);
+       persistent().MarkIndependent();
+    }
+The above is installing a finalization callback on the persistent object. Marking the persistent object as independant means that the GC is free to ignore object groups containing this persistent object. Why is this done? I don't know enough about the V8 GC yet to answer this.
+
+The callback may be called (best effort) and it looks like this:
+
+    static void WeakCallback(const v8::WeakCallbackInfo<ObjectWrap>& data) {
+      ObjectWrap* wrap = data.GetParameter();
+      assert(wrap->refs_ == 0);
+      wrap->handle_.Reset();
+      delete wrap;
+    }
+
+Notice that 
+
+
+### TcpWrap
+TcpWrap extends ConnectionWrap
+Lets take a look at the creation of a TcpWrap:
+
+    wrap = new TCPWrap(env, args.This(), nullptr);
+
+What is args.This(). That will be the (v8::Local<v8::Object>) object that will be wrapped. 
+
+This be passed to ConnectionWrap's constructor, which in turn will pass it to StreamWrap's constructor, which will pass it to HandleWrap's constructor, which will pass it to AsyncWrap's constructor, which will pass it to BaseObject's constructor which will set this/create a persistent object to store the handle:
+
+    : persistent_handle_(env->isolate(), handle)
+
+I've not seen this before, initializing a member with two parameters, and I cannot find a function that matches this signature. What is going on there?   
+Well, the type of `persistent_handle_` is :
+
+    v8::Persistent<v8::Object> persistent_handle_;
+
+And the constructor for Persistent looks like this:
+
+     template <class S>
+     V8_INLINE Persistent(Isolate* isolate, Local<S> that)
+        : PersistentBase<T>(PersistentBase<T>::New(isolate, *that)) {
+      TYPE_CHECK(T, S);
+    }
+
 
 ### AsyncWrap
 AsyncWrap extends BaseObject.
@@ -805,18 +880,27 @@ AsyncWrap has a enum of provider types:
       PROVIDER_ ## PROVIDER,
       NODE_ASYNC_PROVIDER_TYPES(V)
     #undef V
-  };
+   };
+
 The provider type is passed when constructing an instance of AsyncWrap:
 
     inline AsyncWrap(Environment* env,
                    v8::Local<v8::Object> object,
                    ProviderType provider,
                    AsyncWrap* parent = nullptr);
+    ...
 
 
     v8::Local<v8::Function> init_fn = env->async_hooks_init_function();
 
-You may remember seeing this `async_hooks_init_function` in
+You may remember seeing this `async_hooks_init_function` in env.h:
+
+    V(async_hooks_init_function, v8::Function)                                  \
+
+Lets back up a little, AsyncWrap is a builtin so the first function to be called will be its Async::Initialize function.
+
+    env->SetMethod(target, "setupHooks", SetupHooks);
+
 
 
 ### IsolateData
