@@ -413,7 +413,7 @@ Lets take a look at the following line from src/tcp_wrap.cc:
 
     NODE_MODULE_CONTEXT_AWARE_BUILTIN(tcp_wrap, node::TCPWrap::Initialize)
 
-Now, setting a breakpoint on this like and printing the thread backtrace gives:
+Now, setting a breakpoint on this and printing the thread backtrace gives:
 
     -> 436 	NODE_MODULE_CONTEXT_AWARE_BUILTIN(tcp_wrap, node::TCPWrap::Initialize)
     (lldb) bt
@@ -434,7 +434,7 @@ This macro is invoked with the following arguments:
 
     NODE_MODULE_CONTEXT_AWARE_X(modname, regfunc, NULL, NM_F_BUILTIN)
 
-We already know that modname is `tcp_wrap` and that `regfunc` is node::TCPWrap::Initialize. 
+We already know that in our case modname is `tcp_wrap` and that `regfunc` is node::TCPWrap::Initialize. 
 
 #### NODE\_MODULE\_CONTEXT\_AWARE\_X
 
@@ -473,7 +473,8 @@ With that out of the way we can focus on the contents of the block.
           NULL                                                            \
         };                                                                \
 
-We are creating a static variable (it exists for the lifetime of the program, but the name is not visible outside of the block. node_module is a struct in node.h and looks like this:
+We are creating a static variable (it exists for the lifetime of the program, but the name is not visible outside of the block. Remember that we are in tcp_wrap.cc in this walk through so the preprocessor will add a definition of the `_module` to that tcp_wrap.
+`node_module` is a struct in node.h and looks like this:
 
     struct node_module {
       int nm_version;
@@ -493,7 +494,7 @@ So we have created a struct with the values above. Next we have:
       node_module_register(&_module);                                 \
     }                                                                 \
 
-## will concatenate two symbols. In our case the value passed  is `_register_tcp_wrap`.
+``##`` will concatenate two symbols. In our case the value passed  is `_register_tcp_wrap`.
 NODE\_C\_CTOR is another macro function (see below).
 
 
@@ -511,14 +512,14 @@ In our case the value of fn is `_register_tcp_wrap`. ## will concatenate two sym
 
 Lets start with \_\_attribute\_\_((constructor)), what is this all about?  
 In shared object files there are special sections which contains references to functions marked with constructor attributes. The attributes are a gcc feature. When the library gets loaded the dynamic loader program checks whether such sections exist and calls these functions.
-The constructor attribute causes the function to be called automatically before execution enters main ().
+The constructor attribute causes the function to be called automatically before execution enters main (). You can verify this by checking the backtrace above.
 
-Now that we know that lets look at these two lines:
+Now that we know that, lets look at these two lines:
 
       static void _register_tcp_wrap(void) __attribute__((constructor));                  \
       static void _register_tcp_wrap(void)
 
-The first is the declaration of a function and the second line is the implementation. You have to remember that the macro is expanded by the preprocessor so we have to look at the call as well:
+The first is the declaration of a function and the second line is the definition. You have to remember that the macro is expanded by the preprocessor so we have to look at the call as well:
 
     NODE_C_CTOR(_register_ ## modname) {                              \
       node_module_register(&_module);                                 \
@@ -569,7 +570,7 @@ To create an Environment we need to have an v8::Isolate instance and also an Iso
 
      inline Environment(IsolateData* isolate_data, v8::Local<v8::Context> context);
 
-See IsolateData for details about that class and the members that are proxies through via an Environment instance.
+See IsolateData for details about that class and the members that are proxied through via an Environment instance.
 
 An Environment has a number of nested classes:
 
@@ -581,7 +582,8 @@ An Environment has a number of nested classes:
 The above nested classes calls the `DISALLOW_COPY_AND_ASSIGN` macro, for example:
 
     DISALLOW_COPY_AND_ASSIGN(TickInfo);
-This macro used `= delete` for the copy and assignement operator functions:
+
+This macro uses `= delete` for the copy and assignment operator functions:
 
     #define DISALLOW_COPY_AND_ASSIGN(TypeName) \
     TypeName(const TypeName&) = delete;      \
@@ -596,11 +598,12 @@ Environment also has a number of static methods:
     static inline Environment* GetCurrent(v8::Isolate* isolate);
 
 This got me wondering, how can we get an Environment from an Isolate, an Isolate is a V8 thing
-and an Environment a Node thing.
+and an Environment a Node thing?
 
     inline Environment* Environment::GetCurrent(v8::Isolate* isolate) {
       return GetCurrent(isolate->GetCurrentContext());
     }
+
 So we are going to use the current context to get the Environment pointer, but the context is also a V8 concept, not a node.js concept.
 
     inline Environment* Environment::GetCurrent(v8::Local<v8::Context> context) {
@@ -614,22 +617,27 @@ We have to look at the EnvironmentConstructor to see where this is set:
     ...
     AssignToContext(context);
 
+So, we can see that `AssignToContext` is setting the environment on the passed-in context:
+
     static const int kContextEmbedderDataIndex = 5;
 
     inline void Environment::AssignToContext(v8::Local<v8::Context> context) {
       context->SetAlignedPointerInEmbedderData(kContextEmbedderDataIndex, this);
     }
-So this how the Environment is associated with the context, and this enable us to get the environement for a context above. The argument to `SetAlignedPointerInEmbedderData` is a void pointer so it can be anything you want. The data is stored in a V8 FixedArray, the kContextEmbedderDataIndex is the index into this array (I think, still learning here).
+
+So this how the Environment is associated with the context, and this enable us to get the environement for a context above. The argument to `SetAlignedPointerInEmbedderData` is a void pointer so it can be anything you want. The data is stored in a V8 FixedArray, the `kContextEmbedderDataIndex` is the index into this array (I think, still learning here).
 TODO: read up on how this FixedArray and alignment works.
 
 There are also static methods to get the Environment using a context.
 
 #### ENVIRONMENT_STRONG_PERSISTENT_PROPERTIES
+
     #define V(PropertyName, TypeName)                                             \
       inline v8::Local<TypeName> PropertyName() const;                            \
       inline void set_ ## PropertyName(v8::Local<TypeName> value);
       ENVIRONMENT_STRONG_PERSISTENT_PROPERTIES(V)
     #undef V
+
 The above is defining getters and setter for all the properties in `ENVIRONMENT_STRONG_PERSISTENT_PROPERTIES`. Lets take a look at one:
 
     V(tcp_constructor_template, v8::FunctionTemplate)
@@ -670,7 +678,11 @@ Recall (from `Loading of builtins`) how a module is registred:
 
     NODE_MODULE_CONTEXT_AWARE_BUILTIN(tcp_wrap, node::TCPWrap::Initialize)
 
-The `nm_context_register_func` is `node::TCPWrap::Initialize`.
+The `nm_context_register_func` is `node::TCPWrap::Initialize`, which is a static method declared in src/tcp_wrap.h:
+
+    static void Initialize(v8::Local<v8::Object> target,
+                           v8::Local<v8::Value> unused,
+                           v8::Local<v8::Context> context);
 
 
 ### TCPWrap::Initialize
@@ -680,7 +692,7 @@ Next, a function template is created:
 
     Local<FunctionTemplate> t = env->NewFunctionTemplate(New);
 
-NewFunctionTempalte in env.h specified a default value for the second parameter `v8::Local<v8::Signature>() so it does not have to be specified. Just to be clear `New` is the address of the function and we are just passing that to the NewFunctionTemplate method. It will use that address when creating a new FunctionTemplate:
+NewFunctionTemplate in env.h specifies a default value for the second parameter `v8::Local<v8::Signature>() so it does not have to be specified. Just to be clear `New` is the address of the function and we are just passing that to the NewFunctionTemplate method. It will use that address when creating a new FunctionTemplate:
 
      v8::Local<v8::External> external = as_external();
      return v8::FunctionTemplate::New(isolate(), callback, external, signature);
@@ -698,7 +710,7 @@ FunctionTemplate as its constructor.
      t->InstanceTemplate()->SetInternalFieldCount(1);
 
 `InstanceTemplate` returns the ObjectTemplate associated with the FunctionTemplate. Every FunctionTemplate has one. Like mentioned before this is the object that is returned after having used the FunctionTemplate as a constructor.
-I'm not exactly sure what `SetInternalFieldCount(1)` is doing, looks like has something to to with making sure there is a constructor.
+I'm not exactly sure what `SetInternalFieldCount(1)` is doing, looks like has something to do with making sure there is a constructor.
 
 Next, the ObjectTemplate is set up. First a number of properties are configured:
 
@@ -709,7 +721,7 @@ Then, a number of prototype methods are set:
  
     env->SetProtoMethod(t, "close", HandleWrap::Close);
 
-Alright, lets take a look at this `SetProtoMethod` method: 
+Alright, lets take a look at this `SetProtoMethod` method in Environment: 
 
     inline void Environment::SetProtoMethod(v8::Local<v8::FunctionTemplate> that,
                                          const char* name,
@@ -724,7 +736,8 @@ Alright, lets take a look at this `SetProtoMethod` method:
     t->SetClassName(name_string);  // NODE_SET_PROTOTYPE_METHOD() compatibility.
    }
 
-A `Signature` has the following class documentation: "A Signature specifies which receiver is valid for a function.". So the receiver is set to be `that` which is `t` our newly created FunctionTemplate.
+A `Signature` has the following class documentation: "A Signature specifies which receiver is valid for a function.". So the receiver is set to be `that` which is `t`, our newly created FunctionTemplate.
+
 Next, we are creating a FunctionTemplate for the call back `HandleWrap::Close` with the signature just created.
 Then, we will set the function template as a PrototypeTemplate. Again we see `t->SetClassName` which I believe is for when this is printed.
 There are few more prototype methods that use HandleWrap callbacks:
@@ -770,13 +783,27 @@ Lets take a look at `ASSIGN_OR_RETURN_UNWRAP`:
 
 So what would this look like after the preprocessor has processed it (need to double check this):
 
-    *wrap = Unwrap<uv_stream_t>(obj);
-    if (*wrap == nullptr)
-       return __VA_ARGS__;
+    do {
+      *wrap = Unwrap<uv_stream_t>(obj);
+      if (*wrap == nullptr)
+         return;
+    } while (0);
 
 
 What does `__VA_ARGS__` do?   
-I've seen this before with variadic methods in c, but not sure what it means to return it
+I've seen this before with variadic methods in c, but not sure what it means to return it. Turns out that is you don't pass anything apart from the required arguments then the `return __VA_ARGS_ statement will just be `return;`. There are other places when the usage of this macro does pass additional arguments, for example: 
+
+    ASSIGN_OR_RETURN_UNWRAP(&wrap,
+                           args.Holder(),
+                           args.GetReturnValue().Set(UV_EBADF));
+
+    do {
+      *wrap = Unwrap<uv_stream_t>(obj);
+      if (*wrap == nullptr)
+         return args.GetReturnValue.Set(UV_EBADF);
+    } while (0);
+
+So we will be returning early with a BADF (bad file descriptor) error.
 
 ### BaseObject
 
