@@ -692,7 +692,42 @@ Next, a function template is created:
 
     Local<FunctionTemplate> t = env->NewFunctionTemplate(New);
 
-NewFunctionTemplate in env.h specifies a default value for the second parameter `v8::Local<v8::Signature>() so it does not have to be specified. Just to be clear `New` is the address of the function and we are just passing that to the NewFunctionTemplate method. It will use that address when creating a new FunctionTemplate:
+Just to be clear `New` is the address of the function and we are just passing that to the NewFunctionTemplate method. It will use that address when creating a NewFunctionTemplate.
+
+### TcpWrap::New
+New is set as the callback for when `new TCP()` is used, for example:
+
+    var TCP = process.binding('tcp_wrap').TCP;
+    var handle = new TCP();
+
+When the second line is executed the callback `New` will be invoked. This is set up by this line later in TCPWrap::Initialize:
+
+    target->Set(FIXED_ONE_BYTE_STRING(env->isolate(), "TCP"), t->GetFunction());
+
+New takes a single argument of type v8::FunctionCallbackInfo which holds information about the function call make. This is things like the number of arguments used, the arguments can be retreived using with the operator[]. `New` looks like this:
+
+    void TCPWrap::New(const FunctionCallbackInfo<Value>& a) {
+      CHECK(a.IsConstructCall());
+      Environment* env = Environment::GetCurrent(a);
+      TCPWrap* wrap;
+      if (a.Length() == 0) {
+        wrap = new TCPWrap(env, a.This(), nullptr);
+      } else if (a[0]->IsExternal()) {
+        void* ptr = a[0].As<External>()->Value();
+        wrap = new TCPWrap(env, a.This(), static_cast<AsyncWrap*>(ptr));
+      } else {
+        UNREACHABLE();
+      }
+      CHECK(wrap);
+    }
+
+Using the example above we can see that `Length` should be 0 as we did not pass any arguments to the TCP function. Just wondering, what could be passed as a parameter?  What ever it might look like it should be a pointer to an AsyncWrap.
+
+So this is where the instance of TCPWrap is created. Notice `a.This()` which is passed all the wway up to BaseObject's constructor and made into a persistent handle.
+
+
+### NewFunctionTemplate
+NewFunctionTemplate in env.h specifies a default value for the second parameter `v8::Local<v8::Signature>() so it does not have to be specified. 
 
      v8::Local<v8::External> external = as_external();
      return v8::FunctionTemplate::New(isolate(), callback, external, signature);
@@ -832,20 +867,28 @@ There are libuv counter parts for these in uv_handle_t:
     void uv_unref(uv_handle_t* handle)
     int uv_has_ref(const uv_handle_t* handle)
 
-In HandleWrap's constructor the HandleWrap is added to the queue of HandleWraps in the Environment:
+Just like in libuv where uv_handle_t is a base type for all libuv handles, HandleWrap is a base class for all Node.js Wrap classes.
+
+Every uv_handle_t can have a [data member](http://docs.libuv.org/en/v1.x/handle.html#c.uv_handle_t.data), and this is being set in the constructor to this instance of HandleWrap.
     
     handle__->data = this;
     HandleScope scope(env->isolate());
     Wrap(object, this);
+
+In HandleWrap's constructor the HandleWrap is added to the queue of HandleWraps in the Environment:
+
     env->handle_wrap_queue()->PushBack(this);
 
-    inline void Wrap(v8::Local<v8::Object> handle) {
-      assert(persistent().IsEmpty());
-      assert(handle->InternalFieldCount() > 0);
-      handle->SetAlignedPointerInInternalField(0, this);
-      persistent().Reset(v8::Isolate::GetCurrent(), handle);
-      MakeWeak();
-   }
+### Wrap
+
+    template <typename TypeName>
+    void Wrap(v8::Local<v8::Object> object, TypeName* pointer) {
+     CHECK_EQ(false, object.IsEmpty());
+     CHECK_GT(object->InternalFieldCount(), 0);
+     object->SetAlignedPointerInInternalField(0, pointer);
+    }
+
+Here we can see that we are setting a pointer in field 0. The `object` in question, and `pointer` the pointer to this HandleWrap.
 
 persistent().Reset will destroy the underlying storage cell if it is non-empty, and create
 a new one the handle.
@@ -1015,8 +1058,9 @@ The -j is the number of processes to use.
 
 #### Mac firewall exceptions
 On mac you might find it popping up dialogs about the firwall blocking access to the `node` and `cctest` applications when running
-the tests. You can add exceptions by pointing to the `node/node` executable and `node/out/Release/cctest`. Just adding this 
-comment as it was not obvious at the time which node executable to exclude.
+the tests. You can add exceptions by pointing to the `node` executable and `node/out/Release/cctest`. When doing this it seems you have to located the `node/out/Release` directory
+and then select the `node` executable.
+Note that you'll have to readd these after running './configure'
 
 
 ### Tasks
