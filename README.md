@@ -1063,6 +1063,137 @@ and then select the `node` executable.
 Note that you'll have to readd these after running './configure'
 
 
+### Running a script
+This section attempts to explain the process of running a javascript file. We will create a break point in the javascript source and see how it is executed.
+Lets take one of the tests and use it as an example:
+
+    $ node-inspector
+
+Next connect to http://127.0.0.1:8080/?port=5858. This will not show anything apart from some empty tabs but this will get updated later when we 
+start debugging.
+
+Next, start `lldb` and 
+
+    $ lldb -- out/Debug/node --debug-brk test/parallel/test-tcp-wrap-connect.js
+
+Now, when a script is executed it will be read and loaded. Where is this done?
+To recap the loading is done by `LoadEnvironment` which loads and executes `lib/internal/bootstrap_node.js`. This is a function which is
+then executed:
+
+    Local<Value> arg = env->process_object();
+    f->Call(Null(env->isolate()), 1, &arg);
+
+As we can see the process_object which was configured earlier is passed into the function:
+
+    (function(process) {
+      function startup() {
+        ...
+      }
+      //other functions
+      
+      startup();
+    });
+
+We can see that the `startup` function will be called when the the `f` is called. Since we are specifying a script to run we will
+be looking at setting up the various object in the environment, mosty using the passed in process object (TODO: need to write out the
+details for this later) and eventually running:
+
+     preloadModules();
+     run(Module.runMain);
+
+Module.runMain is a function in `lib/module.js`:
+
+    // bootstrap main module.
+    Module.runMain = function() {
+      // Load the main module--the command line argument.
+      Module._load(process.argv[1], null, true);
+      // Handle any nextTicks added in the first tick of the program
+      process._tickCallback();
+    };
+
+#### _load
+Will check the module cache for the filename and if it already exists just returns the exports object for this module. But otherwise
+the filename will be loaded using the file extension. Possible extensions are `.js`, `.json`, and `.node` (defaulting to .js if no extension is given).
+
+    Module._extensions[extension](this, filename);
+
+We know are extension is `.js` so lets look closer at it:
+
+     // Native extension for .js
+     Module._extensions['.js'] = function(module, filename) {
+       var content = fs.readFileSync(filename, 'utf8');
+       module._compile(internalModule.stripBOM(content), filename);
+     };
+
+So lets take a look at `_compile_`
+
+#### module._compile
+After removing the shebang from the `content` which is passed in as the first parameter the content is wrapped:
+
+    var wrapper = Module.wrap(content);
+
+#### Module.wrap
+This is declared as:
+
+    const NativeModule = require('native_module');
+    ....
+    Module.wrap = NativeModule.wrap;
+
+NativeModule can be found lib/internal/bootstrap_node.js:
+
+     NativeModule.wrap = function(script) {
+       return NativeModule.wrapper[0] + script + NativeModule.wrapper[1];
+     };
+
+     NativeModule.wrapper = [
+       '(function (exports, require, module, __filename, __dirname) { ',
+       '\n});'
+     ];
+
+We can see here that the content of our JavaScript file will be included/wrapped in
+
+    (function (exports, require, module, __filename, __dirname) { 
+	// script content
+    });'
+
+So, to recap we have a `wrapper` instance that is a function. The next thing that happens in `lib/modules.js` is:
+
+    var compiledWrapper = vm.runInThisContext(wrapper, {
+      filename: filename,
+      lineOffset: 0,
+      displayErrors: true
+    });
+
+So what does `vm.runInThisContext` do?
+This is defined in `lib/vm.js`:
+
+    exports.runInThisContext = function(code, options) {
+      var script = new Script(code, options);
+      return script.runInThisContext(options);
+    };
+
+As described in the [vm](https://nodejs.org/api/vm.html) the vm module provides APIs for compiling and running code within V8 Virtual Machine contexts.
+Creating a new Script will compile but not run the code. It can later be run multiple times.
+
+So what is a Script? 
+It is declared as:
+    const binding = process.binding('contextify');
+    const Script = binding.ContextifyScript;
+
+What is Contextify about?  
+This is related to V8 contexts and all JavaScript code is run in a context.
+
+`src/node_contextify.cc` is a builtin module and contains an `Init` function that does the following (among other things): 
+
+    env->SetProtoMethod(script_tmpl, "runInContext", RunInContext);
+    env->SetProtoMethod(script_tmpl, "runInThisContext", RunInThisContext);
+
+script.runInThisContext in vm.js overrides `runInThisContext` and then delegates to src/node_contextify.cc `RunInThisContext`.
+
+
+So this is also how `exports`, `require`, `module`, `__filename`, and `__dirname` are made available
+to all scripts.
+
 ### Tasks
 
 #### Remove need to specify a no-operation immediate_idle_handle
@@ -1234,6 +1365,46 @@ The invocation of ContainerOf(&ShutdownWrap::req_, req) leaves out the template 
     class HandleWrap : public AsyncWrap 
     class AsyncWrap : public BaseObject
     class BaseObject
+
+## Extracting AfterConnect into connection_wrap.cc
+Just like `OnConnect` was extracted into connection_wrap and shared by both tcp_wrap and pipe_wrap the same should be done for `AfterConnect`.
+
+The main difference I found was in `PipeWrap::AfterConnect`:
+
+    bool readable, writable;
+
+    if (status) {
+      readable = writable = 0;
+    } else {
+      readable = uv_is_readable(req->handle) != 0;
+      writable = uv_is_writable(req->handle) != 0;
+    } 
+    Local<Object> req_wrap_obj = req_wrap->object();
+    Local<Value> argv[5] = {
+      Integer::New(env->isolate(), status),
+      wrap->object(),
+      req_wrap_obj,
+      Boolean::New(env->isolate(), readable),
+      Boolean::New(env->isolate(), writable)
+    };
+AfterConnect is a callback that is passed to uv_pipe_connect. The status will be 0 if uv_connect() was successful and < 0 otherwise. The thing to notice is the difference compared to tcp_wrap:
+
+    Local<Object> req_wrap_obj = req_wrap->object();
+    Local<Value> argv[5] = {
+      Integer::New(env->isolate(), status),
+      wrap->object(),
+      req_wrap_obj,
+      v8::True(env->isolate()),
+      v8::True(env->isolate())
+    };
+
+TCPWrap always sets the readable and writable values to true. 
+
+
+
+## Making ReqWrap req_ member private
+
+
 
 ## Compiling the test in this project
 First step is that Google Test needs to be added. Follow the steps in "Adding Google test to the project" before proceeding.
