@@ -909,8 +909,6 @@ The callback may be called (best effort) and it looks like this:
       delete wrap;
     }
 
-Notice that 
-
 
 ### TcpWrap
 TcpWrap extends ConnectionWrap
@@ -970,8 +968,6 @@ You may remember seeing this `async_hooks_init_function` in env.h:
 Lets back up a little, AsyncWrap is a builtin so the first function to be called will be its Async::Initialize function.
 
     env->SetMethod(target, "setupHooks", SetupHooks);
-
-
 
 ### IsolateData
 Has a public constructor that takes a pointer to Isolate, a pointer to uv_loop_t, and a pointer to uint32 zero_fill_field.
@@ -1132,6 +1128,23 @@ After removing the shebang from the `content` which is passed in as the first pa
 
     var wrapper = Module.wrap(content);
 
+    var compiledWrapper = vm.runInThisContext(wrapper, {
+      filename: filename,
+      lineOffset: 0,
+      displayErrors: true
+    });
+
+vm.runInThisContext
+
+    var dirname = path.dirname(filename);
+    var require = internalModule.makeRequireFunction.call(this);
+    var args = [this.exports, require, this, filename, dirname];
+    var depth = internalModule.requireDepth;
+    if (depth === 0) stat.cache = new Map();
+    var result = compiledWrapper.apply(this.exports, args);
+
+    
+
 #### Module.wrap
 This is declared as:
 
@@ -1177,6 +1190,7 @@ Creating a new Script will compile but not run the code. It can later be run mul
 
 So what is a Script? 
 It is declared as:
+
     const binding = process.binding('contextify');
     const Script = binding.ContextifyScript;
 
@@ -1189,6 +1203,10 @@ This is related to V8 contexts and all JavaScript code is run in a context.
     env->SetProtoMethod(script_tmpl, "runInThisContext", RunInThisContext);
 
 script.runInThisContext in vm.js overrides `runInThisContext` and then delegates to src/node_contextify.cc `RunInThisContext`.
+
+     // Do the eval within this context
+     Environment* env = Environment::GetCurrent(args);
+     EvalMachine(env, timeout, display_errors, break_on_sigint, args, &try_catch);
 
 
 So this is also how `exports`, `require`, `module`, `__filename`, and `__dirname` are made available
@@ -1348,19 +1366,6 @@ to update in most places but in src/stream_wrap.cc we have the following line:
 
    ShutdownWrap* req_wrap = ContainerOf(&ShutdownWrap::req_, req);
 
-What exactly is going on here?
-Lets start by looking at the parameters that ContainerOf takes (src/util-inl.h):
-
-    126 template <typename Inner, typename Outer>
-    127 inline ContainerOfHelper<Inner, Outer> ContainerOf(Inner Outer::*field,
-    128                                                    Inner* pointer) {
-    129   return ContainerOfHelper<Inner, Outer>(field, pointer);
-    130 }
-
-So, it takes a pointer to a field of the outer type, which is req. req is of type uv_shutdown_t*. Since I made that field
-private this will no longer work. Lets backup a min to understand what we are trying to accomplish here. We want to get a pointer to a ShutdownWrap. 
-The invocation of ContainerOf(&ShutdownWrap::req_, req) leaves out the template parameters which the compiler will infer them. The type of req_ will be of type T, the type which was used to cret
-
     class StreamWrap : public HandleWrap, public StreamBase
     class HandleWrap : public AsyncWrap 
     class AsyncWrap : public BaseObject
@@ -1387,7 +1392,10 @@ The main difference I found was in `PipeWrap::AfterConnect`:
       Boolean::New(env->isolate(), readable),
       Boolean::New(env->isolate(), writable)
     };
-AfterConnect is a callback that is passed to uv_pipe_connect. The status will be 0 if uv_connect() was successful and < 0 otherwise. The thing to notice is the difference compared to tcp_wrap:
+
+AfterConnect is a callback that is passed to uv_pipe_connect. The status will be 0 if uv_connect() was successful and < 0 otherwise. 
+
+The thing to notice is the difference compared to tcp_wrap:
 
     Local<Object> req_wrap_obj = req_wrap->object();
     Local<Value> argv[5] = {
@@ -1398,16 +1406,177 @@ AfterConnect is a callback that is passed to uv_pipe_connect. The status will be
       v8::True(env->isolate())
     };
 
-TCPWrap always sets the readable and writable values to true. 
+TCPWrap always sets the readable and writable values to true where as PipeWrap checks if the handle is readble/writeble. Seems like a the TCPWrap will always
+be both readable and writable. 
 
+
+### ReqWrap
 
 
 ## Making ReqWrap req_ member private
+Currently the member req_ is public in src/req
 
+One issue when doing this was that after renaming req_ to req() I had to rename a macro in src/node_file.cc to avoid a collision with the macro 
+parameter with the same name.
+
+The second issue I ran into was with src/stream_wrap.cc:
+
+    void StreamWrap::AfterShutdown(uv_shutdown_t* req, int status) {
+      ShutdownWrap* req_wrap = ContainerOf(&ShutdownWrap::req_, req);
+
+We can find `ContainerOf` in src/util-inl.h :
+
+    template <typename Inner, typename Outer>
+    inline ContainerOfHelper<Inner, Outer> ContainerOf(Inner Outer::*field, Inner* pointer) {
+      return ContainerOfHelper<Inner, Outer>(field, pointer);
+    }
+
+The call in question is auto-deducing the paremeter types from the arguments, it could also have been explicit:
+
+    ShutdownWrap* req_wrap = ContainerOf<uv_shutdown_t*, ShutdownWrap>(&ShutdownWrap::req_, req);
+
+
+## ContainerOfHelper
+src/util.h declares a class named ContainerOfHelper:
+
+    // The helper is for doing safe downcasts from base types to derived types.
+    template <typename Inner, typename Outer>
+    class ContainerOfHelper {
+     public:
+       inline ContainerOfHelper(Inner Outer::*field, Inner* pointer);
+       template <typename TypeName>
+       inline operator TypeName*() const;
+     private:
+       Outer* const pointer_;
+ };
+
+So back to our call using ContainerOf which will invoke:
+
+    template <typename Inner, typename Outer>
+    ContainerOfHelper<Inner, Outer>::ContainerOfHelper(Inner Outer::*field, Inner* pointer)
+        : pointer_(reinterpret_cast<Outer*>(reinterpret_cast<uintptr_t>(pointer) - reinterpret_cast<uintptr_t>(&(static_cast<Outer*>(0)->*field)))) {
+    }
+
+First, note that the parameter `field` is a pointer-to-member, which gives the offset of the member within the class object as opposed to using the
+address of operator on a data member bound to an actual class object which yields the member's actual address in memory.
+`uintptr_t` is an unsigned int that is capable of storing a pointer. Such a type can be used when you need to perform integer operations on a pointer.
+[reinterpret_cast](http://en.cppreference.com/w/cpp/language/reinterpret_cast) is a compiler directive which instructs the compiler to treat the sequence
+of bits as if it had the new type:
+
+    reinterpret_cast<uintptr_t>(pointer) 
+
+reinterpret_cast is used to convert any pointer type to any other pointer type and the result is a binary copy of the value. 
+
+        reinterpret_cast<uintptr_t>(&(static_cast<ShutdownWrap*>(0)->*field))
+
+I've not seen this usage before using 0 as the argument to static_cast:
+
+    static_cast<ShutdownWrap*>(0)->*field)
+
+The static_cast part of this expression will give a nullptr, but we are not accessing a member, but a pointer-to-member which remember is the offset.
+A pointer is only a memory address but the type of the object determines how a pointer can be used, like using a member it needs to know the offsets 
+of those members.
+So we creating a pointer to Outer which by using the offset of the field and substracting that from `pointer`. So when using a pointer and dereferencing 
+`field` this will point to same value of `pointer`
+
+### Share AfterWrite with with udb_wrap and stream_wrap 
+So, the task is basically to follow this comment in udb_wrap.cc:
+
+    // TODO(bnoordhuis) share with StreamWrap::AfterWrite() in stream_wrap.cc
+    void UDPWrap::OnSend(uv_udp_send_t* req, int status) {
 
 
 ## Compiling the test in this project
 First step is that Google Test needs to be added. Follow the steps in "Adding Google test to the project" before proceeding.
+
+
+When `DoShutdown` is called the last thing that is done is:
+
+    req_wrap->Dispatched();
+
+which will set req_.data = this; this being the Shutdown wrap instance. Later when the `AfterShutdown` method is called that instance will be available 
+by using the req->data.
+
+
+### Wrapped 
+
+    var TCP = process.binding('tcp_wrap').TCP;
+    var TCPConnectWrap = process.binding('tcp_wrap').TCPConnectWrap;
+    var ShutdownWrap = process.binding('stream_wrap').ShutdownWrap;
+
+    var client = new TCP();
+    var shutdownReq = new ShutdownWrap();
+
+This above will invoke the constructor set up by TCPWrap::Initialize:
+
+    auto constructor = [](const FunctionCallbackInfo<Value>& args) {
+      CHECK(args.IsConstructCall());
+    };
+    auto cwt = FunctionTemplate::New(env->isolate(), constructor);
+    cwt->InstanceTemplate()->SetInternalFieldCount(1);
+    SetClassName(FIXED_ONE_BYTE_STRING(env->isolate(), "TCPConnectWrap"));
+    Set(FIXED_ONE_BYTE_STRING(env->isolate(), "TCPConnectWrap"), GetFunction());
+
+The only thing the constructor does is check that `new` is used with the function (as in new ShutdownWrap).
+
+    var err = client.shutdown(shutdownReq);
+
+The methods available to a TCP instance are also configured in TCPWrap::Initialize. The `shutdown` method is set up using the 
+following call:
+
+    StreamWrap::AddMethods(env, t, StreamBase::kFlagHasWritev);
+
+`src/stream_base-inl.h` contains the shutdown method:
+
+    env->SetProtoMethod(t, "shutdown", JSMethod<Base, &StreamBase::Shutdown>); 
+
+So we are using a referece to StreamBase::Shutdown which can be found in src/stream_base.cc:
+
+   int StreamBase::Shutdown(const FunctionCallbackInfo<Value>& args) {
+     Environment* env = Environment::GetCurrent(args);
+ 
+     CHECK(args[0]->IsObject());
+     Local<Object> req_wrap_obj = args[0].As<Object>();
+
+     ShutdownWrap* req_wrap = new ShutdownWrap(env,
+                                               req_wrap_obj,
+                                               this,
+                                               AfterShutdown);
+
+The Shutdown constructor delegates to ReqWrap:
+
+    ReqWrap(env, req_wrap_obj, AsyncWrap::PROVIDER_SHUTDOWNWRAP),
+
+Which delegates to AsyncWrap:
+
+    AsyncWrap(env, req_wrap_obj, AsyncWrap::PROVIDER_SHUTDOWNWRAP),
+
+Which delegates to BaseObject:
+
+    BaseObject(env, req_wrap_obj)
+
+req_wrap_obj is refered to handle in BaseObject and is made into a persistent V8 handle
+
+`AfterShutdown` is of type typedef void (*DoneCb)(Req* req, int status). This callback is passed to the constructor of 
+StreamReq:
+
+    StreamReq<ShutdownWrap>(cb)
+
+This will simply store the callback in a private field.
+
+The `StreamBase` instance (`this` in the call above) will be set as a private member of Shutdown wrap.
+There is a single function call in the constructor which is:
+
+    Wrap(req_wrap_obj, this);
+
+    void Wrap(v8::Local<v8::Object> object, TypeName* pointer) {
+      CHECK_EQ(false, object.IsEmpty());
+      CHECK_GT(object->InternalFieldCount(), 0);
+      object->SetAlignedPointerInInternalField(0, pointer);
+    }
+
+So we are setting the ShutdownWrap instance pointer on the V8 local object. So wrap means that we are wrapping the ShutdownWrap instance
+in the req_warp_obj.
 
 ### Building and running the tests
 
