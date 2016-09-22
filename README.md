@@ -303,6 +303,7 @@ In the Start method we can see a block with the creation of a new NodeInstanceDa
       StartNodeInstance(&instance_data);
       exit_code = instance_data.exit_code();
     }	
+
 There are two NodeInstanceTypes, MAIN and WORKER.
 The second argument is the libuv event loop to be used.
 
@@ -570,6 +571,14 @@ To create an Environment we need to have an v8::Isolate instance and also an Iso
 
      inline Environment(IsolateData* isolate_data, v8::Local<v8::Context> context);
 
+Such a call can be found during startup: 
+
+    (lldb) bt
+      * thread #1: tid = 0x946796, 0x00000001008fa39f node`node::Start(int, char**) + 307 at node.cc:4390, queue = 'com.apple.main-thread', stop reason = step over
+        * frame #0: 0x00000001008fa39f node`node::Start(int, char**) + 307 at node.cc:4390
+          frame #1: 0x00000001008fa26c node`node::Start(argc=<unavailable>, argv=0x0000000102a00000) + 205 at node.cc:4503
+          frame #2: 0x0000000100000b34 node`start + 52
+
 See IsolateData for details about that class and the members that are proxied through via an Environment instance.
 
 An Environment has a number of nested classes:
@@ -625,7 +634,8 @@ So, we can see that `AssignToContext` is setting the environment on the passed-i
       context->SetAlignedPointerInEmbedderData(kContextEmbedderDataIndex, this);
     }
 
-So this how the Environment is associated with the context, and this enable us to get the environement for a context above. The argument to `SetAlignedPointerInEmbedderData` is a void pointer so it can be anything you want. The data is stored in a V8 FixedArray, the `kContextEmbedderDataIndex` is the index into this array (I think, still learning here).
+So this how the Environment is associated with the context, and this enable us to get the environment for a context above. The argument to `SetAlignedPointerInEmbedderData` is a void pointer so it can be anything you want. 
+The data is stored in a V8 FixedArray, the `kContextEmbedderDataIndex` is the index into this array (I think, still learning here).
 TODO: read up on how this FixedArray and alignment works.
 
 There are also static methods to get the Environment using a context.
@@ -725,7 +735,6 @@ Using the example above we can see that `Length` should be 0 as we did not pass 
 
 So this is where the instance of TCPWrap is created. Notice `a.This()` which is passed all the wway up to BaseObject's constructor and made into a persistent handle.
 
-
 ### NewFunctionTemplate
 NewFunctionTemplate in env.h specifies a default value for the second parameter `v8::Local<v8::Signature>() so it does not have to be specified. 
 
@@ -792,7 +801,8 @@ This method is defined in stream_wrap.cc:
     env->SetProtoMethod(target, "setBlocking", SetBlocking);
     StreamBase::AddMethods<StreamWrap>(env, target, flags);
 
-I've been wondering about the class names that end with Wrap and what they are wrapping. My thinking now is that they are wrapping libuv things. For instance, take StreamWrap, in libuv src/unix/stream.c which is what SetBlocking calls:
+I've been wondering about the class names that end with Wrap and what they are wrapping. My thinking now is that they are wrapping libuv things. For instance, take StreamWrap, 
+in libuv src/unix/stream.c which is what SetBlocking calls:
 
      void StreamWrap::SetBlocking(const FunctionCallbackInfo<Value>& args) {
        StreamWrap* wrap;
@@ -890,15 +900,17 @@ In HandleWrap's constructor the HandleWrap is added to the queue of HandleWraps 
 
 Here we can see that we are setting a pointer in field 0. The `object` in question, and `pointer` the pointer to this HandleWrap.
 
-persistent().Reset will destroy the underlying storage cell if it is non-empty, and create
-a new one the handle.
+persistent().Reset will destroy the underlying storage cell if it is non-empty, and create a new one the handle.
+
 MakeWeak:
 
      inline void MakeWeak(void) {
        persistent().SetWeak(this, WeakCallback, v8::WeakCallbackType::kParameter);
        persistent().MarkIndependent();
     }
-The above is installing a finalization callback on the persistent object. Marking the persistent object as independant means that the GC is free to ignore object groups containing this persistent object. Why is this done? I don't know enough about the V8 GC yet to answer this.
+
+The above is installing a finalization callback on the persistent object. Marking the persistent object as independant means that the GC is free to ignore object 
+groups containing this persistent object. Why is this done? I don't know enough about the V8 GC yet to answer this.
 
 The callback may be called (best effort) and it looks like this:
 
@@ -968,6 +980,11 @@ You may remember seeing this `async_hooks_init_function` in env.h:
 Lets back up a little, AsyncWrap is a builtin so the first function to be called will be its Async::Initialize function.
 
     env->SetMethod(target, "setupHooks", SetupHooks);
+    env->SetMethod(target, "disable", DisableHooksJS);
+    env->SetMethod(target, "enable", EnableHooksJS);
+
+### SetupHooks
+
 
 ### IsolateData
 Has a public constructor that takes a pointer to Isolate, a pointer to uv_loop_t, and a pointer to uint32 zero_fill_field.
@@ -1458,7 +1475,7 @@ So back to our call using ContainerOf which will invoke:
     }
 
 First, note that the parameter `field` is a pointer-to-member, which gives the offset of the member within the class object as opposed to using the
-address of operator on a data member bound to an actual class object which yields the member's actual address in memory.
+address-of operator on a data member bound to an actual class object which yields the member's actual address in memory.
 `uintptr_t` is an unsigned int that is capable of storing a pointer. Such a type can be used when you need to perform integer operations on a pointer.
 [reinterpret_cast](http://en.cppreference.com/w/cpp/language/reinterpret_cast) is a compiler directive which instructs the compiler to treat the sequence
 of bits as if it had the new type:
@@ -1479,11 +1496,101 @@ of those members.
 So we creating a pointer to Outer which by using the offset of the field and substracting that from `pointer`. So when using a pointer and dereferencing 
 `field` this will point to same value of `pointer`
 
-### Share AfterWrite with with udb_wrap and stream_wrap 
+
+Why does the protected field req_ have to be last:
+
+    Command: out/Release/node /Users/danielbevenius/work/nodejs/node/test/parallel/test-child-process-stdio-big-write-end.js
+    --- CRASHED (Signal: 10) ---
+    === release test-cluster-disconnect ===
+    Path: parallel/test-cluster-disconnect
+    /Users/danielbevenius/work/nodejs/node/out/Release/node[84341]: ../src/connection_wrap.cc:83:static void node::ConnectionWrap<node::TCPWrap, uv_tcp_s>::AfterConnect(uv_connect_t *, int) [WrapType = node::TCPWrap, UVType = uv_tcp_s]: Assertion `(req_wrap->env()) == (wrap->env())' failed.
+     1: node::Abort() [/Users/danielbevenius/work/nodejs/node/out/Release/node]
+     2: node::RunMicrotasks(v8::FunctionCallbackInfo<v8::Value> const&) [/Users/danielbevenius/work/nodejs/node/out/Release/node]
+     3: node::ConnectionWrap<node::TCPWrap, uv_tcp_s>::AfterConnect(uv_connect_s*, int) [/Users/danielbevenius/work/nodejs/node/out/Release/node]
+     4: uv__stream_io [/Users/danielbevenius/work/nodejs/node/out/Release/node]
+     5: uv__io_poll [/Users/danielbevenius/work/nodejs/node/out/Release/node]
+     6: uv_run [/Users/danielbevenius/work/nodejs/node/out/Release/node]
+     7: node::Start(int, char**) [/Users/danielbevenius/work/nodejs/node/out/Release/node]
+     8: start [/Users/danielbevenius/work/nodejs/node/out/Release/node]
+     9: 0x2
+
+"req_wrap_queue_ needs to be at a fixed offset from the start of the struct because it is used by ContainerOf to calculate the address of the embedding ReqWrap.
+ContainerOf compiles down to simple, fixed pointer arithmetic. sizeof(req_) depends on the type of T, so req_wrap_queue_ would no longer be at a fixed offset if it came after req_."
+
+This is what ReqWrap currently looks like:
+
+     private:
+      friend class Environment;
+      ListNode<ReqWrap> req_wrap_queue_;
+
+Notice that this is not a pointer and when a ReqWrap instance is created the ListNode::ListNode() constructor will be called:
+
+    template <typename T>
+    ListNode<T>::ListNode() : prev_(this), next_(this) {}
+
+So every instance will have it's own doubly link linked list and each entry contains a ReqWrap instance which has a type T member. Depending on the type of T
+the size of the ReqWrap object in memory will be different. So it would not be possible to have req_wrap_queue after req_, or req_ before req_wrap_queue as this
+would make the offset different during runtime (compile time would still work fine).
+
+Every Environment instance has the following queues:
+
+    HandleWrapQueue handle_wrap_queue_;
+    ReqWrapQueue req_wrap_queue_; 
+
+And a typedef for this is created using a pointer-to-member: 
+
+    typedef ListHead<ReqWrap<uv_req_t>, &ReqWrap<uv_req_t>::req_wrap_queue_> ReqWrapQueue;
+
+Each time a instance of ReqWrap is created that instance will be added to the queue:
+
+    env->req_wrap_queue()->PushBack(reinterpret_cast<ReqWrap<uv_req_t>*>(this));
+
+
+
+
+### Share AfterWrite with with udp_wrap and stream_wrap 
 So, the task is basically to follow this comment in udb_wrap.cc:
 
     // TODO(bnoordhuis) share with StreamWrap::AfterWrite() in stream_wrap.cc
     void UDPWrap::OnSend(uv_udp_send_t* req, int status) {
+
+At first glance this don't look that similar that they could be shared:
+
+     void UDPWrap::OnSend(uv_udp_send_t* req, int status) {
+       SendWrap* req_wrap = static_cast<SendWrap*>(req->data);
+       if (req_wrap->have_callback()) {
+         Environment* env = req_wrap->env();
+         HandleScope handle_scope(env->isolate());
+         Context::Scope context_scope(env->context());
+         Local<Value> arg[] = {
+           Integer::New(env->isolate(), status),
+           Integer::New(env->isolate(), req_wrap->msg_size),
+         };
+         req_wrap->MakeCallback(env->oncomplete_string(), 2, arg);
+      }
+      delete req_wrap;
+    }
+
+    void StreamWrap::AfterWrite(uv_write_t* req, int status) {
+      WriteWrap* req_wrap = ContainerOf(&WriteWrap::req_, req);
+      HandleScope scope(req_wrap->env()->isolate());
+      Context::Scope context_scope(req_wrap->env()->context());
+      req_wrap->Done(status);
+    }
+
+First thing to notice is the checking for a callback, StreamWrap::AfterWrite seems to assume that there will
+always be a callback by looking at `req_wrap->Done`:
+
+      inline void Done(int status, const char* error_str = nullptr) {
+         Req* req = static_cast<Req*>(this);
+         Environment* env = req->env();
+         if (error_str != nullptr) {
+           req->object()->Set(env->error_string(), OneByteString(env->isolate(), error_str));
+         }
+        cb_(req, status);
+      }
+
+
 
 
 ## Compiling the test in this project
@@ -1496,6 +1603,23 @@ When `DoShutdown` is called the last thing that is done is:
 
 which will set req_.data = this; this being the Shutdown wrap instance. Later when the `AfterShutdown` method is called that instance will be available 
 by using the req->data.
+
+
+### Stream class hierarchy
+
+    class TTYWrap : public StreamWrap
+
+    class PipeWrap : public ConnectionWrap<PipeWrap, uv_pipe_t>
+    class TCPWrap : public ConnectionWrap<TCPWrap, uv_tcp_t>
+    
+    class ConnectionWrap : public StreamWrap
+    class StreamWrap : public HandleWrap, public StreamBase
+    class HandleWrap : public AsyncWrap
+    class AsyncWrap : public BaseObject
+    class BaseObject
+
+    class StreamBase : public StreamResource
+    class StreamResource
 
 
 ### Wrapped 
@@ -1665,6 +1789,7 @@ While I did not see any failures on my local machine during development the CI s
 
 My understanding/assumption was that these two would be equivalent. So what is doing on?
 Let's start by taking a look a the inheritance tree and the various destructors:
+
 
     class ConnectionWrap : public StreamWrap
       protected:
