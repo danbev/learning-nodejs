@@ -314,6 +314,359 @@ A new Isolate is created. Remember that an Isolate is an independant copy of the
 
     Environment* env = CreateEnvironment(isolate, context, instance_data);
 
+
+### Environment
+
+    (node::Environment) $30 = {
+	  isolate_ = 0x0000000104803c00
+	  isolate_data_ = 0x00007fff5fbfdd98
+	  immediate_check_handle_ = {
+	    data = 0x00000001020ecc2f
+	    loop = 0x00000001020bc0d0
+	    type = UV_CHECK
+	    close_cb = 0x0000000000000002
+	    handle_queue = ([0] = 0x00007fff5fbfe1b0, [1] = 0x0000000103d01090)
+	    u = {
+	      fd = 1606526224
+	      reserved = ([0] = 0x00007fff5fc1a510, [1] = 0x00000001020ecc2f, [2] = 0x5800000000000000, [3] = 0x00007fff5fc2c28d)
+	    }
+	    next_closing = 0x0000000000000000
+	    flags = 0
+	    check_cb = 0x0000000000000000
+	    queue = ([0] = 0x00000001020ecc2f, [1] = 0x00007fff5fc395c8)
+	  }
+	  immediate_idle_handle_ = {
+	    data = 0x00007fff9171c119
+	    loop = 0x00000001020bc0d0
+	    type = UV_IDLE
+	    close_cb = 0x0000000000000000
+	    handle_queue = ([0] = 0x00007fff5fbfe228, [1] = 0x00007fff5fbfe138)
+	    u = {
+	      fd = 225
+	      reserved = ([0] = 0x00000000000000e1, [1] = 0x0000000000000000, [2] = 0x0000003000000018, [3] = 0x00007fff5fbfe8e0)
+	    }
+	    next_closing = 0x0000000000000000
+	    flags = 8192
+	    idle_cb = 0x0000000000000000
+	    queue = ([0] = 0x00007fff9171c262, [1] = 0x000000000000037f)
+	  }
+	  idle_prepare_handle_ = {
+	    data = 0x0000000000000000
+	    loop = 0x00000001020bc0d0
+	    type = UV_PREPARE
+	    close_cb = 0x0000000000000000
+	    handle_queue = ([0] = 0x00007fff5fbfe2a0, [1] = 0x00007fff5fbfe1b0)
+	    u = {
+	      fd = 65535
+	      reserved = ([0] = 0x000000000000ffff, [1] = 0x0000000000000000, [2] = 0x0000000000000000, [3] = 0x0000000000000000)
+	    }
+	    next_closing = 0x0000000000000000
+	    flags = 0
+	    prepare_cb = 0x0000000000000000
+	    queue = ([0] = 0x0000000000000000, [1] = 0x000000000000ffff)
+	  }
+	  idle_check_handle_ = {
+	    data = 0x000000000163d327 91091
+	    loop = 0x00000001020bc0d0
+	    type = UV_CHECK
+	    close_cb = 0x000000000000ffff
+	    handle_queue = ([0] = 0x00007fff5fbfe330, [1] = 0x00007fff5fbfe228)
+	    u = {
+	      fd = 0
+	      reserved = ([0] = 0x41f0000000000000, [1] = 0x0000000000000000, [2] = 0xfff0000000000000, [3] = 0x0000000000000000)
+	    }
+	    next_closing = 0x0000000000000000
+	    flags = 0
+	    check_cb = 0x0000000000000000
+	    queue = ([0] = 0x0000000000000000, [1] = 0x0000000000000000)
+	  }
+	  async_hooks_ = {
+	    fields_ = ([0] = 0)
+	  }
+	  domain_flag_ = {
+	    fields_ = ([0] = 0)
+	  }
+	  tick_info_ = {
+	    fields_ = ([0] = 1, [1] = 1)
+	  }
+	  timer_base_ = 35071002
+	  cares_timer_handle_ = {
+	    data = 0x0000000000000000
+	    loop = 0x00000001020bc0d0
+	    type = UV_TIMER
+	    close_cb = 0x00007fff5fbfe460
+	    handle_queue = ([0] = 0x0000000103a08d70, [1] = 0x00007fff5fbfe2a0)
+	    u = {
+	      fd = -1
+	      reserved = ([0] = 0xffffffffffffffff, [1] = 0x0000000000000000, [2] = 0x00007fff5fbfe440, [3] = 0x00007fff9dd486c1)
+	    }
+	    next_closing = 0x0000000000000000
+	    flags = 8192
+	    timer_cb = 0x0000000000000000
+	    heap_node = ([0] = 0x0000000000000000, [1] = 0x0000000000000000, [2] = 0x0000000000000000)
+	    timeout = 0
+	    repeat = 0
+	    start_id = 0
+	  }
+	  cares_channel_ = 0x0000000104862a00
+	  cares_task_list_ = {
+	    rbh_root = 0x0000000000000000
+	  }
+	  using_domains_ = false
+	  printed_error_ = false
+	  trace_sync_io_ = false
+	  makecallback_cntr_ = 1
+	  async_wrap_uid_ = 5
+	  debugger_agent_ = {
+	    state_ = kNone
+	    host_ = ""
+	    port_ = 5858
+	    wait_ = false
+	    start_sem_ = 6915
+	    message_mutex_ = {
+	      mutex_ = (__sig = 1297437784, __opaque = char [56] @ 0x00007fbdf8fd2300)
+	    }
+	    child_signal_ = {
+	      data = 0x00007fff5fbfe640
+	      loop = 0x00007fff9dd2c90d
+	      type = UV_UNKNOWN_HANDLE
+	      close_cb = 0x00000001016cf371 ("native function %s();")
+	      handle_queue = ([0] = 0x0000000103a05416, [1] = 0x0000001c00000000)
+	      u = {
+		fd = -65016
+		reserved = ([0] = 0x00000000ffff0208, [1] = 0x0000000103a05401, [2] = 0x0000000000000031, [3] = 0x0000000000000000)
+	      }
+	      next_closing = 0x0000000000000000
+	      flags = 0
+	      async_cb = 0x0000000000000000
+	      queue = ([0] = 0x0000000000000000, [1] = 0x0000000000000000)
+	      pending = 0
+	    }
+	    thread_ = 0x0000000000000000
+	    parent_env_ = 0x00007fff5fbfe108
+	    child_env_ = 0x0000000000000000
+	    child_loop_ = {
+	      data = 0x0000000000000000
+	      active_handles = 0
+	      handle_queue = ([0] = 0x0000000000000000, [1] = 0x0000000000000000)
+	      active_reqs = ([0] = 0x0000000000000000, [1] = 0x0000000000000000)
+	      stop_flag = 0
+	      flags = 0
+	      backend_fd = 0
+	      pending_queue = ([0] = 0x0000000000000000, [1] = 0x0000000000000000)
+	      watcher_queue = ([0] = 0x0000000000000000, [1] = 0x0000000000000000)
+	      watchers = 0x0000000000000000
+	      nwatchers = 850045858
+	      nfds = 0
+	      wq = ([0] = 0x0000000000000000, [1] = 0x0000000000000000)
+	      wq_mutex = (__sig = 0, __opaque = char [56] @ 0x00007fbdf8fd2460)
+	      wq_async = {
+		data = 0x0000000000000000
+		loop = 0x0000000000000000
+		type = UV_UNKNOWN_HANDLE
+		close_cb = 0x0000000000000000
+		handle_queue = ([0] = 0x0000000000000000, [1] = 0x0000000000000000)
+		u = {
+		  fd = 0
+		  reserved = ([0] = 0x0000000000000000, [1] = 0x0000000000000000, [2] = 0x0000000000000000, [3] = 0x0000000000000000)
+		}
+		next_closing = 0x0000000000000000
+		flags = 0
+		async_cb = 0x0000000000000000
+		queue = ([0] = 0x0000000000000000, [1] = 0x25005f840b8bedf7)
+		pending = 1606412464
+	      }
+	      cloexec_lock = (__sig = 4355806209, __opaque = char [192] @ 0x00007fbdf8fd2520)
+	      closing_handles = 0x00000001016cf371
+	      process_handles = ([0] = 0x0000000103a05401, [1] = 0x0000000000000032)
+	      prepare_handles = ([0] = 0x00007fff5fbfe8d0, [1] = 0x0000000100fca44c)
+	      check_handles = ([0] = 0x0000000000000000, [1] = 0x00007fff5fbfe8b0)
+	      idle_handles = ([0] = 0x0000003200000015, [1] = 0x00000001016cf371)
+	      async_handles = ([0] = 0x00000001016cf36e, [1] = 0x00000001016cf36e)
+	      async_watcher = {
+		cb = 0x00000000fffffff0
+		io_watcher = {
+		  cb = 0x0000000103a05401
+		  pending_queue = ([0] = 0x0000000000000000, [1] = 0x0000ff0000000000)
+		  watcher_queue = ([0] = 0x41f0000000000000, [1] = 0x0000000000000000)
+		  pevents = 0
+		  events = 4293918720
+		  fd = 0
+		  rcount = 0
+		  wcount = 0
+		}
+		wfd = 0
+	      }
+	      timer_heap = (min = 0x0000000000000000, nelts = 0)
+	      timer_counter = 4354165248
+	      time = 3
+	      signal_pipefd = ([0] = 59183104, [1] = 1)
+	      signal_io_watcher = {
+		cb = 0x0000000103878600
+		pending_queue = ([0] = 0x0000000000000001, [1] = 0x0000000103a045a3)
+		watcher_queue = ([0] = 0x00007fff5fbfe8c0, [1] = 0x00007fff90f14a26)
+		pevents = 59183104
+		events = 1
+		fd = 59213312
+		rcount = 1
+		wcount = 5
+	      }
+	      child_watcher = {
+		data = 0x0000000103a045a3
+		loop = 0x00007fff5fbfe8f0
+		type = -1863235034
+		close_cb = 0x0000000000001006
+		handle_queue = ([0] = 0x0000000000000010, [1] = 0x0000000000003c00)
+		u = {
+		  fd = 59197952
+		  reserved = ([0] = 0x0000000103874a00, [1] = 0x00007fff5fbfe850, [2] = 0x0000000103a05588, [3] = 0x00007fff5fbfe860)
+		}
+		next_closing = 0x0000000103878600
+		flags = 4102
+		signal_cb = 0x0000000000000010
+		signum = 1606412432
+		tree_entry = {
+		  rbe_left = 0x0000000000271ea7
+		  rbe_right = 0x0000000000000001
+		  rbe_parent = 0x000000000000002e
+		  rbe_color = 4102
+		}
+		caught_signals = 60882943
+		dispatched_signals = 1
+	      }
+	      emfile_fd = 1606412480
+	      cf_thread = 0x0000000000000000
+	      _cf_reserved = 0x0000000000000000
+	      cf_state = 0x0000000000000000
+	      cf_mutex = (__sig = 4354150400, __opaque = char [56] @ 0x00007fbdf8fd27b0)
+	      cf_sem = 1606412560
+	      cf_signals = ([0] = 0x00007fff90f130cc, [1] = 0x0000000103a05570)
+	    }
+	    api_ = {
+	      v8::PersistentBase<v8::Object> = (val_ = 0x0000000000000000)
+	    }
+	    messages_ = {
+	      head_ = {
+		prev_ = 0x00007fff5fbfe910
+		next_ = 0x00007fff5fbfe910
+	      }
+	    }
+	    dispatch_handler_ = 0x0000000000000000
+	  }
+	  inspector_agent_ = {
+	    impl = 0x0000000105003e00
+	  }
+	  handle_wrap_queue_ = {
+	    head_ = {
+	      prev_ = 0x00000001060015a8
+	      next_ = 0x0000000103a08cd8
+	    }
+	  }
+	  req_wrap_queue_ = {
+	    head_ = {
+	      prev_ = 0x00007fff5fbfe940
+	      next_ = 0x00007fff5fbfe940
+	    }
+	  }
+	  handle_cleanup_queue_ = {
+	    head_ = {
+	      prev_ = 0x0000000103a08388
+	      next_ = 0x0000000103d01128
+	    }
+	  }
+	  handle_cleanup_waiting_ = 0
+	  heap_statistics_buffer_ = 0x0000000000000000
+	  heap_space_statistics_buffer_ = 0x0000000000000000
+	  http_parser_buffer_ = 0x0000000000000000 <no value available>
+	  as_external_ = {
+	    v8::PersistentBase<v8::External> = (val_ = 0x0000000105010820)
+	  }
+	  async_hooks_destroy_function_ = {
+	    v8::PersistentBase<v8::Function> = (val_ = 0x0000000000000000)
+	  }
+	  async_hooks_init_function_ = {
+	    v8::PersistentBase<v8::Function> = (val_ = 0x0000000000000000)
+	  }
+	  async_hooks_post_function_ = {
+	    v8::PersistentBase<v8::Function> = (val_ = 0x0000000000000000)
+	  }
+	  async_hooks_pre_function_ = {
+	    v8::PersistentBase<v8::Function> = (val_ = 0x0000000000000000)
+	  }
+	  binding_cache_object_ = {
+	    v8::PersistentBase<v8::Object> = (val_ = 0x0000000105010840)
+	  }
+	  buffer_constructor_function_ = {
+	    v8::PersistentBase<v8::Function> = (val_ = 0x0000000000000000)
+	  }
+	  buffer_prototype_object_ = {
+	    v8::PersistentBase<v8::Object> = (val_ = 0x0000000105010a20)
+	  }
+	  context_ = {
+	    v8::PersistentBase<v8::Context> = (val_ = 0x0000000105010800)
+	  }
+	  domain_array_ = {
+	    v8::PersistentBase<v8::Array> = (val_ = 0x0000000000000000)
+	  }
+	  domains_stack_array_ = {
+	    v8::PersistentBase<v8::Array> = (val_ = 0x0000000000000000)
+	  }
+	  fs_stats_constructor_function_ = {
+	    v8::PersistentBase<v8::Function> = (val_ = 0x0000000105010fc0)
+	  }
+	  generic_internal_field_template_ = {
+	    v8::PersistentBase<v8::ObjectTemplate> = (val_ = 0x0000000105010880)
+	  }
+	  jsstream_constructor_template_ = {
+	    v8::PersistentBase<v8::FunctionTemplate> = (val_ = 0x0000000000000000)
+	  }
+	  module_load_list_array_ = {
+	    v8::PersistentBase<v8::Array> = (val_ = 0x0000000105010860)
+	  }
+	  pipe_constructor_template_ = {
+	    v8::PersistentBase<v8::FunctionTemplate> = (val_ = 0x0000000105011040)
+	  }
+	  process_object_ = {
+	    v8::PersistentBase<v8::Object> = (val_ = 0x00000001050108a0)
+	  }
+	  promise_reject_function_ = {
+	    v8::PersistentBase<v8::Function> = (val_ = 0x0000000105010c00)
+	  }
+	  push_values_to_array_function_ = {
+	    v8::PersistentBase<v8::Function> = (val_ = 0x0000000105010940)
+	  }
+	  script_context_constructor_template_ = {
+	    v8::PersistentBase<v8::FunctionTemplate> = (val_ = 0x00000001050108e0)
+	  }
+	  script_data_constructor_function_ = {
+	    v8::PersistentBase<v8::Function> = (val_ = 0x00000001050108c0)
+	  }
+	  secure_context_constructor_template_ = {
+	    v8::PersistentBase<v8::FunctionTemplate> = (val_ = 0x0000000000000000)
+	  }
+	  tcp_constructor_template_ = {
+	    v8::PersistentBase<v8::FunctionTemplate> = (val_ = 0x0000000105010ee0)
+	  }
+	  tick_callback_function_ = {
+	    v8::PersistentBase<v8::Function> = (val_ = 0x0000000105010c20)
+	  }
+	  tls_wrap_constructor_function_ = {
+	    v8::PersistentBase<v8::Function> = (val_ = 0x0000000000000000)
+	  }
+	  tls_wrap_constructor_template_ = {
+	    v8::PersistentBase<v8::FunctionTemplate> = (val_ = 0x0000000000000000)
+	  }
+	  tty_constructor_template_ = {
+	    v8::PersistentBase<v8::FunctionTemplate> = (val_ = 0x0000000105010f00)
+	  }
+	  udp_constructor_function_ = {
+	    v8::PersistentBase<v8::Function> = (val_ = 0x0000000105010e60)
+	  }
+	  write_wrap_constructor_function_ = {
+	    v8::PersistentBase<v8::Function> = (val_ = 0x0000000105010ec0)
+	  }
+	}
+
 #### CreateEnvironment(isolate, context, instance_data)
 
     Local<FunctionTemplate> process_template = FunctionTemplate::New(isolate);
@@ -695,6 +1048,11 @@ The `nm_context_register_func` is `node::TCPWrap::Initialize`, which is a static
                            v8::Local<v8::Context> context);
 
 
+    wrap_data->MakeCallback(env->onconnection_string(), arraysize(argv), argv);
+
+`env->onconnection_string() is a simple getter generated by the preprocessor by a macro in env-inl.h
+
+
 ### TCPWrap::Initialize
 First thing that happens is that the Environment is retreived using the current context.
 
@@ -862,8 +1220,24 @@ A persistent handle lives on the heap just like a local handle but it does not c
 to C++ scopes. You have to explicitly call Persistent::Reset. 
 
 
+### ReqWrap
+
+    class ReqWrap : public AsyncWrap
+
+cares_wrap.cc has a subclass named `GetAddrInfoReqWrap`
+node_file.cc has a subclass named `FSReqWrap`
+stream_base.cc has a subclass name `ShutDownWrap`
+stream_base.cc has a subclass name `WriteWrap`
+udp_wrap.cc has a subclass named `SendWrap` 
+connect_wrap.cc has a subclass named 'ConnectWrap` which is subclassed by PipeWrap and TCPWrap.
+
+
+### AsyncWrap
+
+
+
 ### HandleWrap
-HandleWrap represents a libuv handle. Take the following functions:
+HandleWrap represents a libuv handle which represents . Take the following functions:
 
     static void Close(const v8::FunctionCallbackInfo<v8::Value>& args);
     static void Ref(const v8::FunctionCallbackInfo<v8::Value>& args);
@@ -888,6 +1262,49 @@ Every uv_handle_t can have a [data member](http://docs.libuv.org/en/v1.x/handle.
 In HandleWrap's constructor the HandleWrap is added to the queue of HandleWraps in the Environment:
 
     env->handle_wrap_queue()->PushBack(this);
+
+libuv has the following types of handle types:
+
+   #define UV_HANDLE_TYPE_MAP(XX)                                               \
+    XX(ASYNC, async)                                                            \
+    XX(CHECK, check)                                                            \
+    XX(FS_EVENT, fs_event)                                                      \
+    XX(FS_POLL, fs_poll)                                                        \
+    XX(HANDLE, handle)                                                          \
+    XX(IDLE, idle)                                                              \
+    XX(NAMED_PIPE, pipe)                                                        \
+    XX(POLL, poll)                                                              \
+    XX(PREPARE, prepare)                                                        \
+    XX(PROCESS, process)                                                        \
+    XX(STREAM, stream)                                                          \
+    XX(TCP, tcp)                                                                \
+    XX(TIMER, timer)                                                            \
+    XX(TTY, tty)                                                                \
+    XX(UDP, udp)                                                                \
+    XX(SIGNAL, signal)                                                          \ 
+
+
+    struct uv_tcp_s {
+      UV_HANDLE_FIELDS
+      UV_STREAM_FIELDS
+      UV_TCP_PRIVATE_FIELDS
+    };
+
+We know that TCPWrap is a built-in module and that it's Initialize method is called, which sets up all the prototype functions available, 
+among them `listen`:
+
+    env->SetProtoMethod(t, "listen", Listen);
+
+And in `Listen` we find:
+
+    int backlog = args[0]->Int32Value();
+    int err = uv_listen(reinterpret_cast<uv_stream_t*>(&wrap->handle_),
+                        backlog,
+                        OnConnection);
+    args.GetReturnValue().Set(err);
+
+
+We can find a similarity in Node where TCPWrap indirectly also extends StreamWrap (which extends HandleWrap).
 
 ### Wrap
 
@@ -1073,7 +1490,7 @@ The -j is the number of processes to use.
 On mac you might find it popping up dialogs about the firwall blocking access to the `node` and `cctest` applications when running
 the tests. You can add exceptions by pointing to the `node` executable and `node/out/Release/cctest`. When doing this it seems you have to located the `node/out/Release` directory
 and then select the `node` executable.
-Note that you'll have to readd these after running './configure'
+Note that you'll have to read-add these after running './configure'
 
 
 ### Running a script
@@ -1160,7 +1577,6 @@ vm.runInThisContext
     if (depth === 0) stat.cache = new Map();
     var result = compiledWrapper.apply(this.exports, args);
 
-    
 
 #### Module.wrap
 This is declared as:
@@ -1229,6 +1645,9 @@ script.runInThisContext in vm.js overrides `runInThisContext` and then delegates
 So this is also how `exports`, `require`, `module`, `__filename`, and `__dirname` are made available
 to all scripts.
 
+After all this processing is done we will be back in node.cc and continue processing there. As everything is event driven the event loop start running
+and trigger callback for anything that has been set up by the script.
+
 ### Tasks
 
 #### Remove need to specify a no-operation immediate_idle_handle
@@ -1282,19 +1701,101 @@ It will also create a instance of Local<Object> exports which is the object that
 So, when the tcp_wrap.cc was Initialized (see section about Builtins):
 
     // Create FunctionTemplate for TCPConnectWrap.
-    Local<FunctionTemplate> cwt = FunctionTemplate::New(env->isolate(), NewConnectWrap);
+    auto constructor = [](const FunctionCallbackInfo<Value>& args) {
+      CHECK(args.IsConstructCall());
+    };
+    auto cwt = FunctionTemplate::New(env->isolate(), constructor);
     cwt->InstanceTemplate()->SetInternalFieldCount(1);
     cwt->SetClassName(FIXED_ONE_BYTE_STRING(env->isolate(), "TCPConnectWrap"));
     target->Set(FIXED_ONE_BYTE_STRING(env->isolate(), "TCPConnectWrap"), cwt->GetFunction());
 
-What is going on here. We create a new FunctionTemplate NewConnectWrap, this is then added to the target (the object that we are initializing).
-What is confusing me here is that NewConnectWrap only does a check:
+What is going on here. We create a new FunctionTemplate using the `constructor` lamba, this is then added to the target (the object that we are initializing).
+The constructor is only checking that the passed in args can be used as a constructor (using new in JavaScript)  
+The object returned from the constructor call does not have any methods as far as I can tell. 
+The constructor would late be used like this:
 
-   static inline void NewConnectWrap(const FunctionCallbackInfo<Value>& args) {
-    CHECK(args.IsConstructCall());
-   } 
+    var client = new TCP();
+    var req = new TCPConnectWrap();
+    var err = client.connect(req, '127.0.0.1', this.address().port);
 
-So this is only checking that the passed in args can be used as a constructor (using new in JavaScript)?  
+Now, we saw that TCP has a bunch of methods set up in Initialize, one of the being connect:
+
+    void TCPWrap::Connect(const FunctionCallbackInfo<Value>& args) {
+      ...
+      Local<Object> req_wrap_obj = args[0].As<Object>();
+
+This is the instance of TCPConnectWrap `req` created above and we can see that it is of type `v8::Local<v8::Local>`.
+
+    ConnectWrap* req_wrap = new ConnectWrap(env, req_wrap_obj, AsyncWrap::PROVIDER_TCPCONNECTWRAP);
+
+Remember that ConnectnWrap extends ReqWrap which extends AsyncWrap
+
+We know that ConnectWrap takes `Local<Object>` as the `req_wrap_obj`
+
+    err = uv_tcp_connect(req_wrap->req(), &wrap->handle_, reinterpret_cast<const sockaddr*>(&addr), AfterConnect);
+
+uv_tcp_connect takes a pointer `uv_connect_t` and a pointer to `uv_tcp_t` handle. This will connect to the specified `sockaddr_in` and the
+callback will be called when the connection has been established or if an error occurs. So it makes sense that ConnectWrap extends ReqWrap
+as uv_connect_t is a request type in libuv:
+
+    /* Request types. */
+    typedef struct uv_req_s uv_req_t;
+    typedef struct uv_getaddrinfo_s uv_getaddrinfo_t;
+    typedef struct uv_getnameinfo_s uv_getnameinfo_t;
+    typedef struct uv_shutdown_s uv_shutdown_t;
+    typedef struct uv_write_s uv_write_t;
+    typedef struct uv_connect_s uv_connect_t;         <--------------------
+    typedef struct uv_udp_send_s uv_udp_send_t;
+    typedef struct uv_fs_s uv_fs_t;
+    typedef struct uv_work_s uv_work_t;
+
+AsyncWrap extends BaseObject which 
+
+    (lldb) p *this
+    (node::BaseObject) $28 = {
+      persistent_handle_ = {
+        v8::PersistentBase<v8::Object> = (val_ = 0x0000000105010c60)
+      }
+      env_ = 0x00007fff5fbfe108
+    }
+
+So each BaseObject instance has a v8::Persistent<v8:Object>. This is a persistent object as it needs to be preserved accross C++ function boundries.
+Also, we can see that each BaseObject instance also has a node::Environment associated with it.
+The only thing that BaseObject's constructor does (baseobject-inl-h) is :
+
+    // The zero field holds a pointer to the handle. Immediately set it to
+    // nullptr in case it's accessed by the user before construction is complete.
+    if (handle->InternalFieldCount() > 0)
+      handle->SetAlignedPointerInInternalField(0, nullptr);
+
+So after we have returned to AsyncWraps constructor, and then ReqWrap's we are back in ConnectWrap's constructor:
+
+    Wrap(req_wrap_obj, this);
+
+`Wrap` in util-inl.h:
+
+    template <typename TypeName>
+    void Wrap(v8::Local<v8::Object> object, TypeName* pointer) {
+      CHECK_EQ(false, object.IsEmpty());
+      CHECK_GT(object->InternalFieldCount(), 0);
+      object->SetAlignedPointerInInternalField(0, pointer);
+    }
+
+We are now setting index 0 to the pointer which is the current 
+Object is the `v8::Local<v8::Object>`, the one we created in our JavaScript file and passed to the connect method named `req`:
+
+    var req = new TCPConnectWrap();
+    var err = client.connect(req, '127.0.0.1', this.address().port);
+
+So we are setting/storing a pointer to the ConnectWrap instance at index 0 of the `req_wrap_obj`.
+
+After all that we are ready to make the uv_tcp_connect call:
+
+    err = uv_tcp_connect(req_wrap->req(), &wrap->handle_, reinterpret_cast<const sockaddr*>(&addr), AfterConnect);
+
+We can see the callback is node::ConnectionWrap<node::TCPWrap, uv_tcp_s>::AfterConnect(uv_connect_s*, int)
+
+
 Notice that target is of type Local<Object>. 
 
     Local<Object> exports;
@@ -1310,10 +1811,32 @@ exports is what is returned to the caller.
 And we access the TCPConnectWrap member, which is a function which can be used as 
 a constructor by using new. Lets start with where is ConnectWrap called?
 It is called from tcp_wrap.cc and its Connect method.
-ConnectWrap extends ReqWrap which extens AsyncWrap which extens BaseObject
+ConnectWrap extends ReqWrap which extends AsyncWrap which extens BaseObject
 
     req.oncomplete = function(status, client_, req_) {
-    
+
+So, we know from earlier that our `req` object is basically empty. Here we are setting a property name `oncomplete` to be
+a function. This will be called in connection_wrap.cc 111:
+
+    req_wrap->MakeCallback(env->oncomplete_string(), arraysize(argv), argv);
+
+oncomplete_string() is a generated method from a macro in env.h
+
+    v8::Local<v8::Value> cb_v = object()->Get(symbol);
+    CHECK(cb_v->IsFunction());
+    return MakeCallback(cb_v.As<v8::Function>(), argc, argv);
+
+`object()` will return the persistent object to out handle (from base-object-inl.h) :
+
+    return PersistentToLocal(env_->isolate(), persistent_handle_);
+
+We can see that the `persistent_handle_` is the handle that was created using which makes sense as this 
+is the object that oncomplete was created for:
+
+    var req = new TCPConnectWrap();
+
+We are then calling Get(symbol) which will be a Symbol representing 'oncomplete'. And the calling it with number of arguments, and the
+arguments themselves.
 
 
 ### tcp\_wrap.cc
@@ -1425,9 +1948,6 @@ The thing to notice is the difference compared to tcp_wrap:
 
 TCPWrap always sets the readable and writable values to true where as PipeWrap checks if the handle is readble/writeble. Seems like a the TCPWrap will always
 be both readable and writable. 
-
-
-### ReqWrap
 
 
 ## Making ReqWrap req_ member private
@@ -1546,8 +2066,6 @@ Each time a instance of ReqWrap is created that instance will be added to the qu
     env->req_wrap_queue()->PushBack(reinterpret_cast<ReqWrap<uv_req_t>*>(this));
 
 
-
-
 ### Share AfterWrite with with udp_wrap and stream_wrap 
 So, the task is basically to follow this comment in udb_wrap.cc:
 
@@ -1571,12 +2089,15 @@ At first glance this don't look that similar that they could be shared:
       delete req_wrap;
     }
 
-    void StreamWrap::AfterWrite(uv_write_t* req, int status) {
-      WriteWrap* req_wrap = ContainerOf(&WriteWrap::req_, req);
-      HandleScope scope(req_wrap->env()->isolate());
-      Context::Scope context_scope(req_wrap->env()->context());
-      req_wrap->Done(status);
-    }
+`have_callback()` is a method on the SendWrap class and does not exist for WriteWrap.
+
+   void StreamWrap::AfterWrite(uv_write_t* req, int status) {
+    WriteWrap* req_wrap = WriteWrap::from_req(req);
+    CHECK_NE(req_wrap, nullptr);
+    HandleScope scope(req_wrap->env()->isolate());
+    Context::Scope context_scope(req_wrap->env()->context());
+    req_wrap->Done(status);
+  }
 
 First thing to notice is the checking for a callback, StreamWrap::AfterWrite seems to assume that there will
 always be a callback by looking at `req_wrap->Done`:
@@ -1590,11 +2111,6 @@ always be a callback by looking at `req_wrap->Done`:
         cb_(req, status);
       }
 
-
-
-
-## Compiling the test in this project
-First step is that Google Test needs to be added. Follow the steps in "Adding Google test to the project" before proceeding.
 
 
 When `DoShutdown` is called the last thing that is done is:
@@ -1701,6 +2217,9 @@ There is a single function call in the constructor which is:
 
 So we are setting the ShutdownWrap instance pointer on the V8 local object. So wrap means that we are wrapping the ShutdownWrap instance
 in the req_warp_obj.
+
+## Compiling the test in this project
+First step is that Google Test needs to be added. Follow the steps in "Adding Google test to the project" before proceeding.
 
 ### Building and running the tests
 
