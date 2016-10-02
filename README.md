@@ -30,6 +30,15 @@ The location of the library is `/usr/local/lib`, and `/usr/local/include` for th
 
     $ make -j4 test
 
+### Updating addons test
+Some of the addons tests are not version controlled but instead generate using:
+
+   $ ./node tools/doc/addon-verify.js doc/api/addons.md
+
+The source for these tests can be found in `doc/api/addons.md` and these might need to be updated if a 
+change to all tests is required, for a concrete example we wanted to update the build/Release/addon directory
+to be different depending on the build type (Debug/Release) and I forgot to update these tests.
+
 ### Starting Node
 To start and stop at first line in a js program use:
 
