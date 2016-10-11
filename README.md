@@ -1482,10 +1482,9 @@ Not sure exactly what this does but from a quick search it looks like it has to 
 An IsolateData (and also an Environement as it proxies these members)  actually has a lot of members, too many to list here it is easy to do a search for them.
 
 
+### Running lint
 
-
-### Running jslint
-
+    $ make lint
     $ make jslint
 
 ### Running tests
@@ -1508,12 +1507,17 @@ Lets take one of the tests and use it as an example:
 
     $ node-inspector
 
-Next connect to http://127.0.0.1:8080/?port=5858. This will not show anything apart from some empty tabs but this will get updated later when we 
-start debugging.
+With newer versions of Node.js the V8 Inspector is now available from Node.js (https://github.com/nodejs/node/pull/6792) and can be started using:
+
+    $ ./node --inspect --debug-brk
 
 Next, start `lldb` and 
 
     $ lldb -- out/Debug/node --debug-brk test/parallel/test-tcp-wrap-connect.js
+
+or with a newer version of Node.js use the built in V8 inspector:
+
+    $ lldb -- out/Debug/node --inspect --debug-brk test/parallel/test-tcp-wrap-connect.js
 
 Now, when a script is executed it will be read and loaded. Where is this done?
 To recap the loading is done by `LoadEnvironment` which loads and executes `lib/internal/bootstrap_node.js`. This is a function which is
@@ -2366,3 +2370,46 @@ it looks like GCC (G++) 4.8 is being used. The reason for asking is I did a sear
 If a class has no user-declared destructor, one is declared implicitly by the compiler and is called an implicitly-declared destructor. An implicitly-declared destructor is inline.
 Another aspect about destructors that is important to understand is that even if the body of a destructor is empty, it doesn’t mean that this destructor won’t execute any code. The C++ compiler augments the destructor with calls to destructors for bases and non-static data members
 
+
+### Chrome debugger
+Open developer tools from Chrome `CMD+OPT+I`
+
+#### Debugging
+`CMD+;`         step into
+`CMD+'`         step over
+`CMD+SHIFT+;`   step out
+`CMD+\`         continue
+`CTRL+.`        next call frame
+`CTRL+,`        previous call frame
+`CMD+B`         toggle breakpoint
+`CTRL+SHIFT+E`  run highlighted snipped and show output in console.
+
+#### Searching
+`CMD+F`         search current file
+`CMD+ALT+F`     search all sources
+`CMD+P`         go to source file. Opens a dialog where you can type in a file name
+`CTRL+G`        go to line
+
+#### Editor
+`SHIFT+CMD+P`   go to member
+`CMD+P`         open file
+
+`ESC`           toggle drawer
+`CTRL+~`        jump to console
+`CMD+[`         next panel
+`CMD+]`         previous panel
+`CMD+ALT+[`     next panel in history
+`CMD+ALT+]`     previous panel history
+`CMD+SHIFT+D`   toggle location of panels (separate screen/docked)
+`?`             show settings dialog
+                You can see all the shortcuts from here.
+`ESC`           close settings/dialog
+
+
+### Node Package Manager (NPM) 
+I was curious about what type of program it is. Looking at the shell script on my machine it is a simple wrapper that calls node with the javascript file being the shell script itself. Kinda like doing:
+
+    #!/bin/sh
+    // 2>/dev/null; exec "`dirname "~/.nvm/versions/node/v4.4.3/bin/npm"`/node" "$0" "$@"
+
+    console.log("bajja");
