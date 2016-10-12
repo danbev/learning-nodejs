@@ -2413,3 +2413,41 @@ I was curious about what type of program it is. Looking at the shell script on m
     // 2>/dev/null; exec "`dirname "~/.nvm/versions/node/v4.4.3/bin/npm"`/node" "$0" "$@"
 
     console.log("bajja");
+
+### Make
+GNU make has two phases. During the first phase it reads all the makefiles, and internalizes all variables. Make will expand any variables or functions in that section as the makefile is parsed. This is called
+immediate expansion since this happens during the first phase. The expansion is called deferred if it is not performed immediately.
+
+Take a look at this rule:
+
+    config.gypi: configure
+        if [ -f $@ ]; then
+                $(error Stale $@, please re-run ./configure)
+        else
+                $(error No $@, please run ./configure first)
+        fi
+
+The recipe in this case is a shell if statement, which is a deferred construct. But the control function `$(error)` is an immediate construct which will cause the makefile processing to stop processing.
+If I understand this correctly the only possible outcome of this rule is the Stale config.gypi message which will be done in the first phase and then exit. The shell condition will not be considered.
+
+For example, if we delete `config.gypi` we would expect the result to be an error saying that `No config.gypi, please run ./configure first`. But the result is:
+
+    Makefile:81: *** Stale config.gypi, please re-run ./configure.  Stop.
+
+Keep in mind that `config.gypi` is not a .PHONY target, so it is a file on the file system and if it is missing the recipe will be run.
+So we could use a simple echo statement and and exit to work around this:
+
+    config.gypi: configure
+        @if [ -f $@ ]; then \
+          echo Stale $@, please re-run ./$<; \
+        else \
+          echo No $@, please run ./$< first; \
+        fi
+        @exit 1;
+
+But that will produce the kind of ugly result:
+
+    $ make config.gypi
+    Stale config.gypi, please re-run ./configure
+    make: *** [config.gypi] Error 1
+
