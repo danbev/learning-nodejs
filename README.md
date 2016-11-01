@@ -28,7 +28,7 @@ The location of the library is `/usr/local/lib`, and `/usr/local/include` for th
 
 ### Running the Node.js tests
 
-    $ make -j4 test
+    $ make -j8 test
 
 ### Updating addons test
 Some of the addons tests are not version controlled but instead generate using:
@@ -225,6 +225,7 @@ We can find the implementation of this in `deps/v8/src/libplatform/default-platf
 The call is the same as was used in the hello_world example except here the size of the thread pool is being passed in 
 and in the hello_world the no arguments method was called. I only skimmed this part when I was working through that 
 example so it might be good to figure out what is going on here.
+
 An instance of DefaultPlatform is created and then its SetThreadPoolSize method is called with v8_thread_pool_size. When
 the size is not given it will default to `p SysInfo::NumberOfProcessors()`. 
 Next, EnsureInitialized is called which does a check to see if the instance has already been initilized and if not:
@@ -272,7 +273,6 @@ So a lock guard is an implementation of Resource Acquisition Is Initialization (
 calls lock on. When this instance goes out of scope its descructor will be called and it will call unlock guarenteeing that the mutex 
 will be unlocked even if an exception is thrown.
 The Mutex class can be found in deps/v8/src/base/platform/mutex.h. On a Unix system the mutex will be of type pthread_mutex_t
-
 
 We can verify this by inspecting the threads before and after 
 the calls.
@@ -762,7 +762,7 @@ I read that this file is actually precompiled, where/how?
 This file is referenced in node.gyp and is used with the target node_js2c. This target calls tools/js2c.py which is a tool for converting 
 JavaScript source code into C-Style char arrays. This target will process all the library_files specified in the variables section which 
 lib/internal/bootstrap_node.js is one of. The output of this out/Debug/obj/gen/node_natives.h, depending on the type of build being performed. 
-So lib/internal/bootstrap_node.js will beccome internal_bootstrap_node_native in node_natives.h. 
+So lib/internal/bootstrap_node.js will become internal_bootstrap_node_native in node_natives.h. 
 This is then later included in src/node_javascript.cc 
 
 We can see the contents of this in lldb using:
@@ -927,6 +927,27 @@ There is also `NM_F_LINKED` which are "Linked" modules includes as part of the n
 What are the differences here? 
 TODO: answer this question
 
+For a addon, the macro looks like:
+
+    NODE_MODULE(binding, init);
+
+    #define NODE_MODULE(modname, regfunc)                                 \
+      NODE_MODULE_X(modname, regfunc, NULL, 0)
+
+`NODE_MODULE_X` is identical `NODE_MODULE_CONTEXT_AWARE_X` apart from the type of the register function
+
+    typedef void (*addon_register_func)(
+      v8::Local<v8::Object> exports,
+      v8::Local<v8::Value> module,
+      void* priv);
+
+    typedef void (*addon_context_register_func)(
+      v8::Local<v8::Object> exports,
+      v8::Local<v8::Value> module,
+      v8::Local<v8::Context> context,
+      void* priv);
+
+
 
 ### Environment
 To create an Environment we need to have an v8::Isolate instance and also an IsolateData instance:
@@ -982,7 +1003,7 @@ So we are going to use the current context to get the Environment pointer, but t
     }
 
 Alright, now we are getting somewhere. Lets take a closer look at `context->GetAlignedPointerFromEmbedderData(kContextEmbedderDataIndex)`.
-We have to look at the EnvironmentConstructor to see where this is set:
+We have to look at the Environment constructor to see where this is set (env-inl.h):
 
     inline Environment::Environment(IsolateData* isolate_data, v8::Local<v8::Context> context) 
     ...
@@ -996,11 +1017,21 @@ So, we can see that `AssignToContext` is setting the environment on the passed-i
       context->SetAlignedPointerInEmbedderData(kContextEmbedderDataIndex, this);
     }
 
-So this how the Environment is associated with the context, and this enable us to get the environment for a context above. The argument to `SetAlignedPointerInEmbedderData` is a void pointer so it can be anything you want. 
+So this how the Environment is associated with the context, and this enables us to get the environment for a context above. 
+The argument to `SetAlignedPointerInEmbedderData` is a void pointer so it can be anything you want. 
 The data is stored in a V8 FixedArray, the `kContextEmbedderDataIndex` is the index into this array (I think, still learning here).
 TODO: read up on how this FixedArray and alignment works.
 
 There are also static methods to get the Environment using a context.
+
+So an Isolate is like single instance of V8 runtime.
+A Context is a separate execution context that does not know about other context.
+
+An Environment is a Node.js concept and multiple environments can exist within a single isolate.
+What I'm trying to figure out is how a AtExit callback can be registered with an environment, 
+and also how to force that callback to be called when that particular environment is about to
+exit. Currently, this is done with a thread-local, but if there are multiple environments per
+thread these will overwrite each other.
 
 #### ENVIRONMENT_STRONG_PERSISTENT_PROPERTIES
 
@@ -1501,6 +1532,28 @@ and then select the `node` executable.
 Note that you'll have to read-add these after running './configure'
 
 
+For some reason this seems to work for me:
+
+    #/bin/bash
+    FW="/usr/libexec/ApplicationFirewall/socketfilterfw"
+    # Duplicating these commands on purpose as the symbolic link node might be
+    # linked to either out/Debug/node or out/Release/node depending on the BUILDTYPE
+    $FW --remove $PWD/out/Debug/node
+    $FW --remove $PWD/out/Debug/node
+    $FW --remove $PWD/out/Release/node
+    $FW --remove $PWD/out/Release/node
+    $FW --listapps
+
+    $FW --add $PWD/out/Debug/node
+    $FW --add $PWD/out/Release/node
+    $FW --add $PWD/node
+
+    $FW --unblock $PWD/out/Debug/node
+    $FW --unblock $PWD/out/Release/node
+    $FW --unblock $PWD/node
+
+    $FW --listapps
+
 ### Running a script
 This section attempts to explain the process of running a javascript file. We will create a break point in the javascript source and see how it is executed.
 Lets take one of the tests and use it as an example:
@@ -1560,7 +1613,7 @@ the filename will be loaded using the file extension. Possible extensions are `.
 
     Module._extensions[extension](this, filename);
 
-We know are extension is `.js` so lets look closer at it:
+We know our extension is `.js` so lets look closer at it:
 
      // Native extension for .js
      Module._extensions['.js'] = function(module, filename) {
@@ -1581,7 +1634,7 @@ After removing the shebang from the `content` which is passed in as the first pa
       displayErrors: true
     });
 
-vm.runInThisContext
+vm.runInThisContext :
 
     var dirname = path.dirname(filename);
     var require = internalModule.makeRequireFunction.call(this);
@@ -1615,6 +1668,9 @@ We can see here that the content of our JavaScript file will be included/wrapped
 	// script content
     });'
 
+So this is also how `exports`, `require`, `module`, `__filename`, and `__dirname` are made available
+to all scripts.
+
 So, to recap we have a `wrapper` instance that is a function. The next thing that happens in `lib/modules.js` is:
 
     var compiledWrapper = vm.runInThisContext(wrapper, {
@@ -1623,7 +1679,7 @@ So, to recap we have a `wrapper` instance that is a function. The next thing tha
       displayErrors: true
     });
 
-So what does `vm.runInThisContext` do?
+So what does `vm.runInThisContext` do?  
 This is defined in `lib/vm.js`:
 
     exports.runInThisContext = function(code, options) {
@@ -1654,12 +1710,12 @@ script.runInThisContext in vm.js overrides `runInThisContext` and then delegates
      Environment* env = Environment::GetCurrent(args);
      EvalMachine(env, timeout, display_errors, break_on_sigint, args, &try_catch);
 
-
-So this is also how `exports`, `require`, `module`, `__filename`, and `__dirname` are made available
-to all scripts.
-
 After all this processing is done we will be back in node.cc and continue processing there. As everything is event driven the event loop start running
-and trigger callback for anything that has been set up by the script.
+and trigger callbacks for anything that has been set up by the script.
+
+### EvalMachine
+
+Script->Run in deps/v8/src/api.cc 
 
 ### Tasks
 
@@ -2450,4 +2506,124 @@ But that will produce the kind of ugly result:
     $ make config.gypi
     Stale config.gypi, please re-run ./configure
     make: *** [config.gypi] Error 1
+
+
+### AtExit
+    // TODO(bnoordhuis) Turn into per-context event.
+    4278 void RunAtExit(Environment* env) {
+
+
+What exactly is a AtExit function. An "AtExit" hook is a function that is invoked after the Node.js event loop has ended but before the JavaScript VM is terminated and Node.js shuts down.
+
+So in node.cc you can find:
+
+    void AtExit(void (*cb)(void* arg), void* arg) {
+
+This would be called like this:
+
+    static void callback(void* arg) {
+    }
+
+    AtExit(callback);
+
+    static AtExitCallback* at_exit_functions_;
+
+I notices that AtExist is declared in node.h:
+
+    NODE_EXTERN void RunAtExit(Environment* env);
+
+`NODE_EXTERN` is declared as:
+
+So the idea is that at_exit_functions_ should be a per-environment property rather than a global.
+Like bnoordhuis pointed out, AtExit does not take a pointer to an Environment but we have to add the callbacks to the Environment
+associated with the addon.
+Is the environemnt available when the addons init function is called?  
+
+To answer that question, what is the type contained in the init function of an addon?  
+
+    void init(Local<Object> target) {
+      AtExit(at_exit_cb1, target->CreationContext()->GetIsolate());
+    }
+ 
+    NODE_MODULE(binding, init);
+
+So a user will still have to call AtExit but instead of node.cc holding a static linked list of callbacks to call these should be
+added to the current environment.
+
+    void AtExit(void (*cb)(void* arg), void* arg) {
+
+So AtExit takes a function pointer as its first argument, and a void pointer as its second.
+The function pointer is to a function that returns void and takes a void pointer as an argument.
+
+mp->nm_register_func(exports, module, mp->nm_priv);
+
+The above call can be found in `DLOpen` in src/node.cc`. The first thing that happens in DLOpen is:
+
+    Environment* env = Environment::GetCurrent(args);
+
+I've covered the setting of the Environment in `AssignToContext` previously. This is done by the Environment contructor and by 
+node_contextify.cc. 
+
+Would it be safe to use GetCurrent using the isolate in 
+
+
+
+### Thread-local
+
+    static thread_local Environment* thread_local_env;
+
+The object is allocated when the thread begins and deallocated when the thread ends. Each thread has its own instance of the object. 
+Only objects declared thread_local have this storage duration.  thread_local can appear together with static or extern to adjust linkage.
+
+So we are specifying static only to specify that it should only have internal linkage, meaning that it can be referred to from all scopes in the current translation unit. It does not 
+mean that it is static as in "static storage" meaning that it would be allocated when the program begins and deallocated when the program ends.
+But without the static linkage it would be external by default which is not what we want.
+
+When used in a declaration of an object, it specifies static storage duration (except if accompanied by thread_local). When used in a declaration at 
+namespace scope, it specifies internal linkage.
+
+
+Using a `while(more == true)' :
+    0x1011d81a9 <+1177>: jmp    0x1011d81ae               ; <+1182> at node.cc:4453
+    0x1011d81ae <+1182>: movb   -0xd31(%rbp), %al         ; move byte value of -0xd31(%rpb) (move variable) into al register
+    0x1011d81b4 <+1188>: andb   $0x1, %al                 ; AND 1 and the content of move variable
+    0x1011d81b6 <+1190>: movzbl %al, %ecx                 ; conditional move into eax if zero
+    0x1011d81b9 <+1193>: cmpl   $0x1, %ecx                ; compare 1 and the contents of eax
+    0x1011d81bc <+1196>: je     0x1011d80e9               ; <+985> at node.cc:4437
+
+    0x1011d81c2 <+1202>: leaq   -0xd30(%rbp), %rdi
+    0x1011d81c9 <+1209>: callq  0x1002214e0               ; v8::SealHandleScope::~SealHandleScope at api.cc:926
+
+
+Compared to using `while(more)`:
+
+    0x1011d81a9 <+1177>: jmp    0x1011d81ae               ; <+1182> at node.cc:4453
+    0x1011d81ae <+1182>: testb  $0x1, -0xd31(%rbp)        ; AND 1 and more
+    0x1011d81b5 <+1189>: jne    0x1011d80e9               ; <+985> at node.cc:4437
+
+    0x1011d81bb <+1195>: leaq   -0xd30(%rbp), %rdi
+    0x1011d81c2 <+1202>: callq  0x1002214e0               ; v8::SealHandleScope::~SealHandleScope at api.cc:926
+
+
+#### Calling conventions
+Are the rules when making functions calls regarding how parameters are passed, who is responsible for cleaning up the stack, 
+how the return value is to be retrieved, and also how the function calls are decorated.
+
+### cdecl
+A calling convention that is used for standard C where the the stack must be cleaned up by the callee as there is support for varargs
+and there is now way for the called function to know the actual number of values pushed onto the stack before the function was called.
+Function name is decorated by prefixing it with an underscore character '_' .
+
+### stdcall
+Here arguments are fixed and the called function can to the stack clean up. The advantage here is that the stack clean up code is only
+done once in one place.
+Function name is decorated by prepending an underscore character and appending a '@' character and the number of bytes of stack space required.
+
+### Issue
+When running the Node.js build on windows (trying to get cctest to work for a test I added), I got the following link error:
+
+    env.obj : error LNK2001: unresolved external symbol 
+    "public: __cdecl node::Utf8Value::Utf8Value(class v8::Isolate *,class v8::Local<class v8::Value>)" (??0Utf8Value@node@@QEAA@PEAVIsolate@v8@@V?$Local@VValue@v8@@@3@@Z) [c:\workspace\node-compile-windows\label\win-vs2015\cctest.vcxproj]
+
+Now, we can see that the calling convention used is `__cdecl` but the name mangling does not look correct as it is using @@
 
