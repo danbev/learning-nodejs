@@ -27,7 +27,8 @@ v8_libs = $(v8_build_dir)/libv8_base.a                     \
 	  $(v8_build_dir)/libhttp_parser.a                 \
 	  $(v8_build_dir)/libopenssl.a                     \
 	  $(v8_build_dir)/libcares.a                       \
-	  $(v8_build_dir)/libzlib.a
+	  $(v8_build_dir)/libzlib.a                        \
+	  $(v8_build_dir)/libv8_libsampler.a
 
 node_obj = $(node_obj_dir)/async-wrap.o                    \
 	$(node_obj_dir)/backtrace_posix.o                  \
@@ -108,7 +109,7 @@ node_cc = c++ $(gtest_dont_defines)                        \
 	  $(node_defs)                                     \
 	  -g                                               \
 	  -std=gnu++0x                                     \
-	  -stdlib=libstdc++                                \
+          -stdlib=libc++                                   \
 	  -O0                                              \
 	  -gdwarf-2                                        \
 	  -mmacosx-version-min=10.7                        \
