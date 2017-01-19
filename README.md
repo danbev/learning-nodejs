@@ -50,7 +50,7 @@ Set a break point in node_main.cc:
     (lldb) run
 
 ### Walkthrough
-'node_main.cc will bascially call node::Start which we can find in src/node.cc.
+`node_main.cc` will bascially call node::Start which we can find in src/node.cc.
 
 #### Start(int argc, char** argv)
 Starts by calling PlatformInit
@@ -76,7 +76,7 @@ callback invoked. uv_async_init looks like this:
 
     int uv_async_init(uv_loop_t* loop, uv_async_t* async, uv_async_cb async_cb)
 
-To understand this better this standalone [example](https://github.com/danbev/learning-libuv/blob/master/thread.cc) helped my clarify things a bit.
+To understand this better this standalone [example](https://github.com/danbev/learning-libuv/blob/master/thread.c) helped my clarify things a bit.
 
     uv_unref(reinterpret_cast<uv_handle_t*>(&dispatch_debug_messages_async));
 
@@ -94,7 +94,7 @@ debugger messages.
 
 Parses the command line arguments passed. If you want to inspect them you can use:
 
-    p *(char(*)[1]) new_v8_argv
+    (lldb) p *(char(*)[1]) new_v8_argv
 
 This is something that I've not seen before either:
 
@@ -103,7 +103,7 @@ This is something that I've not seen before either:
     }
 
 What does uv_loop_configure do?
-It sets additional loop options. This [example](https://github.com/danbev/learning-libuv/blob/master/configure.cc) was used to look a little closer 
+It sets additional loop options. This [example](https://github.com/danbev/learning-libuv/blob/master/configure.c) was used to look a little closer 
 at it.
 
 
@@ -2564,6 +2564,45 @@ The above call can be found in `DLOpen` in src/node.cc`. The first thing that ha
 I've covered the setting of the Environment in `AssignToContext` previously. This is done by the Environment contructor and by 
 node_contextify.cc. 
 
+
+The only `Start` function exposed in node.h is the one that takes `argc` and `argv`. Calling node::Start multiple times does
+not work and result in the following error:
+
+# Fatal error in ../deps/v8/src/isolate.cc, line 2021
+# Check failed: thread_data_table_.
+#
+==== C stack trace ===============================
+
+    0   cctest                              0x0000000100324fce v8::base::debug::StackTrace::StackTrace() + 30
+    1   cctest                              0x0000000100325005 v8::base::debug::StackTrace::StackTrace() + 21
+    2   cctest                              0x000000010031dd94 V8_Fatal + 452
+    3   cctest                              0x0000000100cc053c v8::internal::Isolate::Isolate(bool) + 2092
+    4   cctest                              0x0000000100cc0ad5 v8::internal::Isolate::Isolate(bool) + 37
+    5   cctest                              0x0000000100370a59 v8::Isolate::New(v8::Isolate::CreateParams const&) + 41
+    6   cctest                              0x000000010003323f node::Start(uv_loop_s*, int, char const* const*, int, char const* const*) + 79
+    7   cctest                              0x0000000100032e38 node::Start(int, char**) + 200
+    8   cctest                              0x00000001000cdb33 EnvironmentTest_StartMultipleTimes_Test::TestBody() + 51
+    9   cctest                              0x000000010014089a void testing::internal::HandleSehExceptionsInMethodIfSupported<testing::Test, void>(testing::Test*, void (testing::Test::*)(), char const*) + 122
+    10  cctest                              0x00000001001190be void testing::internal::HandleExceptionsInMethodIfSupported<testing::Test, void>(testing::Test*, void (testing::Test::*)(), char const*) + 110
+    11  cctest                              0x0000000100118fa5 testing::Test::Run() + 197
+    12  cctest                              0x0000000100119f98 testing::TestInfo::Run() + 216
+    13  cctest                              0x000000010011b227 testing::TestCase::Run() + 231
+    14  cctest                              0x0000000100129ccc testing::internal::UnitTestImpl::RunAllTests() + 908
+    15  cctest                              0x00000001001444aa bool testing::internal::HandleSehExceptionsInMethodIfSupported<testing::internal::UnitTestImpl, bool>(testing::internal::UnitTestImpl*, bool (testing::internal::UnitTestImpl::*)(), char const*) + 122
+    16  cctest                              0x00000001001298be bool testing::internal::HandleExceptionsInMethodIfSupported<testing::internal::UnitTestImpl, bool>(testing::internal::UnitTestImpl*, bool (testing::internal::UnitTestImpl::*)(), char const*) + 110
+    17  cctest                              0x00000001001297b5 testing::UnitTest::Run() + 373
+    18  cctest                              0x0000000100147a81 RUN_ALL_TESTS() + 17
+    19  cctest                              0x0000000100147a5b main + 43
+    20  cctest                              0x00000001000010f4 start + 52
+make: *** [cctest] Illegal instruction: 4
+
+The Environment created when using the above start function is done in
+
+    inline int Start(Isolate* isolate, IsolateData* isolate_data,
+                     int argc, const char* const* argv,
+                     int exec_argc, const char* const* exec_argv) {
+
+
 Would it be safe to use GetCurrent using the isolate in 
 
 
@@ -2626,4 +2665,143 @@ When running the Node.js build on windows (trying to get cctest to work for a te
     "public: __cdecl node::Utf8Value::Utf8Value(class v8::Isolate *,class v8::Local<class v8::Value>)" (??0Utf8Value@node@@QEAA@PEAVIsolate@v8@@V?$Local@VValue@v8@@@3@@Z) [c:\workspace\node-compile-windows\label\win-vs2015\cctest.vcxproj]
 
 Now, we can see that the calling convention used is `__cdecl` but the name mangling does not look correct as it is using @@
+
+
+
+    process_title.len = argv[argc - 1] + strlen(argv[argc - 1]) - argv[0];
+
+This would be the same as :
+
+    (lldb) p (size_t) argv[argc-1] + (size_t) strlen(argv[argc-1]) - (size_t)argv[0]
+    (unsigned long) $9 = 56
+
+When in my unit test the same gives me:
+
+    (lldb) p (size_t) argv[argc-1] + (size_t) strlen(argv[argc-1]) - (size_t)argv[0]
+    (unsigned long) $10 = 34693
+
+What is happening is that we are taking the memory address of argv[argc-1] + 
+
+#### Debugging a Node addon
+The task a hand was to debug Realm's addon to see why test were just hanging even though I made sure to call Tape test's end function.
+So, realm is a normal dependency and exist in node_modules.
+
+Setup:
+
+    $ npm install --save realm
+    $ cd node_modules/realm
+    $ env REALMJS_USE_DEBUG_CORE=true node-pre-gyp install --build-from-source --debug
+    $ lldb -- node test/datastores/realm-store-test.js
+    (lldb) breakpoint set --file node_init.cpp --line 26
+
+It turns out that when breaking in the debugger (CTRL+C) and then stepping through it was in a kevent and this migth be some kind of
+listerner for events, and there is a realm.removeAllListeners() that can be called and this solved my issue.
+
+
+### Generate Your Project
+For node the various targets in node.gyp will generate make files in the `out` directory.
+For example the target named `cctest` will generate out/cctest.target.mk file.
+
+The issue I'm having is that I want to be able to write Google Test unit tests for Node source files and
+I'd prefer to use C++ instead of using addons and testing them for this. This is because the functionality 
+that I'm adding is intended for projects like Electron that embed Node. 
+So I'd like to have gyp generate the make files for the cctest target and be able to say that it should depend
+on the core node target and the linker should then be able to use the object files created by that target when
+it links the tests from the cctest target.
+
+
+### Profiling
+You can use Google V8's built in profiler using the `--prof` command line option:
+
+    $ out/Debug/node --prof test.js
+
+
+This will generate a file in the current directory named something like `isolate-0x104005e00-v8.log`.
+Now we can process this file:
+
+    $ export D8_PATH=~/work/google/javascript/v8/out/x64.debug
+    $ deps/v8/tools/mac-tick-processor isolate-0x104005e00-v8.log
+
+or you can use node's `---prof-process` option:
+
+    $ ./out/Debug/node --prof-process isolate-0x104005e00-v8.log
+
+    Statistical profiling result from isolate-0x104005e00-v8.log, (332 ticks, 86 unaccounted, 0 excluded).
+
+
+The profiler is sample based so with wakes up and takes a sample. The intervals that is wakes up is called a tick. It will look
+at where the instruction pointer is RIP and reports the function if that function can be resolved. If cannot resolve the function
+this will be reported as an unaccounted tick.
+
+    [Summary]:
+     ticks  total  nonlib   name
+        0    0.0%    0.0%  JavaScript
+      236   71.1%   73.3%  C++
+        4    1.2%    1.2%  GC
+       10    3.0%          Shared libraries
+       86   25.9%          Unaccounted
+
+We can see that `71.1%` of the time was spent in C++ code. Inspecting the C++ section you should be able to see were the most
+time is being spent and the sources.
+
+
+    [C++]:
+     ticks  total  nonlib   name
+       66   19.9%   20.5%  node::ContextifyScript::New(v8::FunctionCallbackInfo<v8::Value> const&)
+       20    6.0%    6.2%  node::Binding(v8::FunctionCallbackInfo<v8::Value> const&)
+        5    1.5%    1.6%  v8::internal::HandleScope::ZapRange(v8::internal::Object**, v8::internal::Object**)
+
+The `[Bottom up]` section shows us which the primary callers of the above are:
+
+
+    [Bottom up (heavy) profile]:
+    Note: percentage shows a share of a particular caller in the total amount of its parent calls.
+    Callers occupying less than 2.0% are not shown.
+
+     ticks parent  name
+       86   25.9%  UNKNOWN
+
+       66   19.9%  node::ContextifyScript::New(v8::FunctionCallbackInfo<v8::Value> const&)
+       66  100.0%    v8::internal::Builtin_HandleApiCall(int, v8::internal::Object**, v8::internal::Isolate*)
+       66  100.0%      LazyCompile: ~runInThisContext bootstrap_node.js:427:28
+       66  100.0%        LazyCompile: ~NativeModule.compile bootstrap_node.js:509:44
+       66  100.0%          LazyCompile: ~NativeModule.require bootstrap_node.js:443:34
+       15   22.7%            LazyCompile: ~startup bootstrap_node.js:12:19
+       11   16.7%            Function: ~<anonymous> module.js:1:11
+        8   12.1%            Function: ~<anonymous> stream.js:1:11
+        7   10.6%            LazyCompile: ~setupGlobalVariables bootstrap_node.js:192:32
+        6    9.1%            Function: ~<anonymous> util.js:1:11
+        6    9.1%            Function: ~<anonymous> tty.js:1:11
+        3    4.5%            LazyCompile: ~setupGlobalTimeouts bootstrap_node.js:226:31
+        2    3.0%            LazyCompile: ~createWritableStdioStream internal/process/stdio.js:134:35
+        2    3.0%            Function: ~<anonymous> fs.js:1:11
+        2    3.0%            Function: ~<anonymous> buffer.js:1:11
+
+LazyCompile: Simply means that the function was complied lazily and not that this was the time spent compiling.
+* before function name means that time is being spent in optimized function.
+~ before a function means that is was not optimized.
+
+The % in the parent column shows the percentage of samples for which the function in the row above was called by the
+function in the current row.
+So, 
+
+       66   19.9%  node::ContextifyScript::New(v8::FunctionCallbackInfo<v8::Value> const&)
+       66  100.0%    v8::internal::Builtin_HandleApiCall(int, v8::internal::Object**, v8::internal::Isolate*)
+
+would be read as when `v8::internal::Builting_HandleApiCall` was sampled it called node:ContextifyScript every time.
+And
+
+       66  100.0%          LazyCompile: ~NativeModule.require bootstrap_node.js:443:34
+       15   22.7%            LazyCompile: ~startup bootstrap_node.js:12:19
+that when startup in bootstrap_node.js was called, in 22% of the samples it called NativeModule.require.
+
+
+    [Shared libraries]:
+     ticks  total  nonlib   name
+        6    1.8%          /usr/lib/system/libsystem_kernel.dylib
+        2    0.6%          /usr/lib/system/libsystem_platform.dylib
+        1    0.3%          /usr/lib/system/libsystem_malloc.dylib
+        1    0.3%          /usr/lib/system/libsystem_c.dylib
+
+
 
