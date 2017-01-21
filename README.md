@@ -1103,7 +1103,37 @@ Next, a function template is created:
 Just to be clear `New` is the address of the function and we are just passing that to the NewFunctionTemplate method. It will use that address when creating a NewFunctionTemplate.
 
 ### TcpWrap::New
-New is set as the callback for when `new TCP()` is used, for example:
+This class is called TcpWrap because is wraps a libuv [uv_tcp_t](http://docs.libuv.org/en/v1.x/tcp.html) handle. 
+    
+    static void SetNoDelay(const v8::FunctionCallbackInfo<v8::Value>& args);
+    static void SetKeepAlive(const v8::FunctionCallbackInfo<v8::Value>& args);
+    static void Bind(const v8::FunctionCallbackInfo<v8::Value>& args);
+    static void Bind6(const v8::FunctionCallbackInfo<v8::Value>& args);
+    static void Listen(const v8::FunctionCallbackInfo<v8::Value>& args);
+    static void Connect(const v8::FunctionCallbackInfo<v8::Value>& args);
+    static void Connect6(const v8::FunctionCallbackInfo<v8::Value>& args);
+    static void Open(const v8::FunctionCallbackInfo<v8::Value>& args);
+
+Each of the functions above, for example `SetNoDelay` will all wrap a function call in libuv:
+
+    void TCPWrap::SetNoDelay(const FunctionCallbackInfo<Value>& args) {
+      TCPWrap* wrap;
+      ASSIGN_OR_RETURN_UNWRAP(&wrap,
+                              args.Holder(),
+                              args.GetReturnValue().Set(UV_EBADF));
+      int enable = static_cast<int>(args[0]->BooleanValue());
+      int err = uv_tcp_nodelay(&wrap->handle_, enable);
+      args.GetReturnValue().Set(err);
+    }
+
+When a new instance of this class is created it will initialize the handle which must be of type uv_tcp_t:
+
+    int r = uv_tcp_init(env->event_loop(), &handle_);
+
+Now, a uv_tcp_t could be used for [accepting](https://github.com/danbev/learning-libuv/blob/master/server.c) connection but also for 
+[connecting](https://github.com/danbev/learning-libuv/blob/master/client.c) to sockets. 
+
+When this is used in JavaScript is would look like this:
 
     var TCP = process.binding('tcp_wrap').TCP;
     var handle = new TCP();
@@ -1112,7 +1142,8 @@ When the second line is executed the callback `New` will be invoked. This is set
 
     target->Set(FIXED_ONE_BYTE_STRING(env->isolate(), "TCP"), t->GetFunction());
 
-New takes a single argument of type v8::FunctionCallbackInfo which holds information about the function call make. This is things like the number of arguments used, the arguments can be retreived using with the operator[]. `New` looks like this:
+New takes a single argument of type v8::FunctionCallbackInfo which holds information about the function call make. 
+This is things like the number of arguments used, the arguments can be retreived using with the operator[]. `New` looks like this:
 
     void TCPWrap::New(const FunctionCallbackInfo<Value>& a) {
       CHECK(a.IsConstructCall());
@@ -1128,11 +1159,79 @@ New takes a single argument of type v8::FunctionCallbackInfo which holds informa
       }
       CHECK(wrap);
     }
-
-Using the example above we can see that `Length` should be 0 as we did not pass any arguments to the TCP function. Just wondering, what could be passed as a parameter?  What ever it might look like it should be a pointer to an AsyncWrap.
+Like mentioned about when the constructor of TCPWrap is called it will initialize the uv_tcp_t handle.
+Using the example above we can see that `Length` should be 0 as we did not pass any arguments to the TCP function. Just wondering, what could be passed as a parameter?  
+What ever it might look like it should be a pointer to an AsyncWrap.
 
 So this is where the instance of TCPWrap is created. Notice `a.This()` which is passed all the wway up to BaseObject's constructor and made into a persistent handle.
 
+    const req = new TCPConnectWrap();
+    const err = client.connect(req, '127.0.0.1', this.address().port);
+
+Now, new TcpConnectWrap() is setup in TCPWrap::Initalize and the only thing that happens here is that it configured with a constructor that checks that this function
+is called with the `new` keyword. So there is really nothing else happening at this stage. But, when we call `client.connect` something interesting does happen:
+TCPWrap::Connect
+
+    if (err == 0) {
+    ConnectWrap* req_wrap =
+        new ConnectWrap(env, req_wrap_obj, AsyncWrap::PROVIDER_TCPCONNECTWRAP);
+    err = uv_tcp_connect(req_wrap->req(),
+                         &wrap->handle_,
+                         reinterpret_cast<const sockaddr*>(&addr),
+                         AfterConnect);
+    req_wrap->Dispatched();
+    if (err)
+      delete req_wrap;
+  }
+
+So we can see that we are creating a new ConnectWrap instance which extends AsyncWrap and also ReqWrap. Thinging about this makes sense I think. If we recall that the
+classed with Wrap in them wrap libuv concepts, and in this case we are going to make a tcp connection. If we look at our [client](https://github.com/danbev/learning-libuv/blob/master/client.c) 
+example we can see that we are using uv_connect_t make the connection (named `connection_req`):
+
+    r = uv_tcp_connect(&connect_req,
+                       &tcp_client,
+                       (const struct sockaddr*) &addr,
+                       connect_cb);
+    
+`tcp_client` in the above example is of type `uv_tcp_t`.
+But ConnectWrap also extend AsyncWrap. See the AsyncWrap section for details.
+What might be of interest and something to look into a little deeper is that ReqWrap will add the request wrap (wrapping a uv_req_t remember) to the current env req_wrap_queue. Keep in 
+mind that a reqest is shortlived.
+The last thing that the ConnectWrap constructor does is call Wrap:
+
+    Wrap(req_wrap_obj, this);
+
+Now, you might not remember what this `req_wrap_obj` is but was the first argument to `client.connect` and was the new `TCPConnectWrap` instance. But this was nothing more than a 
+constructor and nothing else:
+
+    (lldb) p req_wrap_obj
+    (v8::Local<v8::Object>) $34 = (val_ = 0x00007fff5fbfd018)
+    (lldb) p *(*req_wrap_obj)
+    (v8::Object) $35 = {}
+
+We can see that this is a v8::Local<v8::Object> and we are going to store the ConnectWrap instance in this object:
+
+    req_wrap_obj->SetAlignedPointerInInternalField(0, this);
+
+So why is this being done?   
+Well if you take a look in AfterConnect you can see that this will be accessed as passed as a parameter to the oncomplete function:
+
+    ConnectWrap* req_wrap = static_cast<ConnectWrap*>(req->data);
+    ...
+    Local<Value> argv[5] = {
+      Integer::New(env->isolate(), status),
+      wrap->object(),
+      req_wrap->object(),
+      Boolean::New(env->isolate(), readable),
+      Boolean::New(env->isolate(), writable)
+    };
+    req_wrap->MakeCallback(env->oncomplete_string(), arraysize(argv), argv);
+  
+This will then invoke the `oncomplete` callback set up on the `req` object:
+    
+      req.oncomplete = function(status, client_, req_, readable, writable) {
+      }
+       
 ### NewFunctionTemplate
 NewFunctionTemplate in env.h specifies a default value for the second parameter `v8::Local<v8::Signature>() so it does not have to be specified. 
 
