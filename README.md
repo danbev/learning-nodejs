@@ -1811,8 +1811,9 @@ script.runInThisContext in vm.js overrides `runInThisContext` and then delegates
 
 After all this processing is done we will be back in node.cc and continue processing there. As everything is event driven the event loop start running
 and trigger callbacks for anything that has been set up by the script.
-Just think about a V8 example you create yourself, you set up the c++ code that is to be called from JavaScript and then V8 takes care of the rest. In
-node code which uses libuv there are callbacks setup that are called by libuv and more actions taken, like invoking a JavaScript callback function.
+Just think about a V8 example you create yourself, you set up the c++ code that is to be called from JavaScript and then V8 takes care of the rest. 
+In node, the script is first wrapped in node specific JavaScript and then executed.  Node code uses libuv there are callbacks setup that are called 
+by libuv and more actions taken, like invoking a JavaScript callback function.
 
 ### EvalMachine
 
