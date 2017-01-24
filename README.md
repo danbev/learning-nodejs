@@ -2533,35 +2533,35 @@ Another aspect about destructors that is important to understand is that even if
 Open developer tools from Chrome `CMD+OPT+I`
 
 #### Debugging
-`CMD+;`         step into
-`CMD+'`         step over
-`CMD+SHIFT+;`   step out
-`CMD+\`         continue
-`CTRL+.`        next call frame
-`CTRL+,`        previous call frame
-`CMD+B`         toggle breakpoint
-`CTRL+SHIFT+E`  run highlighted snipped and show output in console.
+`CMD+;`         step into  
+`CMD+'`         step over  
+`CMD+SHIFT+;`   step out  
+`CMD+\`         continue  
+`CTRL+.`        next call frame  
+`CTRL+,`        previous call frame  
+`CMD+B`         toggle breakpoint  
+`CTRL+SHIFT+E`  run highlighted snipped and show output in console.  
 
 #### Searching
-`CMD+F`         search current file
-`CMD+ALT+F`     search all sources
-`CMD+P`         go to source file. Opens a dialog where you can type in a file name
-`CTRL+G`        go to line
+`CMD+F`         search current file  
+`CMD+ALT+F`     search all sources  
+`CMD+P`         go to source file. Opens a dialog where you can type in a file name  
+`CTRL+G`        go to line  
 
 #### Editor
-`SHIFT+CMD+P`   go to member
-`CMD+P`         open file
-
-`ESC`           toggle drawer
-`CTRL+~`        jump to console
-`CMD+[`         next panel
-`CMD+]`         previous panel
-`CMD+ALT+[`     next panel in history
-`CMD+ALT+]`     previous panel history
-`CMD+SHIFT+D`   toggle location of panels (separate screen/docked)
-`?`             show settings dialog
-                You can see all the shortcuts from here.
-`ESC`           close settings/dialog
+`SHIFT+CMD+P`   go to member  
+`CMD+P`         open file  
+  
+`ESC`           toggle drawer  
+`CTRL+~`        jump to console  
+`CMD+[`         next panel  
+`CMD+]`         previous panel  
+`CMD+ALT+[`     next panel in history  
+`CMD+ALT+]`     previous panel history  
+`CMD+SHIFT+D`   toggle location of panels (separate screen/docked)  
+`?`             show settings dialog  
+                You can see all the shortcuts from here    
+`ESC`           close settings/dialog  
 
 
 ### Node Package Manager (NPM) 
