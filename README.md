@@ -2907,3 +2907,113 @@ that when startup in bootstrap_node.js was called, in 22% of the samples it call
 
 
 
+### Trace setTimeout
+Explain and show/compare what happens when we call setTimeout with regards to the V8 callstack and the call queue
+and task queue. Draw parallels to V8 and chrome.
+
+Let's take the following example:
+
+    setTimeout(function () {
+      console.log('bajja');
+    }, 5000);
+
+    $ ./out/Debug/node --inspect --debug-brk settimeout.js
+
+In Node you can call setTimeout with out having a require. This is done by lib/boostrap_node.js:
+
+    function setupGlobalTimeouts() {
+      const timers = NativeModule.require('timers');
+      global.clearImmediate = timers.clearImmediate;
+      global.clearInterval = timers.clearInterval;
+      global.clearTimeout = timers.clearTimeout;
+      global.setImmediate = timers.setImmediate;
+      global.setInterval = timers.setInterval;
+      global.setTimeout = timers.setTimeout;
+   }
+So we can see that we are able to call setTimout without having to require any module and that it is part of a
+native modules named timers. This is located in lib/timers.js.
+
+The first thing that will happen is a new Timeout will be created in `createSingleTimeout`. A timeout looks like:
+
+    function Timeout(after, callback, args) {
+      this._called = false;
+      this._idleTimeout = after;  // this will be 5000 in our use-case
+      this._idlePrev = this;
+      this._idleNext = this;
+      this._idleStart = null;
+      this._onTimeout = callback; // this is our callback that just logs to the console
+      this._timerArgs = args;
+      this._repeat = null;
+    }
+
+This `timer` instance is then passed to `active(timer)` which will insert the timer by calling `insert`:
+
+     insert(item, false);
+
+(`item` is the timer, and false is the value of the unrefed argument)
+
+    item._idleStart = TimerWrap.now();
+
+So we can see that we are using timer_wrap which is located in src/timer_wrap.cc and the now function which is 
+initialized to:
+
+    env->SetTemplateMethod(constructor, "now", Now);
+
+Back in the insert function we then have the following:
+
+    const lists = unrefed === true ? unrefedLists : refedLists;
+
+We know that unrefed is false so lists will be the refedLists which is an object keyed with the millisecond that a timeout is due
+to expire. The value of eqch key is a linkedlist of timers that expire at the same time. 
+
+    var list = lists[msecs];
+
+If there are other timers that also expire after 5000ms then there might already be a list for them. But in this case there is not
+and a new list will be created:
+
+    lists[msecs] = list = createTimersList(msecs, unrefed);
+
+    const list = new TimersList(msecs, unrefed); // 5000 and false
+
+    function TimersList(msecs, unrefed) {
+      this._idleNext = null; // Create the list with the linkedlist properties to
+      this._idlePrev = null; // prevent any unnecessary hidden class changes.
+      this._timer = new TimerWrap();
+      this._unrefed = unrefed; // will be false in our case
+      this.msecs = msecs; // will be 5000 in our case
+   }
+
+The `new TimerWrap` call will invoke `New` in timer_wrap.cc as setup in the initialize function:
+
+    Local<FunctionTemplate> constructor = env->NewFunctionTemplate(New);
+
+`New` will invoke TimerWrap's constructor which does:
+
+    int r = uv_timer_init(env->event_loop(), &handle_);
+
+So we can see that it is settig up a libuv [timer](https://github.com/danbev/learning-libuv/timer.c).
+Shortly after we have the following code (back in JavaScript land and lib/timers.js):
+
+Next the list (TimerList) is initialized setting _idleNext and _idlePrev to list. After this we are adding
+a field to the list:
+
+    list._timer._list = list;
+
+    list._timer.start(msecs);
+
+Start is initialized using :
+
+    env->SetProtoMethod(constructor, "start", Start);
+
+    static void Start(const FunctionCallbackInfo<Value>& args) {
+      TimerWrap* wrap = Unwrap<TimerWrap>(args.Holder());
+
+      CHECK(HandleWrap::IsAlive(wrap));
+
+      int64_t timeout = args[0]->IntegerValue();
+      int err = uv_timer_start(&wrap->handle_, OnTimeout, timeout, 0);
+      args.GetReturnValue().Set(err);
+   }
+
+Compare this with [timer.c](https://github.com/danbev/learning-libuv/timer.c). and you can see that these is not
+that much of a difference. Let's look at the callback OnTimeout
