@@ -2907,7 +2907,7 @@ that when startup in bootstrap_node.js was called, in 22% of the samples it call
 
 
 
-### Trace setTimeout
+### setTimeout
 Explain and show/compare what happens when we call setTimeout with regards to the V8 callstack and the call queue
 and task queue. Draw parallels to V8 and chrome.
 
@@ -3017,3 +3017,27 @@ Start is initialized using :
 
 Compare this with [timer.c](https://github.com/danbev/learning-libuv/timer.c). and you can see that these is not
 that much of a difference. Let's look at the callback OnTimeout
+
+### setImmediate
+The very simple JavaScript looks like this:
+
+    setImmediate(function () {
+      console.log('bajja');
+    });
+
+Like setTimeout the implementation is found in lib/timers.js. 
+A new Immediate will be created which looks like this:
+
+    function Immediate() {
+      // assigning the callback here can cause optimize/deoptimize thrashing
+      // so have caller annotate the object (node v6.0.0, v8 5.0.71.35)
+      this._idleNext = null;
+      this._idlePrev = null;
+      this._callback = null;
+      this._argv = null;
+      this._onImmediate = null;
+      this.domain = process.domain;
+   }
+
+
+    immediateQueue.append(immediate);
