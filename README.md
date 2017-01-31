@@ -3002,7 +3002,7 @@ The `new TimerWrap` call will invoke `New` in timer_wrap.cc as setup in the init
 
     int r = uv_timer_init(env->event_loop(), &handle_);
 
-So we can see that it is settig up a libuv [timer](https://github.com/danbev/learning-libuv/timer.c).
+So we can see that it is settig up a libuv [timer](https://github.com/danbev/learning-libuv/blob/master/timer.c).
 Shortly after we have the following code (back in JavaScript land and lib/timers.js):
 
 Next the list (TimerList) is initialized setting _idleNext and _idlePrev to list. After this we are adding
@@ -3026,7 +3026,7 @@ Start is initialized using :
       args.GetReturnValue().Set(err);
    }
 
-Compare this with [timer.c](https://github.com/danbev/learning-libuv/timer.c). and you can see that these is not
+Compare this with [timer.c](https://github.com/danbev/learning-libuv/blob/master/timer.c). and you can see that these is not
 that much of a difference. Let's look at the callback OnTimeout
 
 ### setImmediate
