@@ -46,7 +46,7 @@ The rest of this page contains notes gathred while setting through the code base
 1. [Start up](#starting-node)
 2. [Loading of builtins](#loading-of-builtins)
 3. [Environment](#environment)
-4. [TCPWrap](#tcpwrap::initialize)
+4. [TCPWrap](#tcpwrap\:\:initialize)
 5. [Running a script](#Running-a-script)
 6. [setTimeout](#setTimeout)
 
