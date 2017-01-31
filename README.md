@@ -47,8 +47,8 @@ The rest of this page contains notes gathred while setting through the code base
 2. [Loading of builtins](#loading-of-builtins)
 3. [Environment](#environment)
 4. [TCPWrap](#tcpwrapinitialize)
-5. [Running a script](#Running-a-script)
-6. [setTimeout](#setTimeout)
+5. [Running a script](#running-a-script)
+6. [setTimeout](#settimeout)
 
 ### Starting Node
 To start and stop at first line in a js program use:
