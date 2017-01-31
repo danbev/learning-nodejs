@@ -39,6 +39,17 @@ The source for these tests can be found in `doc/api/addons.md` and these might n
 change to all tests is required, for a concrete example we wanted to update the build/Release/addon directory
 to be different depending on the build type (Debug/Release) and I forgot to update these tests.
 
+
+The rest of this page contains notes gathred while setting through the code base:
+(These are more sections than listed here but they might be hard to follow)
+
+1. [Start up](#starting-node)
+2. [Loading of builtins](#loading-of-builtins)
+3. [Environment](#environment)
+4. [TCPWrap](#tcpwrap::initialize)
+5. [Running a script](#Running-a-script)
+6. [setTimeout](#setTimeout)
+
 ### Starting Node
 To start and stop at first line in a js program use:
 
