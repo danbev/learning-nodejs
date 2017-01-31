@@ -40,6 +40,7 @@ change to all tests is required, for a concrete example we wanted to update the 
 to be different depending on the build type (Debug/Release) and I forgot to update these tests.
 
 
+## Notes
 The rest of this page contains notes gathred while setting through the code base:
 (These are more sections than listed here but they might be hard to follow)
 
