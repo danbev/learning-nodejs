@@ -1347,32 +1347,9 @@ The -j is the number of processes to use.
 
 #### Mac firewall exceptions
 On mac you might find it popping up dialogs about the firwall blocking access to the `node` and `cctest` applications when running
-the tests. You can add exceptions by pointing to the `node` executable and `node/out/Release/cctest`. When doing this it seems you have to located the `node/out/Release` directory
-and then select the `node` executable.
-Note that you'll have to read-add these after running './configure'
+the tests. There is a script in `node/tools` that can run to add rules to the firewall:
 
-
-For some reason this seems to work for me:
-
-    #/bin/bash
-    FW="/usr/libexec/ApplicationFirewall/socketfilterfw"
-    # Duplicating these commands on purpose as the symbolic link node might be
-    # linked to either out/Debug/node or out/Release/node depending on the BUILDTYPE
-    $FW --remove $PWD/out/Debug/node
-    $FW --remove $PWD/out/Debug/node
-    $FW --remove $PWD/out/Release/node
-    $FW --remove $PWD/out/Release/node
-    $FW --listapps
-
-    $FW --add $PWD/out/Debug/node
-    $FW --add $PWD/out/Release/node
-    $FW --add $PWD/node
-
-    $FW --unblock $PWD/out/Debug/node
-    $FW --unblock $PWD/out/Release/node
-    $FW --unblock $PWD/node
-
-    $FW --listapps
+    $ sudo tools/macosx-firewall.sh
 
 ### Running a script
 This section attempts to explain the process of running a javascript file. We will create a break point in the javascript source and see how it is executed.
