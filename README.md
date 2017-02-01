@@ -1125,23 +1125,23 @@ In HandleWrap's constructor the HandleWrap is added to the queue of HandleWraps 
 
 libuv has the following types of handle types:
 
-   #define UV_HANDLE_TYPE_MAP(XX)                                               \
-    XX(ASYNC, async)                                                            \
-    XX(CHECK, check)                                                            \
-    XX(FS_EVENT, fs_event)                                                      \
-    XX(FS_POLL, fs_poll)                                                        \
-    XX(HANDLE, handle)                                                          \
-    XX(IDLE, idle)                                                              \
-    XX(NAMED_PIPE, pipe)                                                        \
-    XX(POLL, poll)                                                              \
-    XX(PREPARE, prepare)                                                        \
-    XX(PROCESS, process)                                                        \
-    XX(STREAM, stream)                                                          \
-    XX(TCP, tcp)                                                                \
-    XX(TIMER, timer)                                                            \
-    XX(TTY, tty)                                                                \
-    XX(UDP, udp)                                                                \
-    XX(SIGNAL, signal)                                                          \ 
+    #define UV_HANDLE_TYPE_MAP(XX)                                               \
+     XX(ASYNC, async)                                                            \
+     XX(CHECK, check)                                                            \
+     XX(FS_EVENT, fs_event)                                                      \
+     XX(FS_POLL, fs_poll)                                                        \
+     XX(HANDLE, handle)                                                          \
+     XX(IDLE, idle)                                                              \
+     XX(NAMED_PIPE, pipe)                                                        \
+     XX(POLL, poll)                                                              \
+     XX(PREPARE, prepare)                                                        \
+     XX(PROCESS, process)                                                        \
+     XX(STREAM, stream)                                                          \
+     XX(TCP, tcp)                                                                \
+     XX(TIMER, timer)                                                            \
+     XX(TTY, tty)                                                                \
+     XX(UDP, udp)                                                                \
+     XX(SIGNAL, signal)                                                          \ 
 
 
     struct uv_tcp_s {
