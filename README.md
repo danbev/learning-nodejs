@@ -17,39 +17,100 @@ After compiling (with debugging enabled) start node using lldb:
 Node uses Generate Your Projects (gyp) for which I was not familare with so there is a 
 example project in [gyp](./gyp) to look into it.
 
-#### Compiling with a different version of libuv
-What I'd like to do is use my local fork of libuv instead of the one in the deps
-directory. I think the way to do this is to `make install` and then run configure with the following options:
-
-    $ ./configure --debug --shared-libuv --shared-libuv-includes=/usr/local/include
-
-The location of the library is `/usr/local/lib`, and `/usr/local/include` for the headers on my machine.
-
-
 ### Running the Node.js tests
 
     $ make -j8 test
-
-### Updating addons test
-Some of the addons tests are not version controlled but instead generate using:
-
-   $ ./node tools/doc/addon-verify.js doc/api/addons.md
-
-The source for these tests can be found in `doc/api/addons.md` and these might need to be updated if a 
-change to all tests is required, for a concrete example we wanted to update the build/Release/addon directory
-to be different depending on the build type (Debug/Release) and I forgot to update these tests.
-
 
 ## Notes
 The rest of this page contains notes gathred while setting through the code base:
 (These are more sections than listed here but they might be hard to follow)
 
-1. [Start up](#starting-node)
-2. [Loading of builtins](#loading-of-builtins)
-3. [Environment](#environment)
-4. [TCPWrap](#tcpwrapinitialize)
-5. [Running a script](#running-a-script)
-6. [setTimeout](#settimeout)
+1. [Background](#background)
+2. [Start up](#starting-node)
+3. [Loading of builtins](#loading-of-builtins)
+4. [Environment](#environment)
+5. [TCPWrap](#tcpwrapinitialize)
+6. [Running a script](#running-a-script)
+7. [setTimeout](#settimeout)
+
+### Background
+Node.js is roughly [Google V8](https://github.com/v8/v8), [libuv](https://github.com/libuv/libuv) and Node.js core which glues
+everything together.
+
+V8 bascially consists of the memory management of the heap and the execution stack (very simplified but helps
+make my point). If you are used to web client side development you'll know about the WebAPIs that are also
+available like DOM, AJAX, setTimeout etc. This functionality is not provided by V8 but in instead by chrome.
+There is also nothing about a event loop in V8, this is also something that is provided by chrome.
+
+    +------------------------------------------------------------------------------------------+
+    | Google Chrome                                                                            |
+    |                                                                                          |
+    | +----------------------------------------+          +------------------------------+     |
+    | | Google V8                              |          |            WebAPIs           |     |
+    | | +-------------+ +---------------+      |          |                              |     |
+    | | |    Heap     | |     Stack     |      |          |                              |     |
+    | | |             | |               |      |          |                              |     |
+    | | |             | |               |      |          |                              |     |
+    | | |             | |               |      |          |                              |     |
+    | | |             | |               |      |          |                              |     |
+    | | |             | |               |      |          |                              |     |
+    | | +-------------+ +---------------+      |          |                              |     |
+    | |                                 |      |          |                              |     |
+    | +----------------------------------------+          +------------------------------+     |
+    |                                                                                          |
+    |                                                                                          |
+    | +---------------------+     +---------------------------------------+                    |
+    | |     Event loop      |     |          Callback queue               |                    |
+    | |                     |     |                                       |                    |
+    | +---------------------+     +---------------------------------------+                    |
+    |                                                                                          |
+    |                                                                                          |
+    +------------------------------------------------------------------------------------------+
+
+The execution stack is a stack of frame pointers. For each function called that function will be pushed onto
+the stack. When a function returns it will be removed. If that function calls other functions
+they will be pushed onto the stack.
+When all functions have returned execution can proceed from the returned to point. If one of the functions performs
+an operation that takes time progress will not be made until it completes as the only way to complete is that the
+function returns and is popped off the stack. This is what happens when you have a single threaded programming language.
+
+Aychnronous work can be done by calling into the WebAPIs, for example calling setTimeout which will call out to the
+WebAPI and then return. The functionality for setTimeout is provided by the WebAPI and when the timer is due the
+WebAPI will push the callback onto the callback queue. Items from the callback queue will be picked up by the event
+loop and pushed onto the stack for execution.
+
+Now lets compare this with Node.js:
+
+    +------------------------------------------------------------------------------------------+
+    | Node.js                                                                                  |
+    |                                                                                          |
+    | +----------------------------------------+          +------------------------------+     |
+    | | Google V8                              |          |        Node Core APIs        |     |
+    | | +-------------+ +---------------+      |          |                              |     |
+    | | |    Heap     | |     Stack     |      |          |                              |     |
+    | | |             | |               |      |          |                              |     |
+    | | |             | |               |      |          |                              |     |
+    | | |             | |               |      |          |                              |     |
+    | | |             | |               |      |          |                              |     |
+    | | |             | |               |      |          |                              |     |
+    | | +-------------+ +---------------+      |          |                              |     |
+    | |                                 |      |          |                              |     |
+    | +----------------------------------------+          +------------------------------+     |
+    |                                                                                          |
+    |                                                                                          |
+    | +---------------------+     +---------------------------------------+                    |
+    | | libuv               |     |          Callback queue               |                    |
+    | |     Event Loop      |     |                                       |                    |
+    | +---------------------+     +---------------------------------------+                    |
+    |                                                                                          |
+    |                                                                                          |
+    +------------------------------------------------------------------------------------------+
+
+Taking the same example from above, `setTimeout`, this would be a call to Node Core API and then
+the function will return. When the timer expires Node Core API will push the callback onto the
+callback queue.
+The event loop in Node is provided by libuv, whereas in chrome this is provided by the browser
+(chromium I believe)
 
 ### Starting Node
 To start and stop at first line in a js program use:
@@ -3053,3 +3114,20 @@ A new Immediate will be created which looks like this:
 
 
     immediateQueue.append(immediate);
+
+#### Compiling with a different version of libuv
+What I'd like to do is use my local fork of libuv instead of the one in the deps
+directory. I think the way to do this is to `make install` and then run configure with the following options:
+
+    $ ./configure --debug --shared-libuv --shared-libuv-includes=/usr/local/include
+
+The location of the library is `/usr/local/lib`, and `/usr/local/include` for the headers on my machine.
+
+### Updating addons test
+Some of the addons tests are not version controlled but instead generate using:
+
+   $ ./node tools/doc/addon-verify.js doc/api/addons.md
+
+The source for these tests can be found in `doc/api/addons.md` and these might need to be updated if a 
+change to all tests is required, for a concrete example we wanted to update the build/Release/addon directory
+to be different depending on the build type (Debug/Release) and I forgot to update these tests.
