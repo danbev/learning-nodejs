@@ -1042,7 +1042,7 @@ Lets take a look at `ASSIGN_OR_RETURN_UNWRAP`:
             Unwrap<typename node::remove_reference<decltype(**ptr)>::type>(obj);  \
         if (*ptr == nullptr)                                                      \
           return __VA_ARGS__;                                                     \
-   } while (0)
+    } while (0)
 
 So what would this look like after the preprocessor has processed it (need to double check this):
 
