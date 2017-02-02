@@ -2809,16 +2809,132 @@ And the callback is:
 And there we have how setImmediate works in Node.js.
 
 ### process._nextTick
+The very simple JavaScript looks like this:
 
-     _runMicrotasks();
+    process.nextTick(function () {
+      console.log('bajja');
+    });
 
-This will cause our breakpoint to be triggered in node.cc:
+`nextTick` is defined in `lib/internal/process/next_tick.js`.
+After a few checks what happens is that the callback is added to the nextTickQueue:
 
-    void RunMicrotasks(const FunctionCallbackInfo<Value>& args) {
-      args.GetIsolate()->RunMicrotasks();
-    }
+    nextTickQueue.push({
+      callback,
+      domain: process.domain || null,
+      args
+    });
 
-So this looks like it is implemented by using a V8 microtask. 
+`nextTickQueue` is an array:
+
+    var nextTickQueue = [];
+
+And we are pushing an object with the callback as a function named callback, domain
+and args.
+
+    tickInfo[kLength]++;
+
+Recall that TickInfo is an inner class of Environment. Lets back up a little. `bootstrap_node.js` will call next_tick's setup() function from its start function:
+
+    NativeModule.require('internal/process/next_tick').setup();
+
+    exports.setup = setupNextTick;
+
+    var microtasksScheduled = false;
+
+    // Used to run V8's micro task queue.
+    var _runMicrotasks = {};
+
+    // *Must* match Environment::TickInfo::Fields in src/env.h.
+    var kIndex = 0;
+    var kLength = 1;
+
+    process.nextTick = nextTick;
+    // Needs to be accessible from beyond this scope.
+    process._tickCallback = _tickCallback;
+    process._tickDomainCallback = _tickDomainCallback;
+
+    // This tickInfo thing is used so that the C++ code in src/node.cc
+    // can have easy access to our nextTick state, and avoid unnecessary
+    // calls into JS land.
+    const tickInfo = process._setupNextTick(_tickCallback, _runMicrotasks);
+
+`process._setupNextTick` is initialized in `SetupProcessObject` in src/node.cc:
+
+    env->SetMethod(process, "_setupNextTick", SetupNextTick);
+
+Lets take a look at what SetupNextTick does...
+
+    env->set_tick_callback_function(args[0].As<Function>());
+
+
+    env->SetMethod(args[1].As<Object>(), "runMicrotasks", RunMicrotasks);
+
+So, here we are setting a methed named `runMicrotasks` on the `_runMicrotasks` object
+passed to `_setupNextTick`.
+
+    // Do a little housekeeping.
+    env->process_object()->Delete(
+        env->context(),
+        FIXED_ONE_BYTE_STRING(args.GetIsolate(), "_setupNextTick")).FromJust();
+
+Looks like this remove the _setupNextTick function from the process object.
+
+    uint32_t* const fields = env->tick_info()->fields();
+    uint32_t const fields_count = env->tick_info()->fields_count();
+
+What are 'fields'? What are 'fields_count'?  
+
+    (lldb) p fields_count
+    (uint32_t) $23 = 2
+
+
+    Local<ArrayBuffer> array_buffer =
+        ArrayBuffer::New(env->isolate(), fields, sizeof(*fields) * fields_count);
+
+    args.GetReturnValue().Set(Uint32Array::New(array_buffer, 0, fields_count));
+
+So `tickInfo` returned will be an ArrayBuffer:
+
+    const tickInfo = process._setupNextTick(_tickCallback, _runMicrotasks);
+
+Next we assign the `RunMicroTasks` callback to the `_runMicrotasks` variable:
+
+    _runMicrotasks = _runMicrotasks.runMicrotasks;
+
+After this we are done in bootstrap_node.js and the setup of next_tick.
+So, lets continue and break in our script and follow process.setNextTick.
+
+    nextTickQueue.push({
+      callback,
+      domain: process.domain || null,
+      args
+    });
+
+So we are again showing that we add callback info to the nextTickQueue (after a few checks)
+Then we do the following:
+
+    tickInfo[kLength]++;
+
+For each object added to the nextTickQueue we will increment the second element of the tickInfo
+array.
+
+And that is it, the stack frames will start returning and be poped off the call stack. What we
+are interested in is in module.js and `Module.runMain`:
+  
+    process._tickCallback();
+
+
+    do {
+      while (tickInfo[kIndex] < tickInfo[kLength]) {
+        tock = nextTickQueue[tickInfo[kIndex]++];
+        ...
+      }
+    } while (tickInfo[kLength] !== 0);
+
+The check is to see if tickInfo[kIndex] (is this the index of being processed?) is less than
+the number of tick callbacks in the `nextTickQueue`.
+Next tickInfo[kIndex] is retrieved from the nextTickQueue and then tickInfo[kIndex] is incremented.
+
 
 #### Compiling with a different version of libuv
 What I'd like to do is use my local fork of libuv instead of the one in the deps
@@ -2836,3 +2952,19 @@ Some of the addons tests are not version controlled but instead generate using:
 The source for these tests can be found in `doc/api/addons.md` and these might need to be updated if a 
 change to all tests is required, for a concrete example we wanted to update the build/Release/addon directory
 to be different depending on the build type (Debug/Release) and I forgot to update these tests.
+
+
+### Using nvm with Node.js source
+Install to the nvm versions directory:
+
+    $ make install DESTDIR=~/.nvm/versions/node/ PREFIX=v8.0.0
+
+You can then use nvm to list that version and versions:
+  
+   $ nvm ls 
+         v6.5.0
+         v7.0.0
+         v7.4.0
+         v8.0.0
+
+   $ nvm use 8
