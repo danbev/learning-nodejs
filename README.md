@@ -2758,7 +2758,7 @@ Also, notice that we are setting the processImmediate instance as a member of th
                                NeedImmediateCallbackSetter,
                                env->as_external()).FromJust());
 
-So when we do `process_.immediateCallback` NeedImmediateCallbackSetter` will be invoked.
+So when we do `process_.immediateCallback` `NeedImmediateCallbackSetter` will be invoked.
 Looking closer at this function and comparing it with a [libuv check example](https://github.com/danbev/learning-libuv/blob/master/check.c) we should see some similarties.
 
     uv_check_t* immediate_check_handle = env->immediate_check_handle();
@@ -2807,13 +2807,6 @@ And the callback is:
     }
 
 And there we have how setImmediate works in Node.js.
-
-Next, we append the immediate to the queue and return from the function returning the immediate created.
-
-    immediateQueue.append(immediate);
-
-The functions on the call stack will be poped off the stack and eventually only timers.js's listOnTimeout will be left.
-
 
 ### process._nextTick
 
