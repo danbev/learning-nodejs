@@ -32,6 +32,7 @@ The rest of this page contains notes gathred while setting through the code base
 5. [TCPWrap](#tcpwrapinitialize)
 6. [Running a script](#running-a-script)
 7. [setTimeout](#settimeout)
+8. [setImmediate](#setimmediate)
 
 ### Background
 Node.js is roughly [Google V8](https://github.com/v8/v8), [libuv](https://github.com/libuv/libuv) and Node.js core which glues
@@ -2249,6 +2250,7 @@ Open developer tools from Chrome `CMD+OPT+I`
 #### Editor
 `SHIFT+CMD+P`   go to member  
 `CMD+P`         open file  
+`CMD+OPT+F`     search all files
   
 `ESC`           toggle drawer  
 `CTRL+~`        jump to console  
@@ -2724,7 +2726,7 @@ The very simple JavaScript looks like this:
     });
 
 Like setTimeout the implementation is found in lib/timers.js. 
-A new Immediate will be created which looks like this:
+A new Immediate will be created in `createImmediate` which looks like this:
 
     function Immediate() {
       // assigning the callback here can cause optimize/deoptimize thrashing
@@ -2735,10 +2737,95 @@ A new Immediate will be created which looks like this:
       this._argv = null;
       this._onImmediate = null;
       this.domain = process.domain;
-   }
+    }
 
+The following check will then be done:
+
+    if (!process._needImmediateCallback) {
+      process._needImmediateCallback = true;
+      process._immediateCallback = processImmediate;
+    }
+
+In this case `process._needImmediateCallback` is false so we'll enter the above block and set process._needImmediateCallback
+to `true`. 
+Also, notice that we are setting the processImmediate instance as a member of the process object. 
+`processImmediate` is a function defined in timer.js. There is a V8 accessor for the field `_immediateCallback` on the process object which is set up in node.cc (SetupProcessObject function):
+
+    auto need_immediate_callback_string =
+        FIXED_ONE_BYTE_STRING(env->isolate(), "_needImmediateCallback");
+    CHECK(process->SetAccessor(env->context(), need_immediate_callback_string,
+                               NeedImmediateCallbackGetter,
+                               NeedImmediateCallbackSetter,
+                               env->as_external()).FromJust());
+
+So when we do `process_.immediateCallback` NeedImmediateCallbackSetter` will be invoked.
+Looking closer at this function and comparing it with a [libuv check example](https://github.com/danbev/learning-libuv/blob/master/check.c) we should see some similarties.
+
+    uv_check_t* immediate_check_handle = env->immediate_check_handle();
+
+    uv_idle_t* immediate_idle_handle = env->immediate_idle_handle();
+
+    uv_check_start(immediate_check_handle, CheckImmediate);
+    // Idle handle is needed only to stop the event loop from blocking in poll.
+    uv_idle_start(immediate_idle_handle, IdleImmediateDummy);
+
+So we can see that when this setter is called it will set up check handle (if the value
+was true as in `process._needImmediateCallback = true`).
+When the check phase is reached the `CheckImmediate` callback will be invoked. Lets set a breakpoint in that function and verify this:
+
+    (lldb) breakpoint set --file node.cc --line 286 
+
+    static void CheckImmediate(uv_check_t* handle) {
+      Environment* env = Environment::from_immediate_check_handle(handle);
+      HandleScope scope(env->isolate());
+      Context::Scope context_scope(env->context());
+      MakeCallback(env, env->process_object(), env->immediate_callback_string());
+    }
+
+Following `MakeCallback` will will find ourselves in timers.js and its `processImmediate` function which you might recall that we set:
+
+     process._immediateCallback = processImmediate;
+
+     immediate._callback = immediate._onImmediate;
+
+`immediate._onImmediate` will be our callback function (anonymous in setimmediate.js)
+
+    tryOnImmediate(immediate, tail);
+
+will call:
+
+    runCallback(immediate);
+
+will call:
+
+    return timer._callback();
+
+And the callback is:
+
+    function () {
+       console.log('bajja');
+    }
+
+And there we have how setImmediate works in Node.js.
+
+Next, we append the immediate to the queue and return from the function returning the immediate created.
 
     immediateQueue.append(immediate);
+
+The functions on the call stack will be poped off the stack and eventually only timers.js's listOnTimeout will be left.
+
+
+### process._nextTick
+
+     _runMicrotasks();
+
+This will cause our breakpoint to be triggered in node.cc:
+
+    void RunMicrotasks(const FunctionCallbackInfo<Value>& args) {
+      args.GetIsolate()->RunMicrotasks();
+    }
+
+So this looks like it is implemented by using a V8 microtask. 
 
 #### Compiling with a different version of libuv
 What I'd like to do is use my local fork of libuv instead of the one in the deps
