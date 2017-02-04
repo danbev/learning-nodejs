@@ -33,6 +33,7 @@ The rest of this page contains notes gathred while setting through the code base
 6. [Running a script](#running-a-script)
 7. [setTimeout](#settimeout)
 8. [setImmediate](#setimmediate)
+9. [nextTick](#process._nexttick)
 
 ### Background
 Node.js is roughly [Google V8](https://github.com/v8/v8), [libuv](https://github.com/libuv/libuv) and Node.js core which glues
