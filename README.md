@@ -34,6 +34,7 @@ The rest of this page contains notes gathred while setting through the code base
 7. [setTimeout](#settimeout)
 8. [setImmediate](#setimmediate)
 9. [nextTick](#process._nexttick)
+10. [AsyncWrap](#asyncwrap)
 
 ### Background
 Node.js is roughly [Google V8](https://github.com/v8/v8), [libuv](https://github.com/libuv/libuv) and Node.js core which glues
@@ -757,6 +758,41 @@ exit. Currently, this is done with a thread-local, but if there are multiple env
 thread these will overwrite each other.
 
 #### ENVIRONMENT_STRONG_PERSISTENT_PROPERTIES
+These are declared in env.h:
+
+    #define ENVIRONMENT_STRONG_PERSISTENT_PROPERTIES(V)                           \
+      V(as_external, v8::External)                                                \
+      V(async_hooks_destroy_function, v8::Function)                               \
+      V(async_hooks_init_function, v8::Function)                                  \
+      V(async_hooks_post_function, v8::Function)                                  \
+      V(async_hooks_pre_function, v8::Function)                                   \
+      V(binding_cache_object, v8::Object)                                         \
+      V(buffer_constructor_function, v8::Function)                                \
+      V(buffer_prototype_object, v8::Object)                                      \
+      V(context, v8::Context)                                                     \
+      V(domain_array, v8::Array)                                                  \
+      V(domains_stack_array, v8::Array)                                           \
+      V(fs_stats_constructor_function, v8::Function)                              \
+      V(generic_internal_field_template, v8::ObjectTemplate)                      \
+      V(jsstream_constructor_template, v8::FunctionTemplate)                      \
+      V(module_load_list_array, v8::Array)                                        \
+      V(pipe_constructor_template, v8::FunctionTemplate)                          \
+      V(process_object, v8::Object)                                               \
+      V(promise_reject_function, v8::Function)                                    \
+      V(push_values_to_array_function, v8::Function)                              \
+      V(script_context_constructor_template, v8::FunctionTemplate)                \
+      V(script_data_constructor_function, v8::Function)                           \
+      V(secure_context_constructor_template, v8::FunctionTemplate)                \
+      V(tcp_constructor_template, v8::FunctionTemplate)                           \
+      V(tick_callback_function, v8::Function)                                     \
+      V(tls_wrap_constructor_function, v8::Function)                              \
+      V(tls_wrap_constructor_template, v8::FunctionTemplate)                      \
+      V(tty_constructor_template, v8::FunctionTemplate)                           \
+      V(udp_constructor_function, v8::Function)                                   \
+      V(write_wrap_constructor_function, v8::Function)                            \
+
+Notice that `V` is passed in enabling different macros to be passed in. This is used
+to create setters/getters like this:
 
     #define V(PropertyName, TypeName)                                             \
       inline v8::Local<TypeName> PropertyName() const;                            \
@@ -764,11 +800,19 @@ thread these will overwrite each other.
       ENVIRONMENT_STRONG_PERSISTENT_PROPERTIES(V)
     #undef V
 
-The above is defining getters and setter for all the properties in `ENVIRONMENT_STRONG_PERSISTENT_PROPERTIES`. Lets take a look at one:
+The field itself is private and defined in env.h:
+
+    #define V(PropertyName, TypeName)                                             \
+      v8::Persistent<TypeName> PropertyName ## _;
+      ENVIRONMENT_STRONG_PERSISTENT_PROPERTIES(V)
+    #undef V
+
+The above is defining getters and setter for all the properties in `ENVIRONMENT_STRONG_PERSISTENT_PROPERTIES`. Notice the usage of V and that is is passed into the macro.
+Lets take a look at one:
 
     V(tcp_constructor_template, v8::FunctionTemplate)
 
-Like before these are only the defintions, the declarations can be found in src/env-inl.h:
+Like before these are only the declarations, the definitions can be found in src/env-inl.h:
 
     #define V(PropertyName, TypeName)                                             \
       inline v8::Local<TypeName> Environment::PropertyName() const {              \
@@ -1095,8 +1139,98 @@ connect_wrap.cc has a subclass named 'ConnectWrap` which is subclassed by PipeWr
 
 
 ### AsyncWrap
+Some background about AsyncWrap can be found [here](https://github.com/nodejs/diagnostics/blob/master/tracing/AsyncWrap/README.md)
+So using AsyncWrap we can have callbacks invoked during the life of handle objects. A handle object would for example e a TCPWrap
+which extends ConnectionWrap -> StreamWrap -> HandleWrap.
+
+Being a builtin module it follows the same initialization as others. So lets take a look at the initialization function and see
+what kind of functions are made available from JavaScript:
+
+    env->SetMethod(target, "setupHooks", SetupHooks);
+    env->SetMethod(target, "disable", DisableHooksJS);
+    env->SetMethod(target, "enable", EnableHooksJS);
+
+You can confirm this by using:
+
+    > var aw = process.binding('async_wrap')
+    undefined
+    > aw
+    { setupHooks: [Function: setupHooks],
+      disable: [Function: disable],
+      enable: [Function: enable],
+      Providers:
+       { NONE: 0,
+         CRYPTO: 1,
+         FSEVENTWRAP: 2,
+         FSREQWRAP: 3,
+         GETADDRINFOREQWRAP: 4,
+         GETNAMEINFOREQWRAP: 5,
+         HTTPPARSER: 6,
+         JSSTREAM: 7,
+         PIPEWRAP: 8,
+         PIPECONNECTWRAP: 9,
+         PROCESSWRAP: 10,
+         QUERYWRAP: 11,
+         SHUTDOWNWRAP: 12,
+         SIGNALWRAP: 13,
+         STATWATCHER: 14,
+         TCPWRAP: 15,
+         TCPCONNECTWRAP: 16,
+         TIMERWRAP: 17,
+         TLSWRAP: 18,
+         TTYWRAP: 19,
+         UDPWRAP: 20,
+         UDPSENDWRAP: 21,
+         WRITEWRAP: 22,
+         ZLIB: 23 
+      } 
+    } 
+
+The first thing to do is setup the hooks by calling `setupHooks`:
+
+    var aw = process.binding('async_wrap');
+    let asyncHooksObject = {}
+    qw.setupHooks(asyncHooksObject);
+
+So AsyncWrap::SetupHooks takes a single object as its parameter. It expects this object to have 4 functions:
 
 
+    init()
+    pre()
+    post()
+    destroy();
+
+These functions (if they exist, there is only a check for that the init function actually exist and if the
+others do not exist or are not functions then they are simply ignored).
+
+    env->set_async_hooks_init_function(init_v.As<Function>());
+
+So, if you are like me you might have gone searching for this `set_async_hooks_init_function` and not finding it. You
+might recall this coming up [before](#environment\_strong\_persistent\_properties). So every environment will have such setters and getters for 
+  
+     V(async_hooks_destroy_function, v8::Function)                               
+     V(async_hooks_init_function, v8::Function)                                  
+     V(async_hooks_post_function, v8::Function)                                  
+     V(async_hooks_pre_function, v8::Function)
+
+So, we are setting a field named async_hooks_init_function_ in the current env.
+An example of this usage might be:
+
+    const asyncWrap = process.binding('async_wrap');
+    let asyncObject = {
+      init: function(uid, provider, parentUid, parentHandle) {
+        process._rawDebug('init uid:', uid, ', provider:', provider);
+      },
+      pre: function(uid) {
+        process._rawDebug('pre uid:', uid);
+      },
+      post: function(uid, didThrow) {
+        process._rawDebug('post. uid:', uid, 'didThrow:', didThrow);
+      },
+      destroy: function(uid) {
+        process._rawDebug('destroy: uid:', uid);
+      }
+    };
 
 ### HandleWrap
 HandleWrap represents a libuv handle which represents . Take the following functions:
