@@ -35,6 +35,7 @@ The rest of this page contains notes gathred while setting through the code base
 8. [setImmediate](#setimmediate)
 9. [nextTick](#process._nexttick)
 10. [AsyncWrap](#asyncwrap)
+11. [lldb](#lldb)
 
 ### Background
 Node.js is roughly [Google V8](https://github.com/v8/v8), [libuv](https://github.com/libuv/libuv) and Node.js core which glues
@@ -1231,6 +1232,30 @@ An example of this usage might be:
         process._rawDebug('destroy: uid:', uid);
       }
     };
+
+Alright, but when are these different functions called?  
+`init` is called from AsyncWrap's constructor:
+
+    Local<Function> init_fn = env->async_hooks_init_function();
+
+So lets print the value of this function:
+
+    (lldb) p _v8_internal_Print_Object(*(v8::internal::Object**)(*init_fn))
+    0x17bdd44f0d91: [Function]
+     - map = 0x359df9f06ea9 [FastProperties]
+     - prototype = 0xe23ea883f39
+     - elements = 0x28b309c02241 <FixedArray[0]> [FAST_HOLEY_ELEMENTS]
+     - initial_map =
+     - shared_info = 0x2a17ee0cda59 <SharedFunctionInfo init>
+     - name = 0x807c31bd419 <String[4]: init>
+     - formal_parameter_count = 4
+     - context = 0x17bdd4483b31 <FixedArray[8]>
+     - literals = 0x28b309c04a49 <FixedArray[1]>
+     - code = 0xf3fbca04481 <Code: BUILTIN>
+     - properties = {
+       #length: 0x28b309c50bd9 <AccessorInfo> (accessor constant)
+       #name: 0x28b309c50c49 <AccessorInfo> (accessor constant)
+       #prototype: 0x28b309c50cb9 <AccessorInfo> (accessor constant)
 
 ### HandleWrap
 HandleWrap represents a libuv handle which represents . Take the following functions:
@@ -3103,3 +3128,37 @@ You can then use nvm to list that version and versions:
          v8.0.0
 
    $ nvm use 8
+
+### lldb
+There is a [.lldbinit](./.lldbinit) which contains a number of useful alias to 
+print out various V8 objects. This are most of the aliases defined in [gdbinit](https://github.com/v8/v8/blob/master/tools/gdbinit).
+
+For example, you can print a v8::Local<v8::Function> using the builtin print command:
+
+    (lldb) p init_fn
+    (v8::Local<v8::Function>) $3 = (val_ = 0x000000010484f900)
+
+This does not give much, but if we instead use jlh:
+
+    (lldb) jlh init_fn
+    0x19417e265ba9: [Function]
+     - map = 0x382d7ba86ea9 [FastProperties]
+     - prototype = 0xd21f3203f39
+     - elements = 0x18ede4802241 <FixedArray[0]> [FAST_HOLEY_ELEMENTS]
+     - initial_map =
+     - shared_info = 0x23c6dbac1ce1 <SharedFunctionInfo init>
+     - name = 0x21a813bbd419 <String[4]: init>
+     - formal_parameter_count = 4
+     - context = 0x19417e203b41 <FixedArray[8]>
+     - literals = 0x18ede4804a49 <FixedArray[1]>
+     - code = 0x1aa594184481 <Code: BUILTIN>
+     - properties = {
+       #length: 0x18ede4850bd9 <AccessorInfo> (accessor constant)
+       #name: 0x18ede4850c49 <AccessorInfo> (accessor constant)
+       #prototype: 0x18ede4850cb9 <AccessorInfo> (accessor constant)
+     }
+
+So that gives us more information, but lets say you'd like to see the name of the function:
+
+    (lldb) jlh init_fn->GetName()
+    #init
