@@ -1195,10 +1195,10 @@ The first thing to do is setup the hooks by calling `setupHooks`:
 So AsyncWrap::SetupHooks takes a single object as its parameter. It expects this object to have 4 functions:
 
 
-    init()
-    pre()
-    post()
-    destroy();
+    init(uid, provider, parentUid, parentHandle)
+    pre(uid)
+    post(uid, didThrow)
+    destroy(uid);
 
 These functions (if they exist, there is only a check for that the init function actually exist and if the
 others do not exist or are not functions then they are simply ignored).
