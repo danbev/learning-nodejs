@@ -36,6 +36,7 @@ The rest of this page contains notes gathred while setting through the code base
 9. [nextTick](#process._nexttick)
 10. [AsyncWrap](#asyncwrap)
 11. [lldb](#lldb)
+12. [Promises](#promises)
 
 ### Background
 Node.js is roughly [Google V8](https://github.com/v8/v8), [libuv](https://github.com/libuv/libuv) and Node.js core which glues
@@ -2989,7 +2990,7 @@ After a few checks what happens is that the callback is added to the nextTickQue
     var nextTickQueue = [];
 
 And we are pushing an object with the callback as a function named callback, domain
-and args.
+and args. So for every nextTick called an entry will be added to the queue. 
 
     tickInfo[kLength]++;
 
@@ -3026,10 +3027,9 @@ Lets take a look at what SetupNextTick does...
 
     env->set_tick_callback_function(args[0].As<Function>());
 
-
     env->SetMethod(args[1].As<Object>(), "runMicrotasks", RunMicrotasks);
 
-So, here we are setting a methed named `runMicrotasks` on the `_runMicrotasks` object
+So, here we are setting a method named `runMicrotasks` on the `_runMicrotasks` object
 passed to `_setupNextTick`.
 
     // Do a little housekeeping.
@@ -3088,6 +3088,9 @@ are interested in is in module.js and `Module.runMain`:
       while (tickInfo[kIndex] < tickInfo[kLength]) {
         tock = nextTickQueue[tickInfo[kIndex]++];
         ...
+        _combinedTickCallback(args, callback);
+        if (kMaxCallbacksUntilQueueIsShortened < tickInfo[kIndex])
+           tickDone();
       }
     } while (tickInfo[kLength] !== 0);
 
@@ -3095,6 +3098,38 @@ The check is to see if tickInfo[kIndex] (is this the index of being processed?) 
 the number of tick callbacks in the `nextTickQueue`.
 Next tickInfo[kIndex] is retrieved from the nextTickQueue and then tickInfo[kIndex] is incremented.
 
+`tickDone()`  
+
+    function tickDone() {
+      if (tickInfo[kLength] !== 0) {
+        if (tickInfo[kLength] <= tickInfo[kIndex]) {
+          nextTickQueue = [];
+          tickInfo[kLength] = 0;
+        } else {
+          nextTickQueue.splice(0, tickInfo[kIndex]);
+          tickInfo[kLength] = nextTickQueue.length;
+        }
+      }
+      tickInfo[kIndex] = 0;
+     }
+
+Lets take a look at:
+
+    if (tickInfo[kLength] <= tickInfo[kIndex]) {
+
+If the number of callbacks added is less than or equal to the just processed callbacks index this would mean
+that all of the callbacks in the queue have been processed and the following clause will make nextTickQueue 
+point to an empty array and reset tickInfo[kLength] to zero.
+But if there are more callback in the queue than the just processed callbacks index the else clause will be 
+taken:
+
+    nextTickQueue.splice(0, tickInfo[kIndex]);
+    tickInfo[kLength] = nextTickQueue.length;
+
+splice will remove all elements from 0 to tickInfo[kIndex], which is removing all the processed callbacks.
+The new length is set as tickInfo[kLength]. This is done so that the nextTickQueue array does not become
+too large and run the process out of memory. By shortning the array this reduces the likelyhood of this 
+happening.
 
 #### Compiling with a different version of libuv
 What I'd like to do is use my local fork of libuv instead of the one in the deps
@@ -3162,3 +3197,28 @@ So that gives us more information, but lets say you'd like to see the name of th
 
     (lldb) jlh init_fn->GetName()
     #init
+
+### Promises
+The section is about understanding how ECMAScript 6 Promise API works.
+
+    let promise = new Promise(function(resolve, reject) {
+      if (true) {
+        resolve("resolved");
+      } else {
+        reject("rejected");
+      }  
+    }
+
+    promise.then(function (message) {
+      console.log(message);
+    });
+
+    $ lldb -- ./out/Debug/node --harmony --inspect --debug-brk manual.js
+    (lldb) breakpoint set -f api.cc -l 7121
+
+
+
+In V8 src/builtins/builtins-promise.cc, but hmm I just noticed that this source file is not available in the latest
+node deps. Perhaps this is not shipped yet. But, I can still use promises so what's going on?
+
+
