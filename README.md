@@ -496,6 +496,7 @@ We can see the contents of this in lldb using:
     (lldb) p internal_bootstrap_node_native
 
 
+
 ### Loading of builtins
 I wanted to know how builtins, like tcp\_wrap and others are loaded.
 Lets take a look at the following line from src/tcp_wrap.cc:
@@ -1385,44 +1386,6 @@ And the constructor for Persistent looks like this:
         : PersistentBase<T>(PersistentBase<T>::New(isolate, *that)) {
       TYPE_CHECK(T, S);
     }
-
-
-### AsyncWrap
-AsyncWrap extends BaseObject.
-Going with my assumption that this wraps an libuv async handle. From the libuv documentation: 
-"Async handles allow the user to “wakeup” the event loop and get a callback called from another thread."
-
-AsyncWrap has a enum of provider types:
-
-    enum ProviderType {
-    #define V(PROVIDER)                                                           \
-      PROVIDER_ ## PROVIDER,
-      NODE_ASYNC_PROVIDER_TYPES(V)
-    #undef V
-   };
-
-The provider type is passed when constructing an instance of AsyncWrap:
-
-    inline AsyncWrap(Environment* env,
-                   v8::Local<v8::Object> object,
-                   ProviderType provider,
-                   AsyncWrap* parent = nullptr);
-    ...
-
-
-    v8::Local<v8::Function> init_fn = env->async_hooks_init_function();
-
-You may remember seeing this `async_hooks_init_function` in env.h:
-
-    V(async_hooks_init_function, v8::Function)                                  \
-
-Lets back up a little, AsyncWrap is a builtin so the first function to be called will be its Async::Initialize function.
-
-    env->SetMethod(target, "setupHooks", SetupHooks);
-    env->SetMethod(target, "disable", DisableHooksJS);
-    env->SetMethod(target, "enable", EnableHooksJS);
-
-### SetupHooks
 
 
 ### IsolateData
@@ -3198,6 +3161,8 @@ So that gives us more information, but lets say you'd like to see the name of th
     (lldb) jlh init_fn->GetName()
     #init
 
+You can also print pointer
+
 ### Promises
 The section is about understanding how ECMAScript 6 Promise API works.
 
@@ -3214,11 +3179,66 @@ The section is about understanding how ECMAScript 6 Promise API works.
     });
 
     $ lldb -- ./out/Debug/node --harmony --inspect --debug-brk manual.js
-    (lldb) breakpoint set -f api.cc -l 7121
+    (lldb) breakpoint set -f isolate.cc -l 1717
+
+So when we do `new Promise` our break point in isolate.cc will be hit:
+
+    void Isolate::PushPromise(Handle<JSObject> promise) {
+      ThreadLocalTop* tltop = thread_local_top();
+      PromiseOnStack* prev = tltop->promise_on_stack_;
+      Handle<JSObject> global_promise =
+        Handle<JSObject>::cast(global_handles()->Create(*promise));
+      tltop->promise_on_stack_ = new PromiseOnStack(global_promise, prev);
+    }
+
+So lets take a close look a `PromiseOnStack` which can be found in isolate.h
+
+    class PromiseOnStack {
+      public:
+        PromiseOnStack(Handle<JSObject> promise, PromiseOnStack* prev)
+          : promise_(promise), prev_(prev) {}
+        Handle<JSObject> promise() { return promise_; }
+        PromiseOnStack* prev() { return prev_; }
+
+     private:
+       Handle<JSObject> promise_;
+       PromiseOnStack* prev_;
+    };
+
+
+    (lldb) breakpoint set -f runtime-debug.cc -l 251
+    
+
+I was having trouble understanding why I was not able to set a break point in V8 src/js/promise.js file as it was
+never availble in devtools. In the same way that Node performs a javascript to c (js2c) (see [bootstrap_node.js](#lib/internal/bootstrap_node.js)
+for more information).
+
+out/Debug/obj/gen/libraries.cc and libraries.bin. 
+
+
+    * thread #1: tid = 0x8ea959, 0x0000000100c91504 node`v8::internal::Isolate::PushPromise(this=0x0000000105004e00, promise=Handle<v8::internal::JSObject> @ 0x00007fff5fbfc238) + 20 at isolate.cc:1717, queue = 'com.apple.main-thread', stop reason = breakpoint 3.1
+  * frame #0: 0x0000000100c91504 node`v8::internal::Isolate::PushPromise(this=0x0000000105004e00, promise=Handle<v8::internal::JSObject> @ 0x00007fff5fbfc238) + 20 at isolate.cc:1717
+    frame #1: 0x0000000100f277a2 node`v8::internal::__RT_impl_Runtime_DebugPushPromise(args=Arguments @ 0x00007fff5fbfc290, isolate=0x0000000105004e00) + 226 at runtime-debug.cc:1813
+    frame #2: 0x0000000100f27559 node`v8::internal::Runtime_DebugPushPromise(args_length=1, args_object=0x00007fff5fbfc348, isolate=0x0000000105004e00) + 297 at runtime-debug.cc:1809
 
 
 
-In V8 src/builtins/builtins-promise.cc, but hmm I just noticed that this source file is not available in the latest
-node deps. Perhaps this is not shipped yet. But, I can still use promises so what's going on?
+(v8::PromiseRejectCallback) $1 = 0x00000001012a92a0 (node`node::PromiseRejectCallback(v8::PromiseRejectMessage) at node.cc:1169)
 
 
+src/js/promise.js:
+
+    (function(global, utils, extrasUtils) {
+
+    "use strict";
+
+    %CheckIsBootstrapping();
+
+This is compile by a call from bootstrapper.cc:
+
+    Handle<Object> args[] = {global, utils, extras_utils};
+    return Bootstrapper::CompileNative(isolate, name, source_code, arraysize(args), args, NATIVES_CODE);
+
+
+
+$ out/Debug/node --v8-options
