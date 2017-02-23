@@ -3211,7 +3211,12 @@ So lets take a close look a `PromiseOnStack` which can be found in isolate.h
 
 I was having trouble understanding why I was not able to set a break point in V8 src/js/promise.js file as it was
 never availble in devtools. In the same way that Node performs a javascript to c (js2c) (see [bootstrap_node.js](#lib/internal/bootstrap_node.js)
-for more information).
+for more information). GN has a target that takes all the files in src/js and generates 
+$target_gen_dir/libraries.cc. You can inspect this file (out/x64.debug/obj/gen/libraries.cc).
+But I could not find a reference to libraries.cc in the source code base. This is instead used
+by target in src/v8.gyp which is v8_snapshot.
+
+    
 
 out/Debug/obj/gen/libraries.cc and libraries.bin. 
 
@@ -3242,3 +3247,12 @@ This is compile by a call from bootstrapper.cc:
 
 
 $ out/Debug/node --v8-options
+
+
+### Debug JavaScript tests
+Just example commands that I use in different projects to run the debugger with 
+different test suites.
+
+#### Mocha
+
+    $ mocha --inspect --debug-brk  -u exports --recursive -t 10000 ./test/setup.js  test/sync/test_index.js
