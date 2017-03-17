@@ -3256,3 +3256,155 @@ different test suites.
 #### Mocha
 
     $ mocha --inspect --debug-brk  -u exports --recursive -t 10000 ./test/setup.js  test/sync/test_index.js
+
+### crypto
+To investigate lets take a look what happens when one requires crypto:
+
+    const crypto = require('crypto');
+
+    $ lldb -- ./out/Debug/node crypto.js
+    
+src/node_crypto.cc is a builtin:
+
+    NODE_MODULE_CONTEXT_AWARE_BUILTIN(crypto, node::crypto::InitCrypto)
+
+So, lets set a breakpoint in `InitCrypto`:
+
+    (lldb) breakpoint set -f node_crypto.cc -l 6007
+    (lldb) breakpoint set -f node_crypto.cc -l 5880
+
+First things that happens is that libcrypto must be initializes. My understanding is that OpenSSL has two libraries which are 
+libssl which used libcrypto. Node is using libcrypto in this case.
+
+From InitCryptOnce:
+
+    SSL_load_error_strings();
+    OPENSSL_no_config();
+
+OPENSSL_no_config() marks OpenSSL as configured. It seems that if this is not done to avoid some of OpenSSLs standard init functions
+that automatically call the configuration to just return hence do nothing.
+
+   if (!openssl_config.empty())
+This path would be taken if a openssl config had been passed using `--openssl-config`.
+
+Next, we have:
+
+    SSL_library_init();
+
+This function can be found in `deps/openssl/openssl/ssl/ssl_algs.c`
+
+    EVP_add_cipher(EVP_des_cbc());
+
+EVP I think stands for envelope and has a number of high level cryptographic functions.
+
+#### Building with shared openssl
+Building an [locally built version](https://github.com/danbev/learning-libcrypto#building-openssl) of OpenSSL.
+
+    $ ./configure --shared-openssl --shared-openssl-libpath=/Users/danielbevenius/work/security/openssl --prefix=/Users/danielbevenius/work/nodejs/build --shared-openssl-includes=/Users/danielbevenius/work/security/openssl/include/
+
+
+### Building on Solaris
+I used VirtualBox to build and run the test suite on Solaris
+
+    $ uname -a
+    SunOS solaris 5.11 11.3 i86pc i386 i86pc
+
+#### Setup
+
+    $ sudo pkgadd -d http://get.opencsw.org/now
+
+Install git:
+  
+    $ sudo /opt/csw/bin/pkgutil -y -i git
+    $ export PATH=/opt/csw/bin:$PATH      // added to ~/.bashrc
+
+Install binutils:
+
+    $ sudo pkgutil -y -i binutils
+    $ export PATH=/opt/csw/bin:/opt/csw/gnu:$PATH
+
+Clone node:
+
+    $ git clone https://github.com/nodejs/node.git
+
+Install gcc 49:
+
+    $ sudo pkg install --accept --license gcc-49
+
+    $ gmake CXXFLAGS+="--function-sections -fdata-sections"
+
+Install stdc++6:
+
+    $ sudo pkgchk -L CSWlibstdc++6
+    $ export LD_LIBRARY_PATH=/opt/csw/lib/:$LD_LIBRARY_PATH
+
+Patches:
+danbev@solaris:~/work/node$ git show 8ff7afd
+commit 8ff7afd2aba1cc13348e5d639f292b2fbb3b86d0
+Author: Daniel Bevenius <daniel.bevenius@gmail.com>
+Date:   Thu Mar 16 06:59:05 2017 +0100
+
+    add include ldflag for solaris
+    
+    It looks like when cctest is to be compiled the includes are
+    missing. Trying to add the SHARED_INTERMEDIATE_DIR and see if
+    that fixes one of the includes. If that works I'll add the rest
+    if required.
+
+diff --git a/node.gyp b/node.gyp
+index 2407844..4bd3769 100644
+--- a/node.gyp
++++ b/node.gyp
+@@ -667,6 +667,9 @@
+             ]},
+           ],
+         }],
++        ['OS=="solaris"', {
++          'ldflags': [ '-I<(SHARED_INTERMEDIATE_DIR)' ]
++        }],
+       ]
+     }
+   ], # end targets
+
+danbev@solaris:~/work/node$ git show 68c396b
+commit 68c396be00896801bb92b5705da240d9aef30890
+Author: Daniel Bevenius <daniel.bevenius@gmail.com>
+Date:   Thu Mar 16 12:21:24 2017 +0100
+
+    fix for building on solaris
+
+diff --git a/common.gypi b/common.gypi
+index 3aad8e7..e001a1d 100644
+--- a/common.gypi
++++ b/common.gypi
+@@ -282,7 +282,8 @@
+       }],
+       [ 'OS in "linux freebsd openbsd solaris android aix"', {
+         'cflags': [ '-Wall', '-Wextra', '-Wno-unused-parameter', ],
+-        'cflags_cc': [ '-fno-rtti', '-fno-exceptions', '-std=gnu++0x' ],
++        #'cflags_cc': [ '-fno-rtti', '-fno-exceptions', '-std=gnu++0x' ],
++        'cflags_cc': [ '-fno-rtti', '-fno-exceptions' ],
+         'ldflags': [ '-rdynamic' ],
+         'target_conditions': [
+           # The 1990s toolchain on SmartOS can't handle thin archives.
+@@ -323,6 +324,8 @@
+             'ldflags': [ '-m64', '-march=z196' ],
+           }],
+           [ 'OS=="solaris"', {
++            'defines': ['_GLIBCXX_USE_C99_MATH'],
++            'cflags_cc': [ '-std=c++11' ],
+             'cflags': [ '-pthreads' ],
+             'ldflags': [ '-pthreads' ],
+             'cflags!': [ '-pthread' ],
+
+
+
+Build and run node tests:
+
+    $ gmake cctest
+
+
+### Building on Windows
+I used VirtualBox to build and run the test suite on Windows
+
+    $ .\vcbuild test
