@@ -3323,6 +3323,10 @@ Install binutils:
     $ sudo pkgutil -y -i binutils
     $ export PATH=/opt/csw/bin:/opt/csw/gnu:$PATH
 
+Set GNU Make as the default:
+
+    $ sudo ln -s /usr/bin/gmake /usr/bin/make
+
 Clone node:
 
     $ git clone https://github.com/nodejs/node.git
