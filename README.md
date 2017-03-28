@@ -3258,6 +3258,8 @@ different test suites.
     $ mocha --inspect --debug-brk  -u exports --recursive -t 10000 ./test/setup.js  test/sync/test_index.js
 
 ### crypto
+The current version of openssl is 1.0.2k (run process.versions.openssl). So this is major version 1, minor 0
+and patch 2k I guess.
 To investigate lets take a look what happens when one requires crypto:
 
     const crypto = require('crypto');
@@ -3302,6 +3304,23 @@ Building an [locally built version](https://github.com/danbev/learning-libcrypto
 
     $ ./configure --shared-openssl --shared-openssl-libpath=/Users/danielbevenius/work/security/openssl --prefix=/Users/danielbevenius/work/nodejs/build --shared-openssl-includes=/Users/danielbevenius/work/security/openssl/include/
 
+
+#### Building OpenSSL without elliptic curve support
+
+    $ ./Configure no-ec --debug --prefix=/Users/danielbevenius/work/security/openssl/build  --libdir="openssl" darwin64-x86_64-cc
+
+Then building Node against that version:
+
+    $ ./configure --debug --shared-openssl --shared-openssl-libpath=/Users/danielbevenius/work/security/openssl/build/openssl --prefix=/Users/danielbevenius/work/nodejs/build --shared-openssl-includes=/Users/danielbevenius/work/security/openssl/build/include
+
+This will not compile are the headers for ec will not exist in the `--shared-openssl-includes` directory. You'll have to use the source
+include directory instead so that all the headers can be found. 
+
+    $ ./configure --debug --shared-openssl --shared-openssl-libpath=/Users/danielbevenius/work/security/openssl/build/openssl --prefix=/Users/danielbevenius/work/nodejs/build --shared-openssl-includes=/Users/danielbevenius/work/security/openssl/include
+
+There will instead be a runtime error if you try to call functions that require EC but you'll be able to build.
+
+Notice here that we have configured OpenSSL without Elliptic curve support
 
 ### Building on Solaris
 I used VirtualBox to build and run the test suite on Solaris
