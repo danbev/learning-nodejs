@@ -3322,6 +3322,11 @@ There will instead be a runtime error if you try to call functions that require 
 
 Notice here that we have configured OpenSSL without Elliptic curve support
 
+I was wondering what the values will if you just specify `--shared-openssl` which I've seen. In this case `pkg-config` will be called to retrieve information about
+install libraries in the system. For my system this will be:
+
+    'libraries': ['-lcrypto', '-lssl']},
+
 ### Building on Solaris
 I used VirtualBox to build and run the test suite on Solaris
 
@@ -3431,3 +3436,24 @@ Build and run node tests:
 I used VirtualBox to build and run the test suite on Windows
 
     $ .\vcbuild test
+
+
+### Debugging 
+
+    $ lldb -- out/Debug/cctest
+    (lldb) r
+    [ RUN      ] EnvironmentTest.MultipleEnvironmentsPerIsolate
+    cctest(86419,0x7fff799ca000) malloc: *** error for object 0x104401058: incorrect checksum for freed object - object was probably modified after being freed.
+*** set a breakpoint in malloc_error_break to debug
+Process 86419 stopped
+* thread #1: tid = 0x2bd84d0, 0x00007fff97229f06 libsystem_kernel.dylib`__pthread_kill + 10, queue = 'com.apple.main-thread', stop reason = signal SIGABRT
+    frame #0: 0x00007fff97229f06 libsystem_kernel.dylib`__pthread_kill + 10
+libsystem_kernel.dylib`__pthread_kill:
+->  0x7fff97229f06 <+10>: jae    0x7fff97229f10            ; <+20>
+    0x7fff97229f08 <+12>: movq   %rax, %rdi
+    0x7fff97229f0b <+15>: jmp    0x7fff972247cd            ; cerror_nocancel
+    0x7fff97229f10 <+20>: retq
+
+    (lldb) memory read 0x104401058
+
+
