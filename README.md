@@ -3457,3 +3457,22 @@ libsystem_kernel.dylib`__pthread_kill:
     (lldb) memory read 0x104401058
 
 
+    (lldb) jlh handle
+    0x1872340551b1: [Symbol]
+     - hash: 60730982
+     - name: 0x187234028391 <String[14]: node:npnBuffer>
+     - private: 1
+
+
+(lldb) jlh result
+0x1e9a8f728239: [Symbol]
+ - hash: 171677908
+ - name: 0x1e9a8f728211 <String[15]: node:alpnBuffer>
+ - private: 1
+
+
+### Switching between clang and gcc
+
+    CXX=g++ CXX.host=g++ && ./configure -- -Dclang=0.
+
+
