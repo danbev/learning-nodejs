@@ -72,11 +72,11 @@ There is also nothing about a event loop in V8, this is also something that is p
     |                                                                                          |
     +------------------------------------------------------------------------------------------+
 
-The execution stack is a stack of frame pointers. For each function called that function will be pushed onto
+The execution stack is a stack of frame pointers. For each function called, that function will be pushed onto
 the stack. When a function returns it will be removed. If that function calls other functions
 they will be pushed onto the stack.
 When all functions have returned execution can proceed from the returned to point. If one of the functions performs
-an operation that takes time progress will not be made until it completes as the only way to complete is that the
+an operation that takes time, progress will not be made until it completes as the only way to complete is that the
 function returns and is popped off the stack. This is what happens when you have a single threaded programming language.
 
 Aychnronous work can be done by calling into the WebAPIs, for example calling setTimeout which will call out to the
@@ -149,7 +149,7 @@ Init has some libuv code that looks familiar to what I played around with in [le
                  &dispatch_debug_messages_async,
                  DispatchDebugMessagesAsyncCallback);
 
-Now I've not used `uv_async_init` but looking a the docs this is done to allow a different thread to wake up the event loop and have the
+Now I've not used `uv_async_init` but looking at the docs this is done to allow a different thread to wake up the event loop and have the
 callback invoked. uv_async_init looks like this:
 
     int uv_async_init(uv_loop_t* loop, uv_async_t* async, uv_async_cb async_cb)
@@ -180,7 +180,7 @@ This is something that I've not seen before either:
         uv_loop_configure(uv_default_loop(), UV_LOOP_BLOCK_SIGNAL, SIGPROF);
     }
 
-What does uv_loop_configure do?
+What does uv_loop_configure do?  
 It sets additional loop options. This [example](https://github.com/danbev/learning-libuv/blob/master/configure.c) was used to look a little closer 
 at it.
 
@@ -212,7 +212,7 @@ A new thread is created and its entry function will be DebugSignalThreadMain. Th
 
      CHECK_EQ(0, pthread_sigmask(SIG_SETMASK, &sigmask, nullptr));
 
-The last nullprt is the oldset which can be stored (if it was not null that is)
+The last nullprt is the old set which can be stored (if it was not null that is)
 
     RegisterSignalHandler(SIGUSR1, EnableDebugSignalHandler);
 
@@ -474,7 +474,7 @@ Next up is process.versions which on my local machine returns:
       modules: '46',
       openssl: '1.0.2g' }
 
-After setting up all the object (SetupProcessObject) this methods returns. There is still no sign of the loading of the 'node.js' script. 
+After setting up all the object (SetupProcessObject) this methods returns. There is still no sign of the loading of the 'bootstrap_node.js' script. 
 This is done in LoadEnvironment.
 
 #### LoadEnvironment
@@ -698,7 +698,7 @@ An Environment has a number of nested classes:
     DomainFlag
     TickInfo
 
-The above nested classes calls the `DISALLOW_COPY_AND_ASSIGN` macro, for example:
+The above nested classes call the `DISALLOW_COPY_AND_ASSIGN` macro, for example:
 
     DISALLOW_COPY_AND_ASSIGN(TickInfo);
 
@@ -913,7 +913,7 @@ When the second line is executed the callback `New` will be invoked. This is set
     target->Set(FIXED_ONE_BYTE_STRING(env->isolate(), "TCP"), t->GetFunction());
 
 New takes a single argument of type v8::FunctionCallbackInfo which holds information about the function call make. 
-This is things like the number of arguments used, the arguments can be retreived using with the operator[]. `New` looks like this:
+These are things like the number of arguments used, the arguments can be retreived using with the operator[]. `New` looks like this:
 
     void TCPWrap::New(const FunctionCallbackInfo<Value>& a) {
       CHECK(a.IsConstructCall());
@@ -929,22 +929,20 @@ This is things like the number of arguments used, the arguments can be retreived
       }
       CHECK(wrap);
     }
-Like mentioned about when the constructor of TCPWrap is called it will initialize the uv_tcp_t handle.
+Like mentioned above when the constructor of TCPWrap is called it will initialize the uv_tcp_t handle.
 Using the example above we can see that `Length` should be 0 as we did not pass any arguments to the TCP function. Just wondering, what could be passed as a parameter?  
 What ever it might look like it should be a pointer to an AsyncWrap.
 
-So this is where the instance of TCPWrap is created. Notice `a.This()` which is passed all the wway up to BaseObject's constructor and made into a persistent handle.
+So this is where the instance of TCPWrap is created. Notice `a.This()` which is passed all the way up to BaseObject's constructor and made into a persistent handle.
 
     const req = new TCPConnectWrap();
     const err = client.connect(req, '127.0.0.1', this.address().port);
 
-Now, new TcpConnectWrap() is setup in TCPWrap::Initalize and the only thing that happens here is that it configured with a constructor that checks that this function
-is called with the `new` keyword. So there is really nothing else happening at this stage. But, when we call `client.connect` something interesting does happen:
+Now, new TcpConnectWrap() is setup in TCPWrap::Initalize and the only thing that happens here is that it configured with a constructor that checks that this function is called with the `new` keyword. So there is really nothing else happening at this stage. But, when we call `client.connect` something interesting does happen:
 TCPWrap::Connect
 
     if (err == 0) {
-    ConnectWrap* req_wrap =
-        new ConnectWrap(env, req_wrap_obj, AsyncWrap::PROVIDER_TCPCONNECTWRAP);
+    ConnectWrap* req_wrap = new ConnectWrap(env, req_wrap_obj, AsyncWrap::PROVIDER_TCPCONNECTWRAP);
     err = uv_tcp_connect(req_wrap->req(),
                          &wrap->handle_,
                          reinterpret_cast<const sockaddr*>(&addr),
@@ -954,9 +952,7 @@ TCPWrap::Connect
       delete req_wrap;
   }
 
-So we can see that we are creating a new ConnectWrap instance which extends AsyncWrap and also ReqWrap. Thinging about this makes sense I think. If we recall that the
-classed with Wrap in them wrap libuv concepts, and in this case we are going to make a tcp connection. If we look at our [client](https://github.com/danbev/learning-libuv/blob/master/client.c) 
-example we can see that we are using uv_connect_t make the connection (named `connection_req`):
+So we can see that we are creating a new ConnectWrap instance which extends AsyncWrap and also ReqWrap. Thinking about this makes sense I think. If we recall that the classes with Wrap in them wrap libuv concepts, and in this case we are going to make a tcp connection. If we look at our [client](https://github.com/danbev/learning-libuv/blob/master/client.c) example we can see that we are using uv_connect_t make the connection (named `connection_req`):
 
     r = uv_tcp_connect(&connect_req,
                        &tcp_client,
@@ -965,14 +961,12 @@ example we can see that we are using uv_connect_t make the connection (named `co
     
 `tcp_client` in the above example is of type `uv_tcp_t`.
 But ConnectWrap also extend AsyncWrap. See the AsyncWrap section for details.
-What might be of interest and something to look into a little deeper is that ReqWrap will add the request wrap (wrapping a uv_req_t remember) to the current env req_wrap_queue. Keep in 
-mind that a reqest is shortlived.
+What might be of interest and something to look into a little deeper is that ReqWrap will add the request wrap (wrapping a uv_req_t remember) to the current env req_wrap_queue. Keep in mind that a reqest is shortlived.
 The last thing that the ConnectWrap constructor does is call Wrap:
 
     Wrap(req_wrap_obj, this);
 
-Now, you might not remember what this `req_wrap_obj` is but was the first argument to `client.connect` and was the new `TCPConnectWrap` instance. But this was nothing more than a 
-constructor and nothing else:
+Now, you might not remember what this `req_wrap_obj` is, but it was the first argument to `client.connect` and was the new `TCPConnectWrap` instance. But this was nothing more than a constructor and nothing else:
 
     (lldb) p req_wrap_obj
     (v8::Local<v8::Object>) $34 = (val_ = 0x00007fff5fbfd018)
@@ -984,7 +978,7 @@ We can see that this is a v8::Local<v8::Object> and we are going to store the Co
     req_wrap_obj->SetAlignedPointerInInternalField(0, this);
 
 So why is this being done?   
-Well if you take a look in AfterConnect you can see that this will be accessed as passed as a parameter to the oncomplete function:
+Well if you take a look in AfterConnect you can see that this will be accessed and passed as a parameter to the oncomplete function:
 
     ConnectWrap* req_wrap = static_cast<ConnectWrap*>(req->data);
     ...
@@ -1068,8 +1062,7 @@ This method is defined in stream_wrap.cc:
     env->SetProtoMethod(target, "setBlocking", SetBlocking);
     StreamBase::AddMethods<StreamWrap>(env, target, flags);
 
-I've been wondering about the class names that end with Wrap and what they are wrapping. My thinking now is that they are wrapping libuv things. For instance, take StreamWrap, 
-in libuv src/unix/stream.c which is what SetBlocking calls:
+I've been wondering about the class names that end with Wrap and what they are wrapping. My thinking now is that they are wrapping libuv things. For instance, take StreamWrap, in libuv src/unix/stream.c which is what SetBlocking calls:
 
      void StreamWrap::SetBlocking(const FunctionCallbackInfo<Value>& args) {
        StreamWrap* wrap;
@@ -3476,3 +3469,71 @@ libsystem_kernel.dylib`__pthread_kill:
     CXX=g++ CXX.host=g++ && ./configure -- -Dclang=0.
 
 
+### [Ninja](https://ninja-build.org/)
+
+    $ ./configure && tools/gyp_node.py -f ninja && ninja -C out/Release && ln -fs out/Release/node node
+
+This will generate object files in `out/Release/src/` but the names will be `obj/src/node.node.o` instead of `obj/src/node/node.o`. This matters
+as we generete object files for different operating systems. 
+
+If you take a look in out/Release/ninja.build you'll find a bunch of subninja commands which are used to include other ninja build files:
+  
+    ....
+    subninja obj/node.ninja
+
+#### Building with Ninja linux
+
+    $ dnf install ninja-build
+    $ ./configure --debug --ninja
+    $ ninja-build -C out/Release
+    $ out/Release/cctest
+
+#### Building with Ninja on windows
+You'll need to install Visual Studion 2015 and make sure you select Common Tools for C++.
+
+Open cmd with administrator priveliges (Start -> Search for cmd ->CTRL+SHIFT+ENTER):
+
+    > python configure --debug --ninja --dest-cpu=x86 --without-intl
+    > tools\gyp_node.py -f ninja
+    > ninja -C out\Release
+    > out\Release\cctest.exe
+
+
+### Linux getauxval
+A good description of this can be found here:
+https://lwn.net/Articles/519085/
+
+The getauxval is a function that was added in glibc 2.16
+
+    #if defined(__linux__) && defined(__GLIBC__) && defined(__GLIBC_PREREQ)
+    # if __GLIBC_PREREQ(2, 16)
+    #   define HAS_GETAUXVAL 1
+    #   include <sys/auxv.h>
+    # endif //  HAS_GETAUXVAL
+    #endif
+
+    # LD_SHOW_AUXV=1 ./node
+    AT_SYSINFO_EHDR: 0x7fff503ee000
+    AT_HWCAP:        9f8bfbff
+    AT_PAGESZ:       4096
+    AT_CLKTCK:       100
+    AT_PHDR:         0x400040
+    AT_PHENT:        56
+    AT_PHNUM:        9
+    AT_BASE:         0x7f223f1d6000
+    AT_FLAGS:        0x0
+    AT_ENTRY:        0x859c90
+    AT_UID:          0
+    AT_EUID:         0
+    AT_GID:          0
+    AT_EGID:         0
+    AT_SECURE:       0
+    AT_RANDOM:       0x7fff503dddc9
+    AT_EXECFN:       ./node
+    AT_PLATFORM:     x86_64
+
+To force the setting of AT_SECURE:
+
+    $ setcap cap_net_raw+ep node
+
+    
