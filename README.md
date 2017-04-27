@@ -3534,6 +3534,22 @@ The getauxval is a function that was added in glibc 2.16
 
 To force the setting of AT_SECURE:
 
-    $ setcap cap_net_raw+ep node
+    $ setcap cap_net_raw+ep out/Release/node
+    $ getcap out/Release/node
+    $ useradd beve
+    $ su beve
+    $ ./out/Release/node
 
-    
+#### Show all v8 exceptions
+
+    $ out/Release/node --print_all_exceptions /work/node/test/parallel/test-process-setuid-setgid.js
+
+#### Creating patches
+I've found that I need to create patches from old patches that worked with a previous version. At work we 
+apply patches to node sources and when new versions are released these patches might not apply cleanly making
+it a manual task to make updates to that tag and then generating the patches to be applied.
+
+   $ patch -p1 < 000x-something.patch
+   $ git diff --patch-with-stat > patch.out
+Then I just copy this and replace the original patch section, but keeping the rest of the original patch.
+Then try to apply the patch again to make sure it applied cleanly
