@@ -3293,6 +3293,9 @@ This function can be found in `deps/openssl/openssl/ssl/ssl_algs.c`
 
 EVP I think stands for envelope and has a number of high level cryptographic functions.
 
+#### CNNIC
+China Internet Network Information Center (CNNIC) is referenced in some code. It is a Certificate Authority (may be other things as well).
+
 
 #### Signed Public Key and Challenge (SPKAC)
 Also known as Netscape SPKI.
@@ -3475,6 +3478,11 @@ libsystem_kernel.dylib`__pthread_kill:
 
 
 ### [Ninja](https://ninja-build.org/)
+
+Macosx:
+ 
+    $ ./configure --ninja
+    $ ninja -C out/Release
 
     $ ./configure && tools/gyp_node.py -f ninja && ninja -C out/Release && ln -fs out/Release/node node
 
