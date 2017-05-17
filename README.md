@@ -3924,3 +3924,69 @@ What if we set verbose to false:
 In this case the message will still be created and the exception set on the thread_local, but 
 when we get to ReportPendingMessages is_verbose_ will be false and the callback will be skipped.
 
+
+Member functions of SSLWrap:
+void DestroySSL();
+void WaitForCertCb(CertCb cb, void* arg);
+void SetSNIContext(SecureContext* sc);
+int SetCACerts(SecureContext* sc);
+
+
+### Shared 
+You can configure node using `--shared` in which case
+
+
+### Compiling on windows
+I looking into an issue on windows:
+https://github.com/nodejs/node/issues/12952
+
+The issue is a link error with the cctest target. In this particular case on windows it was built using:
+
+    .\vcbuild.bat dll debug x64 vc2015
+
+This will result in the following options:
+
+    configure --debug --shared --dest-cpu=x64 --tag=
+
+So this is saying that node should be created as a shared library but
+not any of its dependencies. In this case the focus is on OpenSSL which
+will be a static library.
+The link error is:
+
+    openssl.lib(err.obj) : error LINK2005: ERR_put_error already defined in node.lib(node.dll
+
+We can find the exported symbols of Debug/node.dll using:
+
+    dumpbin /EXPORTS Debug/node.dll > node-exports
+
+We can find the ERR_put_error is indeed exported from node.dll
+This is done because in node.gyp we have:
+
+      [ 'OS=="win" and '
+        'node_use_openssl=="true" and '
+        'node_shared_openssl=="false" and node_shared=="false"', {
+        'use_openssl_def': 1,
+      }, {
+        'use_openssl_def': 0,
+      }],
+
+In our case use_openssl_def will be 1 which is the used in node.gypi:
+
+      # openssl.def is based on zlib.def, zlib symbols
+      # are always exported.
+      ['use_openssl_def==1', {
+        'sources': ['<(SHARED_INTERMEDIATE_DIR)/openssl.def'],
+      }],
+      ['OS=="win" and use_openssl_def==0', {
+        'sources': ['deps/zlib/win32/zlib.def'],
+
+A .def file is a module definition file which describes attributes of a DLL. In our case openssl.def can be found in Debug\obj\global_intermediate:
+
+    EXPORTS
+    ...
+    ERR_put_error
+
+So we can see this function is indeed exported, so if we link against openssl.lib 
+this symbol (and the others) will be duplicates.
+
+
