@@ -3573,6 +3573,8 @@ Then try to apply the patch again to make sure it applied cleanly
     $ git format-patch -1 --stdout f5fad6d > out.patch
     $ git am --directory deps/v8  ~/work/google/javascript/v8/verbose.patch
 
+Don't forget to bump the patch version in deps/v8/include/v8-version.h
+
 
 #### HTTP/2
 
