@@ -3992,3 +3992,574 @@ So we can see this function is indeed exported, so if we link against openssl.li
 this symbol (and the others) will be duplicates.
 
 
+### V8 Platform
+This is used by an embedder and is an interface that must be implemented. This interface is defined in deps/v8/include/v8-platform.h.
+This interface has a number of functions related to threading and running task on threads:
+* CallOnBackgroundThread
+* CallOnForegroundThread
+* CallDelayedOnForegroundThread
+...
+* AddTraceEvent
+
+Node can be configured --without-v8-platform which will set environment variables that will be picked up by the pre-processor. For example, if you
+take a look in src/node.cc you will find:
+
+    #if NODE_USE_V8_PLATFORM
+    #include "libplatform/libplatform.h"
+    #endif  // NODE_USE_V8_PLATFORM
+
+libplatform/libplatform.h is the interface for a default v8::Platform implementation in V8.
+Next, we have a v8_platform struct that will use the above default v8::Platform implementation is NODE_USE_V8_PLATFORM is set.
+But what does it mean to not use the default v8::Platform implementation?
+Basically this will just create noop functions or functions that throw an error:
+
+    #else  // !NODE_USE_V8_PLATFORM
+    void Initialize(int thread_pool_size) {}
+    void PumpMessageLoop(Isolate* isolate) {}
+    void Dispose() {}
+    bool StartInspector(Environment *env, const char* script_path,
+                      const node::DebugOptions& options) {
+      env->ThrowError("Node compiled with NODE_USE_V8_PLATFORM=0");
+      return true;
+    }
+
+    void StartTracingAgent() {
+      fprintf(stderr, "Node compiled with NODE_USE_V8_PLATFORM=0, "
+                      "so event tracing is not available.\n");
+    }
+    void StopTracingAgent() {}
+
+
+When trying to run a test --without-v8-platform I run into the following error:
+
+
+    #
+    # Fatal error in ../deps/v8/src/v8.cc, line 110
+    # Check failed: platform_.
+    #
+
+    ==== C stack trace ===============================
+
+      0   node                                0x00000001019d2dae v8::base::debug::StackTrace::StackTrace() + 30
+      1   node                                0x00000001019d2de5 v8::base::debug::StackTrace::StackTrace() + 21
+      2   node                                0x00000001019ccf84 V8_Fatal + 452
+      3   node                                0x00000001012bcea8 v8::internal::V8::GetCurrentPlatform() + 72
+      4   node                                0x0000000100ed0c7c v8::internal::Isolate::Init(v8::internal::Deserializer*) + 1692
+      5   node                                0x00000001012965ba v8::internal::Snapshot::Initialize(v8::internal::Isolate*) + 170
+      6   node                                0x0000000100260265 v8::Isolate::New(v8::Isolate::CreateParams const&) + 485
+      7   node                                0x000000010170901f node::Start(uv_loop_s*, int, char const* const*, int, char const* const*) + 79
+      8   node                                0x0000000101708bce node::Start(int, char**) + 478
+      9   node                                0x000000010175f21e main + 94
+      10  node                                0x0000000100000a34 start + 52
+      11  ???                                 0x0000000000000002 0x0 + 2
+    Process 9882 stopped
+
+
+    2644   compiler_dispatcher_ =
+    2645       new CompilerDispatcher(this, V8::GetCurrentPlatform(), FLAG_stack_size);
+
+v8::GetCurrentPlatform will perform the following:
+
+    v8::Platform* V8::GetCurrentPlatform() {
+      DCHECK(platform_);
+      return platform_;
+   }
+
+But since we have not set a platform, remember that would have been done if NODE_USE_V8_PLATFORM:
+
+    #if NODE_USE_V8_PLATFORM
+    void Initialize(int thread_pool_size) {
+      platform_ = v8::platform::CreateDefaultPlatform(thread_pool_size);
+      V8::InitializePlatform(platform_);
+      tracing::TraceEventHelper::SetCurrentPlatform(platform_);
+    }
+
+My understanding is that the in this code path the snapshot blob is being deserialized and when 
+this is done.
+
+
+### Upgrading OpenSSL
+
+Download and verify the download:
+
+    $ gpg openssl-1.0.2l.tar.gz.asc
+    gpg: Signature made Thu May 25 14:55:41 2017 CEST using RSA key ID 0E604491
+    gpg: Can't check signature: public key not found
+    $ gpg --keyserver pgpkeys.mit.edu --recv-key 0E604491
+    gpg: requesting key 0E604491 from hkp server pgpkeys.mit.edu
+    gpg: key 0E604491: public key "Matt Caswell <matt@openssl.org>" imported
+    gpg: 3 marginal(s) needed, 1 complete(s) needed, PGP trust model
+    gpg: depth: 0  valid:   1  signed:   0  trust: 0-, 0q, 0n, 0m, 0f, 1u
+    gpg: Total number processed: 1
+    gpg:               imported: 1  (RSA: 1)
+    $ gpg openssl-1.0.2l.tar.gz.asc
+    gpg: Signature made Thu May 25 14:55:41 2017 CEST using RSA key ID 0E604491
+    gpg: Good signature from "Matt Caswell <matt@openssl.org>"
+    gpg:                 aka "Matt Caswell <frodo@baggins.org>"
+    gpg: WARNING: This key is not certified with a trusted signature!
+    gpg:          There is no indication that the signature belongs to the owner.
+    Primary key fingerprint: 8657 ABB2 60F0 56B1 E519  0839 D9C4 D26D 0E60 4491
+
+
+Compare the changes to make see if you have to make changes to the
+
+
+### Supporting different Crypto versions/libraries
+I'm working on a solution for Node.js to be able to support multiple versions of OpenSSL and in 
+the long run hopefully be able to also support other crypto libraries like LibreSSL, BoringSSL etc.
+
+Currently, it is possible to specify that OpenSSL that is in the deps directory be used when building
+node. One can also specify --shared-openssl and the specify where the headers are etc. The issue with
+this is that the code still depends on a specific version of OpenSSL and to support multiple version
+one has to have macro guards and for Linux distributions it probably means patching Node crypto as 
+at least in our case (Red Hat Enterprise Linux (RHEL)) we do so. 
+
+
+Let's configure node to use 
+
+    $ ./configure --debug --shared-openssl --shared-openssl-libpath=/Users/danielbevenius/work/security/build_1_1_0f/lib --shared-openssl-includes=/Users/danielbevenius/work/security/build_1_1_0f/include
+
+This will result in a compilation error which is good in our case as this gives us something to verify that we can have different version of OpenSSL.
+
+Suggestion:
+Keep in mind I don't think we can just start over and change what is currently there. The idea is that we provide a similar configuration that 
+we have to day but make it more general and not tied to OpenSSL. We could add a crypto version that specifies the version of being used, which for
+OpenSSL (non-shared) would default to the current version of OpenSSL in the deps directory. 
+
+Specfic version could then be supported by adding concrete implementations in src/crypto. The goal is to extract types that are general enough to 
+allow us to extract an abstract class which specific providers/versions must implement. 
+
+Tactic:
+* Move all OpenSSL dependent crypto source files into a separate directory (src/crypto/openssl-1.0.x/)
+  - verify that the build and tests are successful
+* Implement a CryptoFactory that crypto libraries can register a specifiec version with. 
+  - How should these get registered?
+    We won't ever be using more than one crypto implementation.
+
+
+### OpenSSL with FIPS
+When building the OpenSSL and specifying `--openssl-fips`, which is described as "Build OpenSSL using FIPS canister .o file in supplied folder", support for [Fipsld](https://wiki.openssl.org/index.php/Fipsld_and_C%2B%2B). The follwing can be seen on that page:
+"When performing a static link against the OpenSSL library, you have to embed the expected FIPS signature in your executable after final linking. Embedding the FIPS signature in your executable is most often accomplished with fisld."
+"fisld will take the place of the linker (or compiler if invoking via a compiler driver). If you use fisld to compile a source file, fisld will do nothing and simply invoke the compiler you specify through FIPSLD_CC. When it comes time to link, fisld will compile fips_premain.c, add fipscanister.o, and then perform the final link of your program. Once your program is linked, fisld will then invoke incore to embed the FIPS signature in your program."
+
+For instructions building an OpenSSL version with FIPS support see:
+https://github.com/danbev/learning-libcrypto#fips
+
+
+#### OpenSSL FIPS Object Module
+OpenSSL itself is not validated,and never will be. Instead a carefully defined software component
+called the OpenSSL FIPS Object Module has been created. The Module was designed for
+compatibility with the OpenSSL library so products using the OpenSSL library and API can be
+converted to use FIPS 140-2 validated cryptography with minimal effort.
+
+
+The v1.2.x Module is only compatible with OpenSSL 0.9.8 releases, while the v2.0 Module is
+compatible with OpenSSL 1.0.1 and 1.0.2 releases. The v2.0 Module is the best choice for all new
+software and product development.
+
+After following the [instructions](https://github.com/danbev/learning-libcrypto#fips) to configure OpenSSL with FIPS support, building Node can be done using the following commands:
+
+    $ ./configure --debug --shared-openssl --shared-openssl-libpath=/Users/danielbevenius/work/security/build_1_0_2k/lib --shared-openssl-includes=/Users/danielbevenius/work/security/build_1_0_2k/include --openssl-fips=/Users/danielbevenius/work/security/build_1_0_2k/
+    $ make -j8 test
+
+
+
+#### Crypto init
+
+    void InitCrypto(Local<Object> target,
+                Local<Value> unused,
+                Local<Context> context,
+                void* priv) {
+    static uv_once_t init_once = UV_ONCE_INIT;
+    uv_once(&init_once, InitCryptoOnce);
+
+    Environment* env = Environment::GetCurrent(context);
+    SecureContext::Initialize(env, target);
+
+`SecureContext::Initialize`:
+
+    void CipherBase::Initialize(Environment* env, Local<Object> target) {
+        Local<FunctionTemplate> t = env->NewFunctionTemplate(New);
+
+Lets take a look what `New` does:
+
+    void SecureContext::New(const FunctionCallbackInfo<Value>& args) {
+      Environment* env = Environment::GetCurrent(args);
+      new SecureContext(env, args.This());
+    }
+
+Usage of tls would look like a normal require (though since this is an native module the loading will be done by `NativeModule.require(filename)`:
+
+    const tls = require('tls');
+
+This module exports (among other functions): 
+
+    exports.createSecureContext = require('_tls_common').createSecureContext;
+    exports.SecureContext = require('_tls_common').SecureContext;
+    exports.TLSSocket = require('_tls_wrap').TLSSocket;
+    exports.Server = require('_tls_wrap').Server;
+    exports.createServer = require('_tls_wrap').createServer;
+    exports.connect = require('_tls_wrap').connect;
+
+So calling `tls.createSecureContext` will end up in `lib/_tls_common.js:
+
+    exports.createSecureContext = function createSecureContext(options, context) {
+    ...
+      var c = new SecureContext(options.secureProtocol, secureOptions, context);
+
+And here we find the call to `SecureContext` using `new`.
+
+In this walk through we have been taking a look at `New` but this was not called at this time. The
+next task in `SecureContext::Initialize(env, target)` is to set up functions on the 
+
+    Local<FunctionTemplate> t = env->NewFunctionTemplate(SecureContext::New);
+    t->InstanceTemplate()->SetInternalFieldCount(1);
+    t->SetClassName(FIXED_ONE_BYTE_STRING(env->isolate(), "SecureContext"));
+
+    env->SetProtoMethod(t, "init", SecureContext::Init);
+    env->SetProtoMethod(t, "setKey", SecureContext::SetKey);
+    env->SetProtoMethod(t, "setCert", SecureContext::SetCert);
+    env->SetProtoMethod(t, "addCACert", SecureContext::AddCACert);
+    ...
+    target->Set(FIXED_ONE_BYTE_STRING(env->isolate(), "SecureContext"), t->GetFunction());
+    
+Remember that these are prototype functions that are being setup on instance created when using
+`new SecureContext` which will be an instance of `CipherBase` since this is the type that the `New` function returned.
+
+    const binding = process.binding('crypto');
+
+Recall that binding is a function that is set on the process object when it is set up on node.cc. This 
+will be a call to Binding:
+
+    (lldb) br s -f node.cc -l 2723
+
+    static void Binding(const FunctionCallbackInfo<Value>& args) {
+      Local<String> module = args[0]->ToString(env->isolate());
+      node::Utf8Value module_v(env->isolate(), module);
+      ...
+    }
+
+    (lldb) jlh module
+    #crypto
+
+
+    Local<Array> modules = env->module_load_list_array();
+    (lldb) jlh modules
+    0x16da0049c641: [JSArray]
+     - map = 0x34afb7a04099 [FastProperties]
+     - prototype = 0xe7de5189b01
+     - elements = 0x39e4730d5221 <FixedArray[82]> [FAST_HOLEY_ELEMENTS]
+     - length = 69
+     - properties = 0x25494902241 <FixedArray[0]> {
+        #length: 0x4ddc16a6369 <AccessorInfo> (const accessor descriptor)
+     }
+     - elements = 0x39e4730d5221 <FixedArray[82]> {
+           0: 0x246944578d59 <String[18]: Binding contextify>
+           1: 0x246944578d89 <String[15]: Binding natives>
+           2: 0x246944578db1 <String[14]: Binding config>
+           3: 0x246944578dd9 <String[19]: NativeModule events>
+           4: 0x246944578e01 <String[18]: Binding async_wrap>
+           5: 0x246944578e31 <String[11]: Binding icu>
+           6: 0x246944578e59 <String[17]: NativeModule util>
+           7: 0x246944578e81 <String[10]: Binding uv>
+           8: 0x246944578ea9 <String[19]: NativeModule buffer>
+           9: 0x246944578ed1 <String[14]: Binding buffer>
+          10: 0x246944578ef9 <String[12]: Binding util>
+          11: 0x246944578f21 <String[26]: NativeModule internal/util>
+          12: 0x246944578f49 <String[28]: NativeModule internal/errors>
+          13: 0x246944578f71 <String[17]: Binding constants>
+          14: 0x246944578fa1 <String[28]: NativeModule internal/buffer>
+          15: 0x246944578fc9 <String[19]: NativeModule timers>
+          16: 0x246944578ff1 <String[18]: Binding timer_wrap>
+          17: 0x246944579021 <String[32]: NativeModule internal/linkedlist>
+          18: 0x246944579049 <String[24]: NativeModule async_hooks>
+          19: 0x246944579071 <String[19]: NativeModule assert>
+          20: 0x246944579099 <String[29]: NativeModule internal/process>
+          21: 0x2469445790c1 <String[37]: NativeModule internal/process/warning>
+          22: 0x2469445790e9 <String[39]: NativeModule internal/process/next_tick>
+          23: 0x246944579111 <String[38]: NativeModule internal/process/promises>
+          24: 0x246944579139 <String[35]: NativeModule internal/process/stdio>
+          25: 0x246944579161 <String[25]: NativeModule internal/url>
+          26: 0x246944579189 <String[33]: NativeModule internal/querystring>
+          27: 0x2469445791b1 <String[24]: NativeModule querystring>
+          28: 0x2469445791d9 <String[11]: Binding url>
+          29: 0x246944579201 <String[17]: NativeModule path>
+          30: 0x246944579229 <String[19]: NativeModule module>
+          31: 0x246944579251 <String[28]: NativeModule internal/module>
+          32: 0x246944579279 <String[15]: NativeModule vm>
+          33: 0x2469445792a1 <String[15]: NativeModule fs>
+          34: 0x39e4730e0651 <String[10]: Binding fs>
+          35: 0x39e4730e0679 <String[19]: NativeModule stream>
+          36: 0x39e4730e06a1 <String[36]: NativeModule internal/streams/legacy>
+          37: 0x39e4730e06c9 <String[29]: NativeModule _stream_readable>
+          38: 0x39e4730e06f1 <String[40]: NativeModule internal/streams/BufferList>
+          39: 0x39e4730e0719 <String[37]: NativeModule internal/streams/destroy>
+          40: 0x39e4730e0741 <String[29]: NativeModule _stream_writable>
+          41: 0x39e4730e0769 <String[27]: NativeModule _stream_duplex>
+          42: 0x39e4730e0791 <String[30]: NativeModule _stream_transform>
+          43: 0x39e4730e07b9 <String[32]: NativeModule _stream_passthrough>
+          44: 0x39e4730e07e1 <String[21]: Binding fs_event_wrap>
+          45: 0x39e4730e0811 <String[24]: NativeModule internal/fs>
+          46: 0x39e4730e0839 <String[17]: Binding inspector>
+          47: 0x21515bc747c9 <String[15]: NativeModule os>
+          48: 0x21515bc747f1 <String[10]: Binding os>
+          49: 0x21515bc74819 <String[26]: NativeModule child_process>
+          50: 0x21515bc74841 <String[18]: Binding spawn_sync>
+          51: 0x21515bc74871 <String[17]: Binding pipe_wrap>
+          52: 0x21515bc748a1 <String[35]: NativeModule internal/child_process>
+          53: 0x21515bc748c9 <String[27]: NativeModule string_decoder>
+          54: 0x21515bc748f1 <String[16]: NativeModule net>
+          55: 0x21515bc74919 <String[25]: NativeModule internal/net>
+          56: 0x21515bc74941 <String[18]: Binding cares_wrap>
+          57: 0x21515bc74971 <String[16]: Binding tty_wrap>
+          58: 0x21515bc74999 <String[16]: Binding tcp_wrap>
+          59: 0x21515bc749c1 <String[19]: Binding stream_wrap>
+          60: 0x21515bc749f1 <String[18]: NativeModule dgram>
+          61: 0x21515bc74a19 <String[16]: Binding udp_wrap>
+          62: 0x21515bc74a41 <String[20]: Binding process_wrap>
+          63: 0x21515bc74a71 <String[33]: NativeModule internal/socket_list>
+          64: 0x21515bc74a99 <String[20]: NativeModule console>
+          65: 0x21515bc74ac1 <String[16]: NativeModule tty>
+          66: 0x21515bc74ae9 <String[19]: Binding signal_wrap>
+          67: 0x35756b2729e1 <String[16]: NativeModule tls>
+          68: 0xd6549a0f479 <String[16]: NativeModule url>
+       69-81: 0x25494902351 <the hole>
+    }
+
+A `NativeModule` is a module which has access to the module property and implemented in JavaScript.
+A `Binding` is something that does not have a module and only set exports. 
+
+    modules->Set(l, OneByteString(env->isolate(), buf));
+    (lldb) p buf
+    (char [1024]) $16 = "Binding crypto"
+
+    node_module* mod = get_builtin_module(*module_v);
+    (lldb) p *mod
+    (node::node_module) $24 = {
+      nm_version = 55
+      nm_flags = 1
+      nm_dso_handle = 0x0000000000000000
+      nm_filename = 0x0000000101bc4053 "../src/crypto_impl/node_crypto.cc"
+      nm_register_func = 0x0000000000000000
+      nm_context_register_func = 0x000000010180f630 (node`node::crypto::InitCrypto(v8::Local<v8::Object>, v8::Local<v8::Value>, v8::Local<v8::Context>, void*) at node_crypto.cc:6230)
+      nm_modname = 0x0000000101baffde "crypto"
+      nm_priv = 0x0000000000000000
+      nm_link = 0x00000001027c54c0
+   }
+
+In this case I'm actually documenting and troubleshooting which is the reason for the strange path names to the source files.
+
+     if (mod != nullptr) {
+       exports = Object::New(env->isolate());
+       // Internal bindings don't have a "module" object, only exports.
+       CHECK_EQ(mod->nm_register_func, nullptr);
+       CHECK_NE(mod->nm_context_register_func, nullptr);
+       Local<Value> unused = Undefined(env->isolate());
+       mod->nm_context_register_func(exports, unused, env->context(), mod->nm_priv);
+       cache->Set(module, exports);
+
+So we check that the `nm_register_func` is not set but we should have a context aware register node module function but set the `exports` instance to Undefined.
+Next `mod->nm_context_register_func` is called which was configured in node_crypto.cc:
+
+    NODE_MODULE_CONTEXT_AWARE_BUILTIN(crypto, node::crypto::InitCrypto)
+
+So InitCrypto will be the function we end up in which has the call to `SecureContext::Initialize(env, target);` which I wanted to know how it ended up there.
+
+#### InitCrypto
+This will intialize the following:
+
+    SecureContext::Initialize(env, target);
+    Connection::Initialize(env, target); // SSLConnection
+    CipherBase::Initialize(env, target);
+    DiffieHellman::Initialize(env, target);
+    ECDH::Initialize(env, target);
+    Hmac::Initialize(env, target);
+    Hash::Initialize(env, target);
+    Sign::Initialize(env, target);
+    Verify::Initialize(env, target); 
+
+Should the constructors for these be checking that they are called with new?
+Even if these are internal it might be possible to call them using:
+
+    const binding = process.binding('crypto');
+    //const h = new binding.Hmac();
+    const h = binding.Hmac();
+   
+
+### node_constants
+Just a note here about how src/node_constant.cc is loaded as there is now `NODE_MOUDULE_CONTEXT_AWARE_BUILTIN` macro or anything like that. Instead this will be loaded when:
+
+    process.binding('constants').
+
+Which like mentioned earlier in this document this will invoke `Binding` and there is a special clause for `constants`:
+
+    } else if (!strcmp(*module_v, "constants")) {
+      exports = Object::New(env->isolate());
+      CHECK(exports->SetPrototype(env->context(), Null(env->isolate())).FromJust());
+      DefineConstants(env->isolate(), exports);
+      cache->Set(module, exports);
+
+`DefineConstants`: 
+
+    DefineErrnoConstants(err_constants);
+    DefineWindowsErrorConstants(err_constants);
+    DefineSignalConstants(sig_constants);
+    DefineUVConstants(os_constants);
+    DefineSystemConstants(fs_constants);
+    DefineOpenSSLConstants(crypto_constants);
+    DefineCryptoConstants(crypto_constants);
+    DefineZlibConstants(zlib_constants);
+
+    os_constants->Set(OneByteString(isolate, "errno"), err_constants);
+    os_constants->Set(OneByteString(isolate, "signals"), sig_constants);
+    target->Set(OneByteString(isolate, "os"), os_constants);
+    target->Set(OneByteString(isolate, "fs"), fs_constants);
+    target->Set(OneByteString(isolate, "crypto"), crypto_constants);
+    target->Set(OneByteString(isolate, "zlib"), zlib_constants);
+    
+
+### DefineJavaScript
+When you see:
+
+    NativeModule._source = process.binding('natives');
+
+Similar to when `process.binding('constants')` is used there is a special clause in Binding for this:
+
+    } else if (!strcmp(*module_v, "natives")) {
+      exports = Object::New(env->isolate());
+      DefineJavaScript(env, exports);
+      cache->Set(module, exports);
+
+`DefineJavaScript` is declared in `src/node_javascript.h` but as you might recall there is no implementation in the source code tree for this header the source file is generated.
+
+
+When I was working on decoupling OpenSSL from node.cc I missed out the macros that are used to conditionally set various settings. For example in `GetFeatures` we have:
+
+    #ifdef SSL_CTRL_SET_TLSEXT_SERVERNAME_CB
+      Local<Boolean> tls_sni = True(env->isolate());
+    #else
+      Local<Boolean> tls_sni = False(env->isolate());
+    #endif
+      obj->Set(FIXED_ONE_BYTE_STRING(env->isolate(), "tls_sni"), tls_sni);
+
+
+Fix formatting in src/node_crypto.cc X509ToObject
+
+
+### TLS OpenSSL 1.1.0 Issue
+I'm tryin to make test/parallel/test-tls-ecdh-disable.js to be used with both OpenSSL 1.0.x and 1.1.x.
+The issue is that the test successfully listens and the mustNotCall function is called which is the callback passed to the listener event handler registration.
+
+The cipher in use is `ECDHE-RSA-AES128-GCM-SHA256`. We can check what ciphers are supported by using the following command:
+
+    $ ~/work/security/build_1_1_0f/bin/openssl ciphers -v 'ECDH+AESGCM:DH+AESGCM:ECDH+AES256:DH+AES256:ECDH+AES128:DH+AES:RSA+AESGCM:RSA+AES:!aNULL:!MD5:!DSS'
+    ECDHE-ECDSA-AES256-GCM-SHA384 TLSv1.2 Kx=ECDH     Au=ECDSA Enc=AESGCM(256) Mac=AEAD
+    ECDHE-RSA-AES256-GCM-SHA384 TLSv1.2 Kx=ECDH     Au=RSA  Enc=AESGCM(256) Mac=AEAD
+    ECDHE-ECDSA-AES128-GCM-SHA256 TLSv1.2 Kx=ECDH     Au=ECDSA Enc=AESGCM(128) Mac=AEAD
+
+    ECDHE-RSA-AES128-GCM-SHA256 TLSv1.2 Kx=ECDH     Au=RSA  Enc=AESGCM(128) Mac=AEAD <----
+
+    DHE-RSA-AES256-GCM-SHA384 TLSv1.2 Kx=DH       Au=RSA  Enc=AESGCM(256) Mac=AEAD
+    DHE-RSA-AES128-GCM-SHA256 TLSv1.2 Kx=DH       Au=RSA  Enc=AESGCM(128) Mac=AEAD
+    ECDHE-ECDSA-AES256-CCM8 TLSv1.2 Kx=ECDH     Au=ECDSA Enc=AESCCM8(256) Mac=AEAD
+    ECDHE-ECDSA-AES256-CCM  TLSv1.2 Kx=ECDH     Au=ECDSA Enc=AESCCM(256) Mac=AEAD
+    ECDHE-ECDSA-AES256-SHA384 TLSv1.2 Kx=ECDH     Au=ECDSA Enc=AES(256)  Mac=SHA384
+    ECDHE-RSA-AES256-SHA384 TLSv1.2 Kx=ECDH     Au=RSA  Enc=AES(256)  Mac=SHA384
+    ECDHE-ECDSA-AES256-SHA  TLSv1 Kx=ECDH     Au=ECDSA Enc=AES(256)  Mac=SHA1
+    ECDHE-RSA-AES256-SHA    TLSv1 Kx=ECDH     Au=RSA  Enc=AES(256)  Mac=SHA1
+    DHE-RSA-AES256-CCM8     TLSv1.2 Kx=DH       Au=RSA  Enc=AESCCM8(256) Mac=AEAD
+    DHE-RSA-AES256-CCM      TLSv1.2 Kx=DH       Au=RSA  Enc=AESCCM(256) Mac=AEAD
+    DHE-RSA-AES256-SHA256   TLSv1.2 Kx=DH       Au=RSA  Enc=AES(256)  Mac=SHA256
+    DHE-RSA-AES256-SHA      SSLv3 Kx=DH       Au=RSA  Enc=AES(256)  Mac=SHA1
+    ECDHE-ECDSA-AES128-CCM8 TLSv1.2 Kx=ECDH     Au=ECDSA Enc=AESCCM8(128) Mac=AEAD
+    ECDHE-ECDSA-AES128-CCM  TLSv1.2 Kx=ECDH     Au=ECDSA Enc=AESCCM(128) Mac=AEAD
+    ECDHE-ECDSA-AES128-SHA256 TLSv1.2 Kx=ECDH     Au=ECDSA Enc=AES(128)  Mac=SHA256
+    ECDHE-RSA-AES128-SHA256 TLSv1.2 Kx=ECDH     Au=RSA  Enc=AES(128)  Mac=SHA256
+    ECDHE-ECDSA-AES128-SHA  TLSv1 Kx=ECDH     Au=ECDSA Enc=AES(128)  Mac=SHA1
+    ECDHE-RSA-AES128-SHA    TLSv1 Kx=ECDH     Au=RSA  Enc=AES(128)  Mac=SHA1
+    DHE-RSA-AES128-CCM8     TLSv1.2 Kx=DH       Au=RSA  Enc=AESCCM8(128) Mac=AEAD
+    DHE-RSA-AES128-CCM      TLSv1.2 Kx=DH       Au=RSA  Enc=AESCCM(128) Mac=AEAD
+    DHE-RSA-AES128-SHA256   TLSv1.2 Kx=DH       Au=RSA  Enc=AES(128)  Mac=SHA256
+    DHE-RSA-AES128-SHA      SSLv3 Kx=DH       Au=RSA  Enc=AES(128)  Mac=SHA1
+    AES256-GCM-SHA384       TLSv1.2 Kx=RSA      Au=RSA  Enc=AESGCM(256) Mac=AEAD
+    AES128-GCM-SHA256       TLSv1.2 Kx=RSA      Au=RSA  Enc=AESGCM(128) Mac=AEAD
+    AES256-CCM8             TLSv1.2 Kx=RSA      Au=RSA  Enc=AESCCM8(256) Mac=AEAD
+    AES256-CCM              TLSv1.2 Kx=RSA      Au=RSA  Enc=AESCCM(256) Mac=AEAD
+    AES128-CCM8             TLSv1.2 Kx=RSA      Au=RSA  Enc=AESCCM8(128) Mac=AEAD
+    AES128-CCM              TLSv1.2 Kx=RSA      Au=RSA  Enc=AESCCM(128) Mac=AEAD
+    AES256-SHA256           TLSv1.2 Kx=RSA      Au=RSA  Enc=AES(256)  Mac=SHA256
+    AES128-SHA256           TLSv1.2 Kx=RSA      Au=RSA  Enc=AES(128)  Mac=SHA256
+    AES256-SHA              SSLv3 Kx=RSA      Au=RSA  Enc=AES(256)  Mac=SHA1
+    AES128-SHA              SSLv3 Kx=RSA      Au=RSA  Enc=AES(128)  Mac=SHA1
+
+
+### Zlib
+The version we are using on Fedora is:
+
+     zlib: '1.2.8'
+
+The version building locally is:
+
+     zlib: '1.2.11',
+
+The issue I'm seeing is that `test/parallel/test-zlib-failed-init.js` passes as expected when using version 1.2.11 but fails
+when using 1.2.8. 
+The change log for zlib can be found here: http://zlib.net/ChangeLog.txt
+
+    Changes in 1.2.9 (31 Dec 2016)
+    ...
+    - Reject a window size of 256 bytes if not using the zlib wrapper
+    ...
+
+### ICU
+We are currently building using --with-intl=system-icu which gives the following icu version:
+
+    icu: '57.1'
+
+When I build locally and without any icu flags the version is:
+
+The issue I'm seeing is that test/parallel/test-icu-data-dir.js is failing:
+
+    assert.js:60
+    throw new errors.AssertionError({
+    ^
+
+    AssertionError [ERR_ASSERTION]: false == true
+      at Object.<anonymous> (/root/rpmbuild/BUILD/node-v8.1.0/test/parallel/test-icu-data-dir.js:13:3)
+
+
+    const child = spawnSync(process.execPath, ['--icu-data-dir=/', '-e', '0']);
+    assert(child.stderr.toString().includes(expected));
+
+
+### Fips
+When using the bundled/deps version of OpenSSL and the just building without any configuration options, OpenSSL FIPS support is not enabled. 
+The test `test/parallel/test-crypto-fips.js` performs a number of checks and assumes the above default configuration. I'm running into an issue when configuring Node using --shared-openssl and the system version of OpenSSL supports FIPS (but I'm not setting anything FIPS related when configuring only the shared includes and shared lib directory. When I do this the mentioned test fails when trying to toggle fips_mode using a OpenSSL configuration file.
+
+
+    [root@1b05bc2e415c node-v8.1.0]# openssl version
+    OpenSSL 1.0.2k-fips  26 Jan 2017    
+
+    out/Release/node test/parallel/test-icu-data-dir.js:
+
+    Spawned child [pid:9757] with cmd 'require("crypto").fips' expect 0 with args '--openssl-config=/root/rpmbuild/BUILD/node-v8.1.0/test/fixtures/openssl_fips_enabled.cnf' OPENSSL_CONF=undefined
+    assert.js:60
+      throw new errors.AssertionError({
+      ^
+
+    AssertionError [ERR_ASSERTION]: 0 === 1
+        at responseHandler (/root/rpmbuild/BUILD/node-v8.1.0/test/parallel/test-crypto-fips.js:56:14)
+
+
+You might have to manually remove `config_fips.gypi` when you want to reconfigure fips.
+
+#### Building the bundled openssl with fips
+
+    $ ./configure --openssl-fips=/Users/danielbevenius/work/security/build_1_0_2k/
+    $ out/Release/node
+    > process.versions.openssl
+    '1.0.2l-fips'
+
+### Node N-API
+
+All JavaScript values are abstracted behind an opaque type named napi_value.
