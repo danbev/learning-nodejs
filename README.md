@@ -4563,3 +4563,81 @@ You might have to manually remove `config_fips.gypi` when you want to reconfigur
 ### Node N-API
 
 All JavaScript values are abstracted behind an opaque type named napi_value.
+
+
+### FIXED_ONE_BYTE_STRING
+This is a macro which can be found in `src/util.h`:
+
+    #define FIXED_ONE_BYTE_STRING(isolate, string)                                \
+    (node::OneByteString((isolate), (string), sizeof(string) - 1))
+
+    inline v8::Local<v8::String> OneByteString(v8::Isolate* isolate,
+                                           const char* data,
+                                           int length) {
+       return v8::String::NewFromOneByte(isolate,
+                                     reinterpret_cast<const uint8_t*>(data),
+                                     v8::NewStringType::kNormal,
+                                     length).ToLocalChecked();
+    }
+So we are passing in the string which recieved as a const char* in the OneByteString function. This is then reinterpreted to const uint8_t*.
+
+OneByteString: the string's bytes are not UTF-8 encoded, can only contain characters in the first 256 unicode code points
+TwoByteString: Same, but uses two bytes for each character (using surrogate pairs to represent unicode characters that can't be represented in two bytes).
+
+
+## Binary Compatability
+Is when a program is linked dynmically to a former version and does not have to be recompiled.
+If a program needs to be recompiled to run with a new version of library but doesn't require 
+any further modifications, the library is source compatible.
+
+An ABI defines the structures and methods used to access external, already compiled libraries/code at the level of machine code.
+
+Making a namespace change in C++ will generate a different mangled name so the symbol in the object file will be different.
+
+
+#### C++ Lint task
+Verify that functions that return pointers have the pointer operator in the correct place (to the left).
+
+The rules can be found in 'tools/cpplint.py' and can be run using:
+
+    tools/cpplint.py files
+
+The script will run through the files and for each one call ProcessFile which does some checking and then calls
+ProcessFileData and later ProcessLine. Not that you can pass in extra_check_functions which might become handy.
+
+
+### NDEBUG
+I've seen this in couple of places in the node source code and did not know about it.
+NDBUG is used to toggle/control whether the assert macro will expand into something that will perform a check or not.
+
+From `<assert.h>`:
+
+    #ifdef NDEBUG
+    #define assert(condition) ((void)0)
+    #else
+    #define assert(condition) /*implementation defined*/
+    #endif
+
+### assert
+This macro is disabled if, at the moment of including <assert.h>, a macro with the name NDEBUG has already been defined. 
+This allows for a coder to include as many assert calls as needed in a source code while debugging the program and then disable all of them for the production version by simply including a line like:
+ 
+    #define NDEBUG 
+
+### Building a addons
+Change to the directory of the addons and then you can rebuild using:
+
+    $ ../../.././deps/npm/bin/node-gyp-bin/node-gyp rebuild --nodedir=../../../
+
+To switch between release and debug builds you can modify
+
+If the NDEBUG macro is defined when <assert.h> is included the assets are disabled. While looking into adding a addons test I noticed that at-exit undefined
+NDEBUG but not the other tests that use assert. As far as I can tell there is no need to undefine this and non of the other tests do. This commit removes
+the undef for consistency.
+
+
+### Run an a set of JavaScript tests
+You can specify the directory to run test, for example this would only run the async-hooks tests:
+
+    $ python tools/test.py --mode=release -J async-hooks
+
