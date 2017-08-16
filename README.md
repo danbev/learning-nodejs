@@ -4412,7 +4412,7 @@ Even if these are internal it might be possible to call them using:
    
 
 ### node_constants
-Just a note here about how src/node_constant.cc is loaded as there is now `NODE_MOUDULE_CONTEXT_AWARE_BUILTIN` macro or anything like that. Instead this will be loaded when:
+Just a note here about how src/node_constant.cc is loaded as there is no `NODE_MOUDULE_CONTEXT_AWARE_BUILTIN` macro or anything like that. Instead this will be loaded when:
 
     process.binding('constants').
 
@@ -4669,21 +4669,22 @@ You can specify the directory to run test, for example this would only run the a
 ### Event Loop
 It all starts with the javascript file to be executed, which is you main program.
 
-------------> javascript.js ------+-----------------------------+ 
-                                 /|\                            | setTimeout/SetInterval
-                                  |                             | JavaScript callbacks --------------------------------------+
-                                  |                             |                                                            |
-                                  |                             | network/disk/child_processes                               |
-                                  |                             | JavaScript callbacks --------------------------------------+
-                                  |                             |                                                            |----> callback ------> nextTick callback ------------------------------+
-                                  |                             | setImmedate                                                |                             /|\                                       |
-                                  +                             | JavaScript callbacks --------------------------------------|                              |                                        |
-                                   \                            |                                                            |                              +---- process resolved promises ---------+ 
-                                    \                           | close events                                               |                    
-                                     \                          | JavaScript callbacks --------------------------------------|
-                                      \                         |
-                                       \                        |
-<----------- process.exit (event) <-----------------------------+
+    ------------> javascript.js ------+-----------------------------+ 
+                                     /|\                            | setTimeout/SetInterval
+                                      |                             | JavaScript callbacks --------------------------------------+
+                                      |                             |                                                            |
+                                      |                             | network/disk/child_processes                               |
+                                      |                             | JavaScript callbacks --------------------------------------+
+                                      |                             |                                                            |----> callback ------> nextTick callback ------------------------------+
+                                      |                             | setImmedate                                                |                             /|\                                       |
+                                      +                             | JavaScript callbacks --------------------------------------|                              |                                        |
+                                       \                            |                                                            |                              +---- process resolved promises ---------+ 
+                                        \                           | close events                                               |                    
+                                         \                          | JavaScript callbacks --------------------------------------|
+                                          \                         |
+                                           \                        |
+    <----------- process.exit (event) <-----------------------------+
+
 
 Where is the first interaction with libuv in node?
 There very first call is (in node.cc):
