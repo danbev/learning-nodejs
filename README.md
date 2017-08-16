@@ -31,12 +31,14 @@ The rest of this page contains notes gathred while setting through the code base
 4. [Environment](#environment)
 5. [TCPWrap](#tcpwrapinitialize)
 6. [Running a script](#running-a-script)
-7. [setTimeout](#settimeout)
-8. [setImmediate](#setimmediate)
-9. [nextTick](#process._nexttick)
-10. [AsyncWrap](#asyncwrap)
-11. [lldb](#lldb)
-12. [Promises](#promises)
+7. [Event loop](#event-loop)
+8. [setTimeout](#settimeout)
+9. [setImmediate](#setimmediate)
+10. [nextTick](#process._nexttick)
+11. [AsyncWrap](#asyncwrap)
+12. [lldb](#lldb)
+13. [Promises](#promises)
+14. [Libuv Thread pool](#libuv-thread-pool)
 
 ### Background
 Node.js is roughly [Google V8](https://github.com/v8/v8), [libuv](https://github.com/libuv/libuv) and Node.js core which glues
@@ -1448,7 +1450,7 @@ The above are used by node_crypto.cc which makes sense as Application Level Prot
     V(arrow_message_private_symbol, "node:arrowMessage")
 Not sure exactly what this does but from a quick search it looks like it has to do with exception handling and printing of error messages. TODO: revisit this later.
 
-An IsolateData (and also an Environement as it proxies these members)  actually has a lot of members, too many to list here it is easy to do a search for them.
+An IsolateData (and also an Environement as it proxies these members) actually has a lot of members, too many to list here it is easy to do a search for them.
 
 
 ### Running lint
@@ -2725,8 +2727,6 @@ that when startup in bootstrap_node.js was called, in 22% of the samples it call
 
 
 ### setTimeout
-Explain and show/compare what happens when we call setTimeout with regards to the V8 callstack and the call queue
-and task queue. Draw parallels to V8 and chrome.
 
 Let's take the following example:
 
@@ -2747,6 +2747,7 @@ In Node you can call setTimeout with out having a require. This is done by lib/b
       global.setInterval = timers.setInterval;
       global.setTimeout = timers.setTimeout;
    }
+
 So we can see that we are able to call setTimout without having to require any module and that it is part of a
 native modules named timers. This is located in lib/timers.js.
 
@@ -2781,7 +2782,7 @@ Back in the insert function we then have the following:
     const lists = unrefed === true ? unrefedLists : refedLists;
 
 We know that unrefed is false so lists will be the refedLists which is an object keyed with the millisecond that a timeout is due
-to expire. The value of eqch key is a linkedlist of timers that expire at the same time. 
+to expire. The value of each key is a linkedlist of timers that expire at the same time. 
 
     var list = lists[msecs];
 
@@ -2808,7 +2809,7 @@ The `new TimerWrap` call will invoke `New` in timer_wrap.cc as setup in the init
 
     int r = uv_timer_init(env->event_loop(), &handle_);
 
-So we can see that it is settig up a libuv [timer](https://github.com/danbev/learning-libuv/blob/master/timer.c).
+So we can see that it is setting up a libuv [timer](https://github.com/danbev/learning-libuv/blob/master/timer.c).
 Shortly after we have the following code (back in JavaScript land and lib/timers.js):
 
 Next the list (TimerList) is initialized setting _idleNext and _idlePrev to list. After this we are adding
@@ -2833,7 +2834,36 @@ Start is initialized using :
    }
 
 Compare this with [timer.c](https://github.com/danbev/learning-libuv/blob/master/timer.c). and you can see that these is not
-that much of a difference. Let's look at the callback OnTimeout
+that much of a difference. Let's look at the callback OnTimeout:
+
+    static void OnTimeout(uv_timer_t* handle) {
+      TimerWrap* wrap = static_cast<TimerWrap*>(handle->data);
+      Environment* env = wrap->env();
+      HandleScope handle_scope(env->isolate());
+      Context::Scope context_scope(env->context());
+      wrap->MakeCallback(kOnTimeout, 0, nullptr);
+    }
+
+The callback in question looks like:
+
+    0xa90abea6961: [Function]
+     - map = 0x2fecee786da1 [FastProperties]
+     - prototype = 0x1b3829484539
+     - elements = 0x2203fd302241 <FixedArray[0]> [FAST_HOLEY_ELEMENTS]
+     - initial_map =
+     - shared_info = 0x28b2bad27aa1 <SharedFunctionInfo listOnTimeout>
+     - name = 0x28b2bad26b31 <String[13]: listOnTimeout>
+     - formal_parameter_count = 0
+     - context = 0x19bfe9663951 <FixedArray[48]>
+     - feedback vector cell = 0x28b2bad2a549 <Cell value= 0x2203fd302311 <undefined>>
+     - code = 0x26d0e2004941 <Code BUILTIN>
+     - properties = 0x2203fd302241 <FixedArray[0]> {
+        #length: 0x35bd747eed51 <AccessorInfo> (const accessor descriptor)
+        #name: 0x35bd747eedc1 <AccessorInfo> (const accessor descriptor)
+        #prototype: 0x35bd747eee31 <AccessorInfo> (const accessor descriptor)
+     }
+
+Notice that the callback is `listOnTimeout` and this can be found in lib/timer.js.
 
 ### setImmediate
 The very simple JavaScript looks like this:
@@ -2865,6 +2895,7 @@ The following check will then be done:
 
 In this case `process._needImmediateCallback` is false so we'll enter the above block and set process._needImmediateCallback
 to `true`. 
+
 Also, notice that we are setting the processImmediate instance as a member of the process object. 
 `processImmediate` is a function defined in timer.js. There is a V8 accessor for the field `_immediateCallback` on the process object which is set up in node.cc (SetupProcessObject function):
 
@@ -2993,7 +3024,7 @@ passed to `_setupNextTick`.
         env->context(),
         FIXED_ONE_BYTE_STRING(args.GetIsolate(), "_setupNextTick")).FromJust();
 
-Looks like this remove the _setupNextTick function from the process object.
+Looks like this removes the _setupNextTick function from the process object.
 
     uint32_t* const fields = env->tick_info()->fields();
     uint32_t const fields_count = env->tick_info()->fields_count();
@@ -3002,7 +3033,6 @@ What are 'fields'? What are 'fields_count'?
 
     (lldb) p fields_count
     (uint32_t) $23 = 2
-
 
     Local<ArrayBuffer> array_buffer =
         ArrayBuffer::New(env->isolate(), fields, sizeof(*fields) * fields_count);
@@ -3154,8 +3184,6 @@ So that gives us more information, but lets say you'd like to see the name of th
     (lldb) jlh init_fn->GetName()
     #init
 
-You can also print pointer
-
 ### Promises
 The section is about understanding how ECMAScript 6 Promise API works.
 
@@ -3209,8 +3237,6 @@ $target_gen_dir/libraries.cc. You can inspect this file (out/x64.debug/obj/gen/l
 But I could not find a reference to libraries.cc in the source code base. This is instead used
 by target in src/v8.gyp which is v8_snapshot.
 
-    
-
 out/Debug/obj/gen/libraries.cc and libraries.bin. 
 
 
@@ -3232,11 +3258,10 @@ src/js/promise.js:
 
     %CheckIsBootstrapping();
 
-This is compile by a call from bootstrapper.cc:
+This is compiled by a call from bootstrapper.cc:
 
     Handle<Object> args[] = {global, utils, extras_utils};
     return Bootstrapper::CompileNative(isolate, name, source_code, arraysize(args), args, NATIVES_CODE);
-
 
 
 $ out/Debug/node --v8-options
@@ -4640,4 +4665,347 @@ the undef for consistency.
 You can specify the directory to run test, for example this would only run the async-hooks tests:
 
     $ python tools/test.py --mode=release -J async-hooks
+
+### Event Loop
+It all starts with the javascript file to be executed, which is you main program.
+
+------------> javascript.js ------+-----------------------------+ 
+                                 /|\                            | setTimeout/SetInterval
+                                  |                             | JavaScript callbacks --------------------------------------+
+                                  |                             |                                                            |
+                                  |                             | network/disk/child_processes                               |
+                                  |                             | JavaScript callbacks --------------------------------------+
+                                  |                             |                                                            |----> callback ------> nextTick callback ------------------------------+
+                                  |                             | setImmedate                                                |                             /|\                                       |
+                                  +                             | JavaScript callbacks --------------------------------------|                              |                                        |
+                                   \                            |                                                            |                              +---- process resolved promises ---------+ 
+                                    \                           | close events                                               |                    
+                                     \                          | JavaScript callbacks --------------------------------------|
+                                      \                         |
+                                       \                        |
+<----------- process.exit (event) <-----------------------------+
+
+Where is the first interaction with libuv in node?
+There very first call is (in node.cc):
+
+    argv = uv_setup_args(argc, argv);
+
+But this does not do anything with the event loop. For that we have to look at `Init`:
+
+    prog_start_time = static_cast<double>(uv_now(uv_default_loop()));
+
+This will land us in uv_common.c:
+
+    uv_loop_t* uv_default_loop(void) {
+     if (default_loop_ptr != NULL)
+       return default_loop_ptr;
+   
+     if (uv_loop_init(&default_loop_struct))
+
+    (lldb) p default_loop_ptr
+    (uv_loop_t *) $4 = 0x0000000000000000
+
+So we can see that this is the first call to `uv_default_loop` so lets take a closer look at `uv_loop_init` in src/unix/loop.c (in libuv that is):
+
+    uv__signal_global_once_init();
+
+Which will call:
+
+    uv_once(&uv__signal_global_init_guard, uv__signal_global_init);
+
+I just skimmed the code but this looks like setting up fork handlers to reset signals. uv_once uses [pthread_once](https://github.com/danbev/learning-c/blob/master/pthreads-once.c).
+After this we will be back in loop.c:
+
+    heap_init((struct heap*) &loop->timer_heap);
+
+Where are initializing a min heap data structur for timers.
+
+    QUEUE_INIT(&loop->wq)
+
+`wq` is a work queue (include/uv-threadpool.h):
+
+    void* wq[2];
+
+What does the macro `QUEUE_INIT` do?
+It is defined in `src/queue.h` as:
+
+    QUEUE_NEXT(q) = (q);                                                      \
+    QUEUE_PREV(q) = (q);
+
+    typedef void *QUEUE[2];
+    ...
+    #define QUEUE_NEXT(q)       (*(QUEUE **) &((*(q))[0]))
+
+This will set &loop->wp[0]
+
+And the same goes for handle_queue and active_reqs which will be initialized using QUEUE_INIT as well:
+
+    void* handle_queue[2];
+    void* active_reqs[2];
+
+    QUEUE_INIT(&loop->active_reqs);
+    QUEUE_INIT(&loop->idle_handles);
+
+    ...
+    err = uv__platform_loop_init(loop);
+
+
+`uv__platform_loop_init` can be found in src/unix/darwin.c:
+
+    if (uv__kqueue_init(loop)) 
+
+`uv__kqueue_init` can be found in src/unix/kqueue.c:
+
+    loop->backend_fd = kqueue()
+
+    
+#### Resolve promises
+After calling the callback provided by the user, a smaller loop will check if there are any resolved promises.
+
+Where is this done?
+If we take a look at lib/internal/bootstrap.js and the start function we find the following line:
+
+    NativeModule.require('internal/process/next_tick').setup();
+
+And lib/internal/process/next_tick.js: 
+
+    exports.setup = setupNextTick;
+
+`setupNextTick` then does:
+
+    const promises = require('internal/process/promises');
+    ...
+    const emitPendingUnhandledRejections = promises.setup(scheduleMicrotasks);
+
+promises.setup will call process._setupPromises:
+
+      process._setupPromises(function(event, promise, reason) {
+
+Notice that this call takes an anonymous function as its callback. `_setupPromises` is configured in node.cc in the SetupProcessObject function:
+
+    env->SetMethod(process, "_setupPromises", SetupPromises);
+
+Lets set a break point in SetupPromis and see what is going on:
+
+    (lldb) br s -f node.cc -l 1278
+    (lldb) r
+
+
+    isolate->SetPromiseRejectCallback(PromiseRejectCallback);
+
+So an isolate has a `promise_reject_callback_` which is being set here to `PromiseRejectCallback`. This is what V8 will call if a promise is rejected.
+
+    env->set_promise_reject_function(args[0].As<Function>());
+
+Remember `_setupPromises` was passed an anonymous function as its callback argument which is what is being set as the
+set_promise_reject_function on the evnvironment instance. This will then be used by `PromiseRejectCallback`:
+
+    Local<Function> callback = env->promise_reject_function();
+    ...
+    callback->Call(process, arraysize(args), args);
+
+Next things that happens in `SetupPromises` is that `_setupPromises` is deleted from the process object:
+
+    env->process_object()->Delete(
+      env->context(),
+      FIXED_ONE_BYTE_STRING(args.GetIsolate(), "_setupPromises")).FromJust();
+
+This way it cannot be called again.
+
+Back in JavaScript (setupNextTick) now we have:
+
+    var _runMicrotasks = {};
+    ...
+    const tickInfo = process._setupNextTick(_tickCallback, _runMicrotasks);
+
+`process._setupNextTick` is also configured in node.cc:
+
+    env->SetMethod(process, "_setupNextTick", SetupNextTick);
+
+The arguments to SetupNextTick will be:
+
+    CHECK(args[0]->IsFunction());  // _tickCallback
+    CHECK(args[1]->IsObject());    // _runMicrotasks which is just an empty object at this point.
+
+    env->set_tick_callback_function(args[0].As<Function>());
+    env->SetMethod(args[1].As<Object>(), "runMicrotasks", RunMicrotasks);
+
+RunMicroTasks does:
+ 
+    void RunMicrotasks(const FunctionCallbackInfo<Value>& args) {
+      args.GetIsolate()->RunMicrotasks();
+    }
+    
+So we are setting a method on the _runMicrotasks object named runMicrotasks.
+Next `_setupNextTick` is removed from the process object. Then we have:
+
+    uint32_t* const fields = env->tick_info()->fields();
+    uint32_t const fields_count = env->tick_info()->fields_count();
+    Local<ArrayBuffer> array_buffer = ArrayBuffer::New(env->isolate(), fields, sizeof(*fields) * fields_count);
+    args.GetReturnValue().Set(Uint32Array::New(array_buffer, 0, fields_count));
+
+What are these? 
+
+    const p = new Promise((resolve, reject) => {
+      resolve('ok');
+    });
+
+So how are promises created in V8?
+
+    (lldb) br s -f isolate.cc -l 1862
+
+This will break in isolate.cc `PushPromise`:
+
+    void Isolate::PushPromise(Handle<JSObject> promise) {
+      ThreadLocalTop* tltop = thread_local_top();
+      PromiseOnStack* prev = tltop->promise_on_stack_;
+      Handle<JSObject> global_promise = global_handles()->Create(*promise);
+      tltop->promise_on_stack_ = new PromiseOnStack(global_promise, prev);
+    }    
+
+
+Lets take a closer look at `new PromiseOnStack`:
+
+    class PromiseOnStack {
+     public:
+      PromiseOnStack(Handle<JSObject> promise, PromiseOnStack* prev)
+        : promise_(promise), prev_(prev) {}
+      Handle<JSObject> promise() { return promise_; }
+      PromiseOnStack* prev() { return prev_; }
+
+     private:
+      Handle<JSObject> promise_;
+      PromiseOnStack* prev_;
+    }; 
+
+So that looks simple enough, it has a promise and a pointer to the previous promise. The callback passed to Promise (which
+takes a resolve, reject), when is it called?
+This is part of a constructor call so it would be executed straight way I think, like any constructor.
+
+
+##### PromiseRejectCallback
+
+    void PromiseRejectCallback(PromiseRejectMessage message) {
+      Local<Promise> promise = message.GetPromise();
+      Isolate* isolate = promise->GetIsolate();
+      Local<Value> value = message.GetValue();
+      Local<Integer> event = Integer::New(isolate, message.GetEvent());
+
+      Environment* env = Environment::GetCurrent(isolate);
+      Local<Function> callback = env->promise_reject_function();
+
+      if (value.IsEmpty())
+        value = Undefined(isolate);
+
+      Local<Value> args[] = { event, promise, value };
+      Local<Object> process = env->process_object();
+
+      callback->Call(process, arraysize(args), args);
+  }
+
+
+After a module has been loaded in Module.runMain, the process._tickCallback function will first process all the 
+callbacks in the nextTickQueue and then call _runMicrotasks(). 
+
+#### nextTick
+After resolving all the promises and callbacks added using nextTick will be called. 
+
+    // bootstrap main module.
+    Module.runMain = function() {
+      // Load the main module--the command line argument.
+      Module._load(process.argv[1], null, true);
+      // Handle any nextTicks added in the first tick of the program
+      process._tickCallback();
+    };
+
+### Libuv Thread pool 
+The following modules use the thread pool:
+* fs.*
+* dns.lookup
+  This is because when using a hostname to lookup there are operating system specific tasks that have to be 
+  performed, like on unix /etc/hosts should be used etc.
+* pipes
+* crypto (crypto.randomBytes(), and crypto.pbkdf2())
+* http.get/request() is called with a name in which case dns.loopup() is used
+* any c++ addons that uses it
+
+The follwing modules use the Kernel:
+* tcp/udp sockets, servers
+* unix domain sockets, servers
+* pipes
+* tty input
+* dns.resolveXXX
+
+The default size of the thread pool is 4 (uv_threadpool_size).
+Just to be clear, the libuv Event Loop is single threaded. The thread pool is used for file I/O operations.
+
+
+
+### SEGV_MAPERR
+Is a segmentation fault, which is an invalid memory access. This can happen when trying to access a page
+that is not mapped into the address space of the running process. This can happen when dereferencing a
+null pointer or a pointer that was corrupted with a small integer value.
+
+#### core dump
+Make sure that you specified enough room for a core dump:
+
+    $ ulimit -c unlimited
+
+If possible compile the executable with debugging options. The example I'm using for this is a case where
+cctest on arm7 produces a core dump:
+    
+    [----------] 2 tests from EnvironmentTest
+    [ RUN      ] EnvironmentTest.AtExitWithEnvironment
+    [       OK ] EnvironmentTest.AtExitWithEnvironment (114 ms)
+    [ RUN      ] EnvironmentTest.AtExitWithArgument
+    Received signal 11 SEGV_MAPERR 000007a0547c
+
+    ==== C stack trace ===============================
+
+    [end of stack trace]
+    Segmentation fault (core dumped)
+    
+
+    $ gdb out/Debug/cctest qemu_cctest_20170809-174708_18638.core
+
+    Reading symbols from out/Release/cctest...done.
+    [New LWP 18638]
+    [New LWP 18644]
+    [New LWP 18645]
+    [New LWP 18646]
+    [Thread debugging using libthread_db enabled]
+    Using host libthread_db library "/lib/arm-linux-gnueabihf/libthread_db.so.1".
+    Core was generated by `out/Release/cctest'.
+    #0  0x005e4f8c in v8::Context::Exit() ()
+
+    (gdb) bt
+    #0  0x005e4f8c in v8::Context::Exit() ()
+    #1  0x01033d94 in node::Environment::Start(int, char const* const*, int, char const* const*, bool) ()
+    #2  0x010395f4 in node::CreateEnvironment(node::IsolateData*, v8::Local<v8::Context>, int, char const* const*, int, char const* const*) ()
+    #3  0x00e6087c in EnvironmentTest_AtExitWithArgument_Test::TestBody() ()
+    #4  0x00eafb12 in testing::Test::Run() ()
+    #5  0x00eafcfc in testing::TestInfo::Run() [clone .part.402] ()
+    #6  0x00eafde0 in testing::TestCase::Run() [clone .part.403] ()
+    #7  0x00eb15b0 in testing::internal::UnitTestImpl::RunAllTests() [clone .part.407] ()
+    #8  0x00eb17e6 in testing::UnitTest::Run() ()
+    #9  0x004302dc in main ()
+
+I was not able to reproduce this issue when compiling with debugging symbols (./configure --debug). Possible reasons for this?
+The debugger puts more on the stack and if you overwrite an arrays capacity it migth cause a segment fault in release mode but
+not in debug mode.
+
+Trying to find out where v8::Context::Exit() is call when in node::Environment::Start. Upon entry there is the following:
+
+    Context::Scope context_scope(context());
+
+This is the context scope used and this is using RAII, and the descructor that will be called when this instance goes out
+of scope looks like this (in v8.h):
+
+    V8_INLINE ~Scope() { context_->Exit(); }
+
+
+### Workaround issue with test/async-hooks/init-hooks.js
+
+    $ launchctl unload -w /System/Library/LaunchAgents/com.apple.ReportCrash.plist
+    $ sudo launchctl unload -w /System/Library/LaunchDaemons/com.apple.ReportCrash.Root.plist
 
