@@ -497,7 +497,10 @@ We can see the contents of this in lldb using:
 
     (lldb) p internal_bootstrap_node_native
 
-
+### Loading of Node Native JavaScript
+The JavaScript source files that are located in the lib directory are not loaded in the normal way the JavaScript sources you provide yourself.
+Instead these are converted first into c arrays for faster execution. This is done by a build and more specifically a Python tool called `js2c.py`
+(JavaScript to C).
 
 ### Loading of builtins
 I wanted to know how builtins, like tcp\_wrap and others are loaded.
@@ -604,7 +607,7 @@ In our case the value of fn is `_register_tcp_wrap`. ## will concatenate two sym
 
 Lets start with \_\_attribute\_\_((constructor)), what is this all about?  
 In shared object files there are special sections which contains references to functions marked with constructor attributes. The attributes are a gcc feature. When the library gets loaded the dynamic loader program checks whether such sections exist and calls these functions.
-The constructor attribute causes the function to be called automatically before execution enters main (). You can verify this by checking the backtrace above.
+The constructor attribute causes the function to be called automatically before execution enters main () so this can also be used without shared libraries. You can verify this by checking the backtrace above.
 
 Now that we know that, lets look at these two lines:
 
@@ -4416,7 +4419,7 @@ Just a note here about how src/node_constant.cc is loaded as there is no `NODE_M
 
     process.binding('constants').
 
-Which like mentioned earlier in this document this will invoke `Binding` and there is a special clause for `constants`:
+Which like mentioned earlier in this document this will invoke `Binding` (in node.cc) and there is a special clause for `constants`:
 
     } else if (!strcmp(*module_v, "constants")) {
       exports = Object::New(env->isolate());
@@ -5009,4 +5012,9 @@ of scope looks like this (in v8.h):
 
     $ launchctl unload -w /System/Library/LaunchAgents/com.apple.ReportCrash.plist
     $ sudo launchctl unload -w /System/Library/LaunchDaemons/com.apple.ReportCrash.Root.plist
+
+
+### node-gyp
+How does node-gyp work?
+
 
