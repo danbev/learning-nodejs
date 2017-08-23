@@ -1020,7 +1020,8 @@ FunctionTemplate as its constructor.
      t->InstanceTemplate()->SetInternalFieldCount(1);
 
 `InstanceTemplate` returns the ObjectTemplate associated with the FunctionTemplate. Every FunctionTemplate has one. Like mentioned before this is the object that is returned after having used the FunctionTemplate as a constructor.
-I'm not exactly sure what `SetInternalFieldCount(1)` is doing, looks like has something to do with making sure there is a constructor.
+`SetInternalFieldCount(1)` instructs V8 to allocate internal storage for every instance created using this template. Anything can be stored that space allocated, and
+for node this is often done using `SetAlignedPointerInInternalField`. This could then be retrieved using `GetAlignedPointerFromInternalField`.
 
 Next, the ObjectTemplate is set up. First a number of properties are configured:
 
