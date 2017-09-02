@@ -2231,7 +2231,7 @@ First step is that Google Test needs to be added. Follow the steps in "Adding Go
     $ git clone git@github.com:google/googletest.git
     $ cd googletest/googletest
     $ mkdir build ; cd build
-    $ c++ -std=c++11 -I`pwd`/../include -I`pwd`/../ -pthread -c `pwd`/../src/gtest-all.cc
+    $ c++ -std=gnu++0x -stdlib=libstdc++ -I`pwd`/../include -I`pwd`/../ -pthread -c `pwd`/../src/gtest-all.cc
     $ ar -rv libgtest.a gtest-all.o
     $ cp libgtest.a ../../../../lib
 
