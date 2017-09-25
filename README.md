@@ -5019,3 +5019,37 @@ of scope looks like this (in v8.h):
 How does node-gyp work?
 
 
+### LIKELY/UNLIKELY
+If you take a look at the CHECK macro you will se that it is defined like this:
+   
+    #define CHECK(expr)                                                         \
+    do {                                                                        \
+      if (UNLIKELY(!(expr))) {                                                  \
+        static const char* const args[] = { __FILE__, STRINGIFY(__LINE__),      \
+                                            #expr, PRETTY_FUNCTION_NAME };      \
+        node::Assert(&args);                                                    \
+      }                                                                         \
+    } while (0)
+
+And UNLIKELY is defined as:
+
+    #define UNLIKELY(expr) __builtin_expect(!!(expr), 0)
+
+This is done to give the compiler a hint that we expect the value to be true so it 
+can optimise for that case and not the opposite case. 
+
+### Context
+Allows separate unrelated JavaScript to run in an isolate without interfering with each other.
+What does that mean for a C++ function that is called by javascript. The context should be the
+one associated with the call. 
+
+
+### Tracing
+Tracing refers to tracing events that can be emitted by V8. V8 takes a `--enable-tracing` flag which enables
+tracing and will create a v8_trace.json file. This file can be opened in chrome and inspected using
+`chrome://tracing`
+
+This can also be enabled in Node using `--trace-events-enabled` and you can specify categories to be traced 
+using `--trace-event-categories`. 
+
+
