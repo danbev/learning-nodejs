@@ -5082,3 +5082,27 @@ tracing and will create a v8_trace.json file. This file can be opened in chrome 
 This can also be enabled in Node using `--trace-events-enabled` and you can specify categories to be traced 
 using `--trace-event-categories`. 
 
+
+### Microsoft Build Engine (MSBuild)
+Is a build platform that allows for an xml configuration file to configure and run complex build systems. 
+This is what is produced by gyp for windows (the project file I mean). So you can take a look at the project
+file for the specific gyp target and see what shows up where in it to troubleshoot configuration issues.
+
+A target is like a procedure. A target can contain properties in a PropertiesGroup and tasks.
+A task is like a builtin function that performs an action, compiles, links, prints a message etc.
+A project is what hooks tasks together. A task can have a `DefaultTargets` attribute which are the targets
+that will be run if you specify the project file on the command line for msbuild.
+
+    msbuild sample.vcxproj 
+
+The target can also be specified on the command line:
+
+    msbuild sample.vcxproj /t:something
+    msbuild sample.vcxproj /t:Clean;Build
+    
+In the xml you might come across something like: %(AdditionalOptions). This an iterate directive.
+
+Options:
+/MP  Compile multiple sources by using multiple processes
+/link passes the specified option to LINK
+
