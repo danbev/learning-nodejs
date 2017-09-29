@@ -5102,7 +5102,39 @@ The target can also be specified on the command line:
     
 In the xml you might come across something like: %(AdditionalOptions). This an iterate directive.
 
+You can increase the level of information provided by msbuild by specifying the /verbosity setting:
+quit, minimal, normal, detailed, and diagnostic.
+
 Options:
 /MP  Compile multiple sources by using multiple processes
 /link passes the specified option to LINK
+
+
+### vcbuild.bat
+This is the Windows batch script that is used on Windows systems.
+
+    vcbuild.bat /help
+
+%var%   replaced with the environment variable named 'var'.
+%n      where n is a number from 0-9 and gives access to the n argument passed on the command line.
+%*      all the arguments specified on the command line
+
+You can place quotation marks around a string to avoid escaping.
+You can place caret (^), an escape character, immediately before the special characters
+The special characters that need quoting or escaping are usually <, >, |, &, and ^
+echo "You & me"
+echo You ^& me
+
+cd %~dp0        this will to %~dp (the directory of) on %0 (the first command line argument). 
+                So if this is run from a diferent directory this will switch to the directory where
+                this script is.
+
+if /i           case-insensitive, for example:
+
+     if /i "%1"=="help" goto help
+
+#### Compiler
+`cl.exe` is the the compiler.
+
+    cl -help 
 
