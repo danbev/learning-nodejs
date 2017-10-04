@@ -4688,6 +4688,9 @@ Change to the directory of the addons and then you can rebuild using:
 
     $ ../../.././deps/npm/bin/node-gyp-bin/node-gyp rebuild --nodedir=../../../
 
+On windows you can just copy the command from the output from
+
+
 To switch between release and debug builds you can modify
 
 If the NDEBUG macro is defined when <assert.h> is included the assets are disabled. While looking into adding a addons test I noticed that at-exit undefined
@@ -5138,3 +5141,86 @@ if /i           case-insensitive, for example:
 
     cl -help 
 
+#### Scripting
+`%~1`          removes quotes from the first command line argument
+
+Use `NUL` to discard out put, as in comman > NUL
+
+    IF "%var%"=="" (SET var=something)
+
+of 
+
+    IF NOT DEFINED var (SET var=something)
+
+
+    IF /I "%ERRORLEVEL%" NEQ "0" (
+      echo "failed to execute something"
+    )
+
+
+### Performace counters
+Are used used to provide information as to how well the operating system or an application is performing.
+
+
+### Event Tracing for Windows (ETW)
+Is an efficient kernel level tracing mechanism allowing logging of kernel or application defined events to
+a log file. It also allows dynamic enable/disable so this can be performed on a running application.
+
+An event provider writes events to an ETW session. Additional data is added by ETW like the time the event
+happened, the process that wrote it and the thread id, the processor number, the CPU usage data. This info
+is then available to event consumers which are applications that read the log file or the consumer can listen
+to realtime events and process them.
+
+There is condition in node.gypi that depends on `node_perfctr` which looks like this:
+
+    [ 'node_use_perfctr=="true"', {
+      'defines': [ 'HAVE_PERFCTR=1' ],
+      'dependencies': [ 'node_perfctr' ],
+      'sources': [
+        'src/node_win32_perfctr_provider.h',
+        'src/node_win32_perfctr_provider.cc',
+        'src/node_counters.cc',
+        'src/node_counters.h',
+        'tools/msvs/genfiles/node_perfctr_provider.rc',
+      ]
+    } ],
+
+This file is used in the `node_perfctr` (node performance counter) target and it is an action target that invokes `ctrpp`
+The input to ctrpp is src/res/node_perfctr_provider.man
+
+    {
+      'action_name': 'node_perfctr_man',
+      'inputs': [ 'src/res/node_perfctr_provider.man' ],
+      'outputs': [
+         'tools/msvs/genfiles/node_perfctr_provider.h',
+         'tools/msvs/genfiles/node_perfctr_provider.rc',
+         'tools/msvs/genfiles/MSG00001.BIN',
+      ],
+      'action': [ 'ctrpp <@(_inputs) '
+        '-o tools/msvs/genfiles/node_perfctr_provider.h '
+        '-rc tools/msvs/genfiles/node_perfctr_provider.rc'
+      ]
+    },
+
+`-o`  specifies the header that will be generated.
+`-rc` specifies the file that will be generated.
+
+'src/node_win32_perfctr_provider.cc' includes `node_perfctr_provider.h`
+
+Node uses a manifest based provider which is defined in src/res/node_etw_provider.man, so this is what will write
+events to an ETW session.
+
+But when is the actual .res file created?
+
+Applications and DLLs use an instrumentation manifest to identify their instrumentation providers and the events that the providers write
+
+### CTRPP
+The CTRPP tool is a pre-processor that parses and validates your counters manifest. The tool also generates code that you use to provide your counter data. 
+
+
+### Inspecting a .lib on windows
+
+    DUMPBIN /ARCHIVEMEMBERS Release\lib\node.lib
+
+### Linux Trace Toolkit: next generation (lttng)
+LTTng is an open source tracing framework for Linux.
