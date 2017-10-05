@@ -5171,6 +5171,120 @@ happened, the process that wrote it and the thread id, the processor number, the
 is then available to event consumers which are applications that read the log file or the consumer can listen
 to realtime events and process them.
 
+There is a condition in node.gypi that depends on `node_etw` which looks like this:
+
+    [ 'node_use_etw=="true"', {
+      'defines': [ 'HAVE_ETW=1' ],
+      'dependencies': [ 'node_etw' ],
+      'sources': [
+        'src/node_win32_etw_provider.h',
+        'src/node_win32_etw_provider-inl.h',
+        'src/node_win32_etw_provider.cc',
+        'src/node_dtrace.cc',
+        'tools/msvs/genfiles/node_etw_provider.h',
+        'tools/msvs/genfiles/node_etw_provider.rc',
+      ]
+    } ],
+
+So remember that `node_etw` will be run first so lets take a look at it first.
+
+    # generate ETW header and resource files
+    {
+      'target_name': 'node_etw',
+      'type': 'none',
+      'conditions': [
+        [ 'node_use_etw=="true"', {
+          'actions': [
+            {
+              'action_name': 'node_etw',
+              'inputs': [ 'src/res/node_etw_provider.man' ],
+              'outputs': [
+                'tools/msvs/genfiles/node_etw_provider.rc',
+                'tools/msvs/genfiles/node_etw_provider.h',
+                'tools/msvs/genfiles/node_etw_providerTEMP.BIN',
+              ],
+              'action': [ 'mc <@(_inputs) -h tools/msvs/genfiles -r tools/msvs/genfiles' ]
+            }
+          ]
+        } ]
+      ]
+    },
+
+`mc` is the [Message Compiler](https://msdn.microsoft.com/en-us/library/windows/desktop/aa385638(v=vs.85).aspx).  
+`-h` is where you want the generated header files to be placed.  
+`-r` is where you want the generated resource compiler script (.rc file) and the generated binary resource file (.bin)  
+
+And the input is the manifest file (.man). The manifest registers an event producer named `NodeJS-ETW-provider`:
+
+    <provider name="NodeJS-ETW-provider"
+        guid="{77754E9B-264B-4D8D-B981-E4135C1ECB0C}"
+        symbol="NODE_ETW_PROVIDER"
+        message="$(string.NodeJS-ETW-provider.name)"
+        resourceFileName="node.exe"
+        messageFileName="node.exe">
+
+Notice the `message` attribute which is used for localization which will be matched with :
+
+    <localization>
+        <resources culture="en-US">
+            <stringTable>
+                <string id="NodeJS-ETW-provider.name" value="Node.js ETW Provider"/>
+
+
+Tasks are typically used to identify major components of the provider, some form of grouping.
+In node there is one task:
+
+    <task name="MethodRuntime" value="1" symbol="JSCRIPT_METHOD_RUNTIME_TASK">
+        <opcodes>
+            <opcode name="MethodLoad" value="10" symbol="JSCRIPT_METHOD_METHODLOAD_OPCODE"/>
+        </opcodes>
+    </task> 
+
+This grouping enables consumers to query only for specific tasks and opcode combinations. The opcodes
+are specific to the task `MethodRuntime`. But there are also global opcodes:
+
+    <opcodes>
+        <opcode name="NODE_HTTP_SERVER_REQUEST" value="10"/>
+        <opcode name="NODE_HTTP_SERVER_RESPONSE" value="11"/>
+        <opcode name="NODE_HTTP_CLIENT_REQUEST" value="12"/>
+        <opcode name="NODE_HTTP_CLIENT_RESPONSE" value="13"/>
+        <opcode name="NODE_NET_SERVER_CONNECTION" value="14"/>
+        <opcode name="NODE_NET_STREAM_END" value="15"/>
+        <opcode name="NODE_GC_START" value="16"/>
+        <opcode name="NODE_GC_DONE" value="17"/>
+        <opcode name="NODE_V8SYMBOL_REMOVE" value="21"/>
+        <opcode name="NODE_V8SYMBOL_MOVE" value="22"/>
+        <opcode name="NODE_V8SYMBOL_RESET" value="23"/>
+    </opcodes>
+
+Templates are used to define event specific data that the provider includes with an event. For example in
+node one template looks like this:
+
+    <template tid="node_connection">
+      <data name="fd" inType="win:UInt32" />
+      <data name="port" inType="win:UInt32" />
+      <data name="remote" inType="win:AnsiString" />
+      <data name="buffered" inType="win:UInt32" />
+   </template>
+
+Events have to be defined and can refer to template like the following:
+
+    <event value="2" 
+      opcode="NODE_HTTP_SERVER_RESPONSE"
+      template="node_connection"
+      symbol="NODE_HTTP_SERVER_RESPONSE_EVENT"
+      message="$(string.NodeJS-ETW-provider.event.2.message)"
+      level="win:Informational"/>
+
+Ok, so we can see how the provider and events are configured. This information is used by the `mc` tool
+to generate headers and a binary file.
+
+The provider headers is in src/node_win32_etw_provider.h. For each of the opcodes there are function declarations
+and init_etw() and shutdown_etw(). There is an internal header `src/node_win32_etw_provider-inl.h` which includes
+the generated `node_etw_provider.h` which is located in 'tools/msvs/genfiles/node_etw_provider.h'.
+
+### Performace counters 
+Are used to provide information how node is performing.
 There is condition in node.gypi that depends on `node_perfctr` which looks like this:
 
     [ 'node_use_perfctr=="true"', {
@@ -5206,13 +5320,11 @@ The input to ctrpp is src/res/node_perfctr_provider.man
 `-rc` specifies the file that will be generated.
 
 'src/node_win32_perfctr_provider.cc' includes `node_perfctr_provider.h`
+Notice this this is much like the ETW and manifest based. Lets look at the manifest. Instead of containing events this
+file contains counters.
+The MSG00001.BIN file is a binary resource file for each language you specify (only one in our case).
 
-Node uses a manifest based provider which is defined in src/res/node_etw_provider.man, so this is what will write
-events to an ETW session.
-
-But when is the actual .res file created?
-
-Applications and DLLs use an instrumentation manifest to identify their instrumentation providers and the events that the providers write
+But when is the actual .res file created?  
 
 ### CTRPP
 The CTRPP tool is a pre-processor that parses and validates your counters manifest. The tool also generates code that you use to provide your counter data. 
