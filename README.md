@@ -4686,7 +4686,7 @@ This allows for a coder to include as many assert calls as needed in a source co
 ### Building a addons
 Change to the directory of the addons and then you can rebuild using:
 
-    $ ../../.././deps/npm/bin/node-gyp-bin/node-gyp rebuild --nodedir=../../../
+    $ out/Debug/node deps/npm/node_modules/node-gyp/bin/node-gyp.js rebuild --directory=test/addons/openssl-binding --nodedir=out/Debug/
 
 On windows you can just copy the command from the output from
 
@@ -5350,3 +5350,22 @@ not be something that the tracker would report, so you'll need to look further b
 
 ### Linux Trace Toolkit: next generation (lttng)
 LTTng is an open source tracing framework for Linux.
+
+
+Does it make sense to have the node.res file when node is linked as a static library? Would'nt the case be that the icon and other resource info
+be that of the embedders.
+
+But out about the ETW and performance counters resources?
+Resources (as far as I can tell) are intended to be linked to the exe or a dynamic library. It does not seem like it is possible to add 
+
+
+### Node executable linking
+By default, just building node using ./configure && make -j8 the node executable will be statically linked:
+
+    $ otool -L out/Debug/node
+    out/Debug/node:
+      /System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 1259.11.0)
+      /usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1226.10.1)
+      /usr/lib/libc++.1.dylib (compatibility version 1.0.0, current version 120.1.0)
+
+
