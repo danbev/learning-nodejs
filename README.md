@@ -5368,4 +5368,19 @@ By default, just building node using ./configure && make -j8 the node executable
       /usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1226.10.1)
       /usr/lib/libc++.1.dylib (compatibility version 1.0.0, current version 120.1.0)
 
+### GYP
+For addon tests in node there can be the need to link against a library in the root directory. The problem is that you cannot use <(PRODUCT_DIR) as
+that is the product dir for the addon itself. There is also the issue that the output directory is different on windows, it is not `out` but instead
+the `Release` and `Debug` directories are in the root of the project. But there are variables available by the respective node-gyp evironments, 
+for example on Window you can use:
+
+    ['OS=="win"', {
+      'libraries': ['../../../../$(Configuration)/lib/zlib.lib'],
+    }, {
+      'libraries': ['../../../../out/$(BUILDTYPE)/libzlib.a'],
+    }],
+
+
+
+
 
