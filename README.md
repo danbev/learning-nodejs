@@ -5381,6 +5381,117 @@ for example on Window you can use:
     }],
 
 
+### serdes
+This is a built in module for serialization/deserialization which is currently marked as experimental.
+It allows for serializing JavaScript values in a way compatiable with https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API/Structured_clone_algorithm, 
+which an algorithm for copying complex JavaScript objects and used internally for transferring data to and from Web Workers view postMessage().
+
+
+### Failing test without network connection
+```
+make[1]: Leaving directory `/root/rpmbuild/BUILD/node-v8.7.0'
+/usr/bin/python2.7 tools/test.py --mode=release -J \
+async-hooks \
+abort doctool es-module inspector known_issues message parallel pseudo-tty sequential \
+addons addons-napi
+=== release test-dgram-membership ===
+Path: parallel/test-dgram-membership
+assert.js:41
+  throw new errors.AssertionError({
+  ^
+
+AssertionError [ERR_ASSERTION]: Got unwanted exception.
+    at innerThrows (assert.js:653:7)
+    at Function.doesNotThrow (assert.js:665:3)
+    at Object.<anonymous> (/root/rpmbuild/BUILD/node-v8.7.0/test/parallel/test-dgram-membership.js:83:10)
+    at Module._compile (module.js:624:30)
+    at Object.Module._extensions..js (module.js:635:10)
+    at Module.load (module.js:545:32)
+    at tryModuleLoad (module.js:508:12)
+    at Function.Module._load (module.js:500:3)
+    at Function.Module.runMain (module.js:665:10)
+    at startup (bootstrap_node.js:187:16)
+Command: out/Release/node /root/rpmbuild/BUILD/node-v8.7.0/test/parallel/test-dgram-membership.js
+=== release test-dgram-multicast-set-interface-lo ===
+Path: parallel/test-dgram-multicast-set-interface-lo
+assert.js:41
+  throw new errors.AssertionError({
+  ^
+
+AssertionError [ERR_ASSERTION]: undefined == true
+    at Object.<anonymous> (/root/rpmbuild/BUILD/node-v8.7.0/test/parallel/test-dgram-multicast-set-interface-lo.js:64:8)
+    at Module._compile (module.js:624:30)
+    at Object.Module._extensions..js (module.js:635:10)
+    at Module.load (module.js:545:32)
+    at tryModuleLoad (module.js:508:12)
+    at Function.Module._load (module.js:500:3)
+    at Function.Module.runMain (module.js:665:10)
+    at startup (bootstrap_node.js:187:16)
+    at bootstrap_node.js:608:3
+Command: out/Release/node /root/rpmbuild/BUILD/node-v8.7.0/test/parallel/test-dgram-multicast-set-interface-lo.js
+[03:09|% 100|+ 1893|-   2]: Done
+```
+
+### Trouble shooting DNS issue on RHEL
+BIND (the NameServer) consists of a set of dns related programs. The nameserver itself is called named. There is
+an admin tool named rdnc and dig or debugging.
+named reads it's configuration from /etc/named.conf.
+
+#### /etc/nsswitch.conf
+Before this configuration file existed name service lookups were hardcoded into the c library, as well as the search order. 
+Name Service Switch was introduced by Sun Microsystems in there C library implementation in Solaris 2. This uses modules
+which allowes for adding new services without adding them to the GNU C library.
+
+
+‘unavail’
+The service is permanently unavailable. This can either mean the needed file is not available, or, for DNS, the server 
+is not available or does not allow queries. The default action is continue.
+
+For the hosts and networks databases the default value is dns [!UNAVAIL=return] files. I.e., the system is prepared for 
+the DNS service not to be available but if it is available the answer it returns is definitive.
+
+
+Regarding test/parallel/test-net-connect-immediate-finish.js and test/parallel/test-net-better-error-messages-port-hostname.js the and the error:
+Path: parallel/test-net-connect-immediate-finish
+assert.js:41
+  throw new errors.AssertionError({
+  ^
+AssertionError [ERR_ASSERTION]: 'EAI_AGAIN' === 'ENOTFOUND'
+    at Socket.client.once.common.mustCall (/builddir/build/BUILD/node-v8.6.0/test/parallel/test-net-connect-immediate-finish.js:35:10)
+    at Socket.<anonymous> (/builddir/build/BUILD/node-v8.6.0/test/common/index.js:514:15)
+    at Object.onceWrapper (events.js:316:30)
+    at emitOne (events.js:115:13)
+    at Socket.emit (events.js:210:7)
+    at emitErrorNT (internal/streams/destroy.js:64:8)
+    at _combinedTickCallback (internal/process/next_tick.js:138:11)
+    at process._tickCallback (internal/process/next_tick.js:180:9)
+Command: out/Release/node /builddir/build/BUILD/node-v8.6.0/test/parallel/test-net-connect-immediate-finish.js
+
+This only occurs when there is no available dns (you might need to comment it out in /etc/resolve.conf to reproduce this), I manually update /etc/nsswitch.conf and the update the hosts entry:
+
+    hosts:      files dns
+
+Notice that the last entry is dns which so it will return the result which will be 
+Using the default (at least this is the default for the RHEL version that we are using in our image: registry.access.redhat.com/rhel7) this error does not occur as the default is:
+
+hosts:      files dns myhostname
+
+Since this is an external configuration that could be different for different installations I think the best option is to update the test to be able to handle this situation. 
+I'll create a pull request and see what people think.
 
 
 
+$ networksetup -listallnetworkservices
+$ networksetup -getinfo "Thunderbolt Ethernet"
+DHCP Configuration
+IP address: 10.0.0.2
+Subnet mask: 255.255.255.0
+Router: 10.0.0.1
+Client ID:
+IPv6: Automatic
+IPv6 IP address: none
+IPv6 Router: none
+Ethernet Address: 68:5b:35:84:c8:9c
+
+What is this test about?:
+test/parallel/test-regress-GH-819.js
