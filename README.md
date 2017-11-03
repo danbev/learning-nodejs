@@ -4674,7 +4674,7 @@ From `<assert.h>`:
     #ifdef NDEBUG
     #define assert(condition) ((void)0)
     #else
-    #define assert(condition) /*implementation defined*/
+    #define assert(condition) 
     #endif
 
 ### assert
@@ -5495,3 +5495,59 @@ Ethernet Address: 68:5b:35:84:c8:9c
 
 What is this test about?:
 test/parallel/test-regress-GH-819.js
+
+### Modules
+
+
+### Inspector console
+In the start function of lib/internal/bootstrap_node.js we have a function that sets up the inspector console.
+After the global console object is set up, it is passed to setupInspector(originalConsole, wrappedConsole, Module);
+It does so with the help of a builtin module 'inspector' which can be found in src/inspector_js_api.cc.
+
+    const { addCommandLineAPI, consoleCall } = process.binding('inspector');
+
+
+    wrappedConsole[key] = consoleCall.bind(wrappedConsole,
+                                           originalConsole[key],
+                                           wrappedConsole[key],
+                                           config);
+
+The above will create a new function which has its `this` set to wrappedConsole
+
+    $ out/Debug/node
+    [Function: log] [Function: bound log] {}
+    [Function: info] [Function: bound log] {}
+    [Function: warn] [Function: bound warn] {}
+    [Function: error] [Function: bound warn] {}
+    [Function: dir] [Function: bound dir] {}
+    [Function: time] [Function: bound time] {}
+    [Function: timeEnd] [Function: bound timeEnd] {}
+    [Function: trace] [Function: bound trace] {}
+    [Function: assert] [Function: bound assert] {}
+    [Function: clear] [Function: bound clear] {}
+    [Function: count] [Function: bound count] {}
+    [Function: group] [Function: bound group] {}
+    [Function: groupCollapsed] [Function: bound group] {}
+    [Function: groupEnd] [Function: bound groupEnd] {}
+
+So for all of the above functions they will now got through the ConsoleCall function in inspector_agent.cc which will check if the inspector is enabled, which is done by passing --inspect,  for this process:
+
+    if (env->inspector_agent()->enabled()) {
+      ...
+    }
+
+In this case the writing to stdout will be performed twice, once to the inspector using:
+
+    inspector_method.As<Function>()->Call(context,
+                                          info.Holder(),
+                                          call_args.size(),
+                                          call_args.data()).IsEmpty());
+
+For example you'll seen the output in both stdout and in chrome's console.
+
+
+
+The test that I'm currently looking at uses fork so there will be two processes. This means that you might
+not hit a break point if you just use lldb on the command line. Instead you have to:
+
+    (lldb)
