@@ -2627,14 +2627,6 @@ listerner for events, and there is a realm.removeAllListeners() that can be call
 For node the various targets in node.gyp will generate make files in the `out` directory.
 For example the target named `cctest` will generate out/cctest.target.mk file.
 
-The issue I'm having is that I want to be able to write Google Test unit tests for Node source files and
-I'd prefer to use C++ instead of using addons and testing them for this. This is because the functionality 
-that I'm adding is intended for projects like Electron that embed Node. 
-So I'd like to have gyp generate the make files for the cctest target and be able to say that it should depend
-on the core node target and the linker should then be able to use the object files created by that target when
-it links the tests from the cctest target.
-
-
 ### Profiling
 You can use Google V8's built in profiler using the `--prof` command line option:
 
@@ -5551,3 +5543,4 @@ The test that I'm currently looking at uses fork so there will be two processes.
 not hit a break point if you just use lldb on the command line. Instead you have to:
 
     (lldb)
+
