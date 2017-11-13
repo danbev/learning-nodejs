@@ -5544,3 +5544,24 @@ not hit a break point if you just use lldb on the command line. Instead you have
 
     (lldb)
 
+### ccache
+
+    $ git clone https://github.com/ccache/ccache.git
+    $ cd ccache
+    $ ./autogen.sh
+    $ ./configure && make 
+
+Add ccache to your PATH. 
+
+    export CC="ccache clang -Qunused-arguments"
+    export CXX="ccache clang++ -Qunused-arguments"
+
+Now you can configure and build as normal.
+
+To see what is in the cache:
+
+   $ ccache -s
+
+To clear the cache:
+
+   $ ccache -C 
