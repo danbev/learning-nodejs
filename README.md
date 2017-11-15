@@ -5153,6 +5153,16 @@ of
 ### Performace counters
 Are used used to provide information as to how well the operating system or an application is performing.
 
+### DTrace
+is supported on linux, solaris, mac, and bsd and is a tracing framework originally developed for Solaris
+by Sun.
+This is enabled by configuring with the `--with-dtrace` flag. There are three object files for dtrace in 
+Node. These are: 
+node_dtrace.o which is used by all systems that support dtrace  
+node_dtrace_ustack.o is not supported on linux or mac  
+node_dtrace_provider.o is supported on all but macosx  
+Note that the directory where node_dtrace_provider.o is generated differs so if you are working on a task
+that effects linking take that into account.
 
 ### Event Tracing for Windows (ETW)
 Is an efficient kernel level tracing mechanism allowing logging of kernel or application defined events to
@@ -5565,3 +5575,9 @@ To see what is in the cache:
 To clear the cache:
 
    $ ccache -C 
+
+### Number_Of_Processors
+On Windows (at least if you are running in a virtual machine) you might see a warning about not using
+the `/m` flag while building. This seems to be because `Number_Of_Processors` is returning 0 or 1. If we
+set this to a larger value the warning will go away. I'm not sure if it actually speed things up but it 
+feels like it does.
