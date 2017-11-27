@@ -4675,19 +4675,18 @@ This allows for a coder to include as many assert calls as needed in a source co
  
     #define NDEBUG 
 
+If the NDEBUG macro is defined when <assert.h> is included the assets are disabled. While looking into adding a addons test I noticed that at-exit undefined
+NDEBUG but not the other tests that use assert. As far as I can tell there is no need to undefine this and non of the other tests do. This commit removes
+the undef for consistency.
+
 ### Building a addons
 Change to the directory of the addons and then you can rebuild using:
 
     $ out/Debug/node deps/npm/node_modules/node-gyp/bin/node-gyp.js rebuild --directory=test/addons/openssl-binding --nodedir=out/Debug/
 
-On windows you can just copy the command from the output from
+On windows you can just copy the command from the output from, for example:
 
-
-To switch between release and debug builds you can modify
-
-If the NDEBUG macro is defined when <assert.h> is included the assets are disabled. While looking into adding a addons test I noticed that at-exit undefined
-NDEBUG but not the other tests that use assert. As far as I can tell there is no need to undefine this and non of the other tests do. This commit removes
-the undef for consistency.
+    "C:\\Users\\danbev\\working\\node\\Release\\node.exe" "C:\\Users\\danbev\\working\\node\\deps\\npm\\node_modules\\node-gyp\\bin\\node-gyp" "rebuild" "--directory=test\\addons\\openssl-client-cert-engine" "--nodedir=C:\\Users\\danbev\\working\\node"
 
 
 ### Run an a set of JavaScript tests
@@ -5127,6 +5126,12 @@ cd %~dp0        this will to %~dp (the directory of) on %0 (the first command li
 if /i           case-insensitive, for example:
 
      if /i "%1"=="help" goto help
+
+
+Configuring on windows:
+
+    python configure --openssl-system-ca-path=PATH
+    vcbuild noprojgen
 
 #### Compiler
 `cl.exe` is the the compiler.
@@ -5576,8 +5581,3 @@ To clear the cache:
 
    $ ccache -C 
 
-### Number_Of_Processors
-On Windows (at least if you are running in a virtual machine) you might see a warning about not using
-the `/m` flag while building. This seems to be because `Number_Of_Processors` is returning 0 or 1. If we
-set this to a larger value the warning will go away. I'm not sure if it actually speed things up but it 
-feels like it does.
