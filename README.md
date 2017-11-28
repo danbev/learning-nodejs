@@ -4682,7 +4682,7 @@ the undef for consistency.
 ### Building a addons
 Change to the directory of the addons and then you can rebuild using:
 
-    $ out/Debug/node deps/npm/node_modules/node-gyp/bin/node-gyp.js rebuild --directory=test/addons/openssl-binding --nodedir=out/Debug/
+    $ out/Debug/node deps/npm/node_modules/node-gyp/bin/node-gyp.js rebuild --directory=test/addons/at-exit --nodedir=../../../
 
 On windows you can just copy the command from the output from, for example:
 
@@ -5580,4 +5580,14 @@ To see what is in the cache:
 To clear the cache:
 
    $ ccache -C 
+
+
+### GetPeerCertificate
+
+    STACK_OF(X509)* ssl_certs = SSL_get_peer_cert_chain(w->ssl_);
+
+STACK_OF is a macro defined in deps/openssl/openssl/crypto/stack/safestack.h and will expand to:
+
+    struct stack_st_X509* ssl_certs = SSL_get_peer_cert_chain(w->ssl_);
+
 
