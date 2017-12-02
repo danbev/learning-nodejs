@@ -5591,3 +5591,51 @@ STACK_OF is a macro defined in deps/openssl/openssl/crypto/stack/safestack.h and
     struct stack_st_X509* ssl_certs = SSL_get_peer_cert_chain(w->ssl_);
 
 
+A Local<Object> instance holds a pointer to an Object. If you pass this instance to a function a copy of the 
+object will be created. But both instance will point to the same object. But what ever we do to the copy there
+caller instance will still point to the same location, but if we update the value that it point to it should work ?
+
+For example:
+
+    static void AddIssuer(X509** cert,
+                          const STACK_OF(X509)* const peer_certs,
+                          Local<Object> info,
+                          Environment* const env) {
+
+    ...
+    Local<Object> ca_info = X509ToObject(env, ca);
+    // Now we want to update what info points to so that is points to the value of ca_info instead.
+
+
+           Local<Object>
+
+    (lldb) expr info
+    (v8::Local<v8::Object>) $4 = (val_ = 0x0000000106014b08)
+    (lldb) expr *info
+    (v8::Object *) $6 = 0x0000000106014b08
+
+
+The copy constructor for Local<> will copy the value, which includes the pointer so these are separate
+objects:
+
+    (lldb) p &result
+    (v8::Local<v8::Object> *) $86 = 0x00007fff5fbf04b0
+    (lldb) p &info
+    (v8::Local<v8::Object> *) $87 = 0x00007fff5fbf04a8
+
+But what is info supposed to represent?
+Well they both initially point to the same thing as we can see but as mentioned they are separate objects. So the following will update what they both (result and info) point to:
+
+    Local<Object> ca_info = X509ToObject(env, ca);
+    info->Set(env->issuercert_string(), ca_info);
+
+But the following will cause info to copy constructed (I think) to ca_info so the connection with result is lost here. That is incorrect!
+What is happening is that the first time info == result so the issuer is set on it, and it contains the ca_info instance. So result can get to it. Next when info is set to ca_info:
+
+    info = ca_info;
+
+This is for the next iteration and if there are more they will be chained to ca_info using the info->Set(env->issuercert_string(), ca_info), which remember can be accessed from result via its issuercert_string property. 
+
+result -> #issuercertificate -> ca_info -> #issuercerficate -> ca_info
+
+If this is not done result will not be linked to them all and the chain broken.
