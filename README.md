@@ -3324,8 +3324,7 @@ Also known as Netscape SPKI.
 #### Building with shared openssl
 Building an [locally built version](https://github.com/danbev/learning-libcrypto#building-openssl) of OpenSSL.
 
-    $ ./configure --shared-openssl --shared-openssl-libpath=/Users/danielbevenius/work/security/openssl --prefix=/Users/danielbevenius/work/nodejs/build --shared-openssl-includes=/Users/danielbevenius/work/security/openssl/include/
-
+    $ ./configure --debug --shared-openssl --shared-openssl-libpath=/Users/danielbevenius/work/security/build_1_1_0g/lib --prefix=/Users/danielbevenius/work/nodejs/build --shared-openssl-includes=/Users/danielbevenius/work/security/build_1_1_0g/include
 
 #### Building OpenSSL without elliptic curve support
 
@@ -5592,7 +5591,7 @@ STACK_OF is a macro defined in deps/openssl/openssl/crypto/stack/safestack.h and
 
 
 A Local<Object> instance holds a pointer to an Object. If you pass this instance to a function a copy of the 
-object will be created. But both instance will point to the same object. But what ever we do to the copy there
+object will be created. But both instances will point to the same object. But what ever we do to the copy there
 caller instance will still point to the same location, but if we update the value that it point to it should work ?
 
 For example:
@@ -5639,3 +5638,50 @@ This is for the next iteration and if there are more they will be chained to ca_
 result -> #issuercertificate -> ca_info -> #issuercerficate -> ca_info
 
 If this is not done result will not be linked to them all and the chain broken.
+
+
+### Crypto SetKey
+
+    void DiffieHellman::SetPublicKey(const FunctionCallbackInfo<Value>& args) {
+      SetKey(args, [](DH* dh, BIGNUM* num) { DH_set0_key(dh, num, nullptr); },
+         "Public key");
+    }
+
+    void DiffieHellman::SetPrivateKey(const FunctionCallbackInfo<Value>& args) {
+    #if OPENSSL_VERSION_NUMBER >= 0x10100000L && OPENSSL_VERSION_NUMBER < 0x10100070L
+    // Older versions of OpenSSL 1.1.0 have a DH_set0_key which does not work for
+    // Node. See https://github.com/openssl/openssl/pull/4384.
+    #error "OpenSSL 1.1.0 revisions before 1.1.0g are not supported"
+    #endif
+    SetKey(args, [](DH* dh, BIGNUM* num) { DH_set0_key(dh, nullptr, num); },
+       "Private key");
+    }
+
+    void DiffieHellman::SetKey(const v8::FunctionCallbackInfo<v8::Value>& args,
+                           void (*set_field)(DH*, BIGNUM*), const char* what) {
+      ...
+
+Notice that the second paramenter to SetKey is a function pointer:
+
+     void function_name(DH* dh, BIGHUM* n);
+
+I noticed that DH_set0_key returns one and wondering why as the function pointer is declared as returning
+void:
+
+    static int DH_set0_key(DH* dh, BIGNUM* pub_key, BIGNUM* priv_key) {
+      if (pub_key != nullptr) {
+        BN_free(dh->pub_key);
+        dh->pub_key = pub_key;
+      }
+      if (priv_key != nullptr) {
+        BN_free(dh->priv_key);
+        dh->priv_key = priv_key;
+      }
+      return 1;
+    }
+
+And the call looks like this in `SetKey`:
+
+    set_field(dh->dh, num);
+
+
