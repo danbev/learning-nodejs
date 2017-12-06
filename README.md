@@ -5685,3 +5685,29 @@ And the call looks like this in `SetKey`:
     set_field(dh->dh, num);
 
 
+### Object Set
+The `Set` functions in include/v8.h for Object are deprecated. The ones that should be used are the ones that
+return a MayBe<bool> result instead. This means that you also have to call either FromJust() or ToChecked()
+before using/retrieving the value.
+
+     3109 class V8_EXPORT Object : public Value {
+     3110  public:
+     3111   V8_DEPRECATE_SOON("Use maybe version",
+     3112                     bool Set(Local<Value> key, Local<Value> value));
+     3113   V8_WARN_UNUSED_RESULT Maybe<bool> Set(Local<Context> context,
+     3114                                         Local<Value> key, Local<Value> value);
+     3115
+     3116   V8_DEPRECATE_SOON("Use maybe version",
+     3117                     bool Set(uint32_t index, Local<Value> value));
+     3118   V8_WARN_UNUSED_RESULT Maybe<bool> Set(Local<Context> context, uint32_t index,
+     3119                                         Local<Value> value);
+
+
+### Unqualified name lookup
+    void SecureContext::Initialize(Environment* env, Local<Object> target) {
+      ...
+      env->SetProtoMethod(t, "init", SecureContext::Init);
+
+Even without the `SecureContext` namespace `Init` will be resolved correctly as resolution will 
+look in class of the member funtion which is SecureContext.
+
