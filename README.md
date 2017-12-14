@@ -5640,6 +5640,8 @@ result -> #issuercertificate -> ca_info -> #issuercerficate -> ca_info
 If this is not done result will not be linked to them all and the chain broken.
 
 
+
+
 ### Crypto SetKey
 
     void DiffieHellman::SetPublicKey(const FunctionCallbackInfo<Value>& args) {
@@ -5711,3 +5713,1023 @@ before using/retrieving the value.
 Even without the `SecureContext` namespace `Init` will be resolved correctly as resolution will 
 look in class of the member funtion which is SecureContext.
 
+
+require('tls)';
+
+
+const script = new ContextifyScript(code, options);
+`code` is the wrapped tls.js file.
+return script.runInThisContext();
+
+fn(this.exports, requireFn, this, internalBinding, process);
+
+Bindings in node.cc:
+exports = InitModule(env, mod, module);
+`
+
+
+    const binding = process.binding('crypto');
+
+This will invoke SecureContext::Initialize.
+
+const server = tls.Server(options, function(socket) {
+
+exports.Server = require('_tls_wrap').Server;
+
+_tls_common.js:
+const binding = process.binding('crypto');
+const NativeSecureContext = binding.SecureContext;
+
+function SecureContext(secureProtocol, secureOptions, context) {
+  ... 
+  this.context = new NativeSecureContext();
+}
+So we can see that SecureContext::New is bound to NativeSecureContext.
+
+
+### node_crypto_bio
+
+    static const BIO_METHOD method = {
+      BIO_TYPE_MEM,
+      "node.js SSL buffer",
+      Write,
+      Read,
+      Puts,
+      Gets,
+      Ctrl,
+      New,
+      Free,
+      nullptr
+    };
+
+
+BIO* NodeBIO::NewFixed(const char* data, size_t len) {
+  BIO* bio = New();
+
+  if (bio == nullptr ||
+      len > INT_MAX ||
+      BIO_write(bio, data, len) != static_cast<int>(len) ||
+      BIO_set_mem_eof_return(bio, 0) != 1) {
+    BIO_free(bio);
+    return nullptr;
+  }
+
+  return bio;
+}
+
+`BIO_set_mem_eof_return` is a macro defined as:
+
+    # define BIO_set_mem_eof_return(b,v) BIO_ctrl(b,BIO_C_SET_BUF_MEM_EOF_RETURN,v,NULL)
+
+which in our case would give:
+
+    BIO_strl(bio, BIO_C_SET_BUF_MEM_EOF_RETURN, 0, NULL)
+
+This call will end up in bio_lib.c and its BIO_ctrl function:
+
+    ret = b->method->ctrl(b, cmd, larg, parg);
+
+Now, b is the BIO we passed in, cmd is BIO_C_SET_BUF_MEM_EOF_RETURN (130), larg is 0, and parg is NULL.
+The interesting thing here is that b->method will be the method defined in node_crypto_bio.cc:
+
+    (lldb) p *b->method
+    (BIO_METHOD) $12 = {
+      type = 1025
+      name = 0x0000000101d44053 "node.js SSL buffer"
+      bwrite = 0x000000010192ed10 (node`node::crypto::NodeBIO::Write(bio_st*, char const*, int) at node_crypto_bio.cc:142)
+      bread = 0x000000010192e940 (node`node::crypto::NodeBIO::Read(bio_st*, char*, int) at node_crypto_bio.cc:92)
+      bputs = 0x000000010192ef90 (node`node::crypto::NodeBIO::Puts(bio_st*, char const*) at node_crypto_bio.cc:151)
+      bgets = 0x000000010192efe0 (node`node::crypto::NodeBIO::Gets(bio_st*, char*, int) at node_crypto_bio.cc:156)
+      ctrl = 0x000000010192f2f0 (node`node::crypto::NodeBIO::Ctrl(bio_st*, int, long, void*) at node_crypto_bio.cc:182)
+      create = 0x000000010192e7c0 (node`node::crypto::NodeBIO::New(bio_st*) at node_crypto_bio.cc:68)
+      destroy = 0x000000010192e830 (node`node::crypto::NodeBIO::Free(bio_st*) at node_crypto_bio.cc:77)
+      callback_ctrl = 0x0000000000000000
+    }
+
+So b->method->ctrl will call NodeBIO::Ctrl:
+The first things that is done is that the NodeBIO instance is retrieved from the bio:
+
+    NodeBIO* nbio = FromBIO(bio);
+
+
+'FromBIO': 
+
+    CHECK_NE(BIO_get_data(bio), nullptr);
+    return static_cast<NodeBIO*>(BIO_get_data(bio));
+
+BIO_get_data is a macro for OPENSSL versions greater than 1.0.1:
+
+    #define BIO_get_data(bio) bio->ptr
+
+So we can see that the BIO's ponter is a pointer to the NodeBIO instance.
+
+    case BIO_C_SET_BUF_MEM_EOF_RETURN
+      nbio->set_eof_return(num);
+      break;
+
+So we are calling 'set_eof_return' with 
+
+    (lldb) p num
+    (long) $14 = 0
+
+### Node Crypto BIO Buffer
+node_crypto_bio.h has a private Buffer class.
+
+To understand what this buffer does and how it works lets take a look at a usage of it...
+SecureContext::AddCACert:
+
+    ...
+    BIO* bio = LoadBIO(env, args[0]);
+    
+In this case args[0] is a certificate (a string) so the following path in LoadBIO will be taken:
+
+    return NodeBIO::NewFixed(*s, s.length());
+
+NodeBIO::NewFixed will call:
+
+    if (bio == nullptr ||
+      len > INT_MAX ||
+      BIO_write(bio, data, len) != static_cast<int>(len) ||
+      BIO_set_mem_eof_return(bio, 0) != 1) {
+      BIO_free(bio);
+      return nullptr;
+    }
+
+We are interested in the BIO_write call which will call Write on the bio's method which is NodeBIO::Write:
+
+    void NodeBIO::Write(const char* data, size_t size) {
+    ...
+    // Allocate initial buffer if the ring is empty
+    TryAllocateForWrite(left);
+
+    void NodeBIO::TryAllocateForWrite(size_t hint) {
+      Buffer* w = write_head_;
+      Buffer* r = read_head_;
+      // If write head is full, next buffer is either read head or not empty.
+      if (w == nullptr ||
+        (w->write_pos_ == w->len_ &&
+         (w->next_ == r || w->next_->write_pos_ != 0))) {
+        size_t len = w == nullptr ? initial_ : kThroughputBufferLength;
+        if (len < hint)
+          len = hint;
+        Buffer* next = new Buffer(env_, len);
+
+        if (w == nullptr) {
+          next->next_ = next;
+          write_head_ = next;
+          read_head_ = next;
+        } else {
+          next->next_ = w->next_;
+          w->next_ = next;
+        }
+      }
+    }
+
+First time entering this function w and r will be null as write_head_ and read_head_ will be null:
+
+    (lldb) expr w
+    (node::crypto::NodeBIO::Buffer *) $24 = 0x0000000000000000
+    (lldb) expr r
+    (node::crypto::NodeBIO::Buffer *) $25 = 0x0000000000000000
+
+    size_t len = initial_; // since w == nullptr;
+    (lldb) p len
+    (size_t) $28 = 1024
+    (lldb) p hint
+    (size_t) $29 = 1224
+    if (len < hint)  // 1024 < 1224
+      len = 1224
+    
+    Buffer* next = new Buffer(env_, 1224);
+
+
+    Buffer constructor: 
+    data_ = new char[len];
+
+    if (w == nullptr) {
+      next->next_ = next;
+      write_head_ = next;
+      read_head_ = next;
+    }
+So initially there is only a single entry all pointing to this first one.
+Next, we are back in NodeBIO::Write:
+
+    while (left > 0) { // first time left is == 1224
+    ....
+    memcpy(write_head_->data_ + write_head_->write_pos_, data + offset, to_write);
+
+void* memcpy( void* dest, const void* src, std::size_t count ) so the destination in our case is
+write_head_data_ + write_head_write_pos_, the data to be copied is data + 0, and to_write is 1224.
+ 
+
+
+
+
+### ClientHelloParser
+node_crypto.h has a class member that is declared like:
+
+  ClientHelloParser hello_parser_;
+
+So when a new SSLWrap is created constructor of ClientHelloParser will be called. Looking at the constructor for ClientHelloParser
+it first initilizes its fields and then calls Reset():
+
+      ClientHelloParser() : state_(kEnded),
+                        onhello_cb_(nullptr),
+                        onend_cb_(nullptr),
+                        cb_arg_(nullptr),
+                        session_size_(0),
+                        session_id_(nullptr),
+                        servername_size_(0),
+                        servername_(nullptr),
+                        ocsp_request_(0),
+                        tls_ticket_size_(0),
+                        tls_ticket_(nullptr) {
+      Reset();
+     }
+
+    inline void ClientHelloParser::Reset() {
+      frame_len_ = 0;
+      body_offset_ = 0;
+      extension_offset_ = 0;
+      session_size_ = 0;
+      session_id_ = nullptr;
+      tls_ticket_size_ = -1;
+      tls_ticket_ = nullptr;
+      servername_size_ = 0;
+      servername_ = nullptr;
+      ocsp_request_ = 0;  // added by me
+    }
+
+I can't find a reason for not resetting ocsp_request_ here. I'll create a PR to get some feedback.
+
+
+### Exception in Node/V8
+An empty Maybe(Local) in the V8 API always means that there is already a pending exception, 
+i.e. there’s no ThrowError necessary on our side.
+
+### v8::Object::Set and exceptions
+This section goes through a call to Set and the possible exceptions that might be throws and 
+how they can be handled.
+
+    $ lldb -- out/Debug/node --inspect-brk test/parallel/test-tls-legacy-onselect.js
+
+    env->SetProtoMethod(t, "setSNICallback",  Connection::SetSNICallback);
+
+    (lldb) br s -f node_crypto.cc -l 3594
+    (lldb) r
+
+Open chrome://inspect and set a break point on this line:
+
+    const pair = tls.createSecurePair(null, true, false, false);
+
+A `SecurePair` is a pair of streams to do encrypted communication with.
+
+    Local<Object> obj = Object::New(env->isolate());
+    obj->Set(env->context(), env->onselect_string(), args[0]).FromJust();
+
+We are creating a new Local<v8::Object> and setting a property on that object. The 
+property name is taken from the Environment function onselect_string(). This function
+is generated by a macro and by:
+
+    V(onselect_string, "onselect")
+
+Now, `obj->Set` is only setting a property to be a function and here is a check in this 
+specific code path that arg[0] exists and is a function. 
+
+    (lldb) jlh obj
+    0x10583e1675b9: [JS_OBJECT_TYPE]
+    - map = 0x105859b5fe79 [FastProperties]
+    - prototype = 0x105819c04679
+    - elements = 0x1058b5982241 <FixedArray[0]> [HOLEY_ELEMENTS]
+    - properties = 0x1058b5982241 <FixedArray[0]> {
+      #onselect: 0x10583e167571 <JSFunction (sfi = 0x1058fc5f3969)> (const data descriptor)
+    }
+
+
+But, there is a chance where an exception might be thrown and that is if there is a setter for `onselect'. This
+migth look like:
+
+    Object.defineProperty(Object.prototype, 'onselect', {
+      set: function(f) {
+        console.log('throw error from setter...');
+        throw Error('dummy setter error');
+      }
+    });
+
+Calling `obj->Set(env->context(), env->onselect_string(), args[0]).FromJust();` would cause an exception to be
+thrown:
+
+```console
+$ out/Debug/node  test/parallel/test-tls-legacy-onselect.js
+throw error from setter...
+FATAL ERROR: v8::FromJust Maybe value is Nothing.
+ 1: node::Abort() [/Users/danielbevenius/work/nodejs/node/out/Debug/node]
+ 2: node::OnFatalError(char const*, char const*) [/Users/danielbevenius/work/nodejs/node/out/Debug/node]
+ 3: v8::Utils::ReportApiFailure(char const*, char const*) [/Users/danielbevenius/work/nodejs/node/out/Debug/node]
+ 4: v8::Utils::ApiCheck(bool, char const*, char const*) [/Users/danielbevenius/work/nodejs/node/out/Debug/node]
+ 5: v8::V8::FromJustIsNothing() [/Users/danielbevenius/work/nodejs/node/out/Debug/node]
+ 6: v8::Maybe<bool>::FromJust() const [/Users/danielbevenius/work/nodejs/node/out/Debug/node]
+ 7: node::crypto::Connection::SetSNICallback(v8::FunctionCallbackInfo<v8::Value> const&) [/Users/danielbevenius/work/nodejs/node/out/Debug/node]
+ 8: v8::internal::FunctionCallbackArguments::Call(void (*)(v8::FunctionCallbackInfo<v8::Value> const&)) [/Users/danielbevenius/work/nodejs/node/out/Debug/node]
+ 9: v8::internal::MaybeHandle<v8::internal::Object> v8::internal::(anonymous namespace)::HandleApiCallHelper<false>(v8::internal::Isolate*, v8::internal::Handle<v8::internal::HeapObject>, v8::internal::Handle<v8::internal::HeapObject>, v8::internal::Handle<v8::internal::FunctionTemplateInfo>, v8::internal::Handle<v8::internal::Object>, v8::internal::BuiltinArguments) [/Users/danielbevenius/work/nodejs/node/out/Debug/node]
+10: v8::internal::Builtin_Impl_HandleApiCall(v8::internal::BuiltinArguments, v8::internal::Isolate*) [/Users/danielbevenius/work/nodejs/node/out/Debug/node]
+11: v8::internal::Builtin_HandleApiCall(int, v8::internal::Object**, v8::internal::Isolate*) [/Users/danielbevenius/work/nodejs/node/out/Debug/node]
+12: 0x10e0737043c4
+13: 0x10e0737f1600
+Abort trap: 6
+```
+Notice the `FromJust()` which will crash if there is an error in the JavaScript setter.
+
+But instead what should happen is (in SetSNICallback):
+```c++
+
+if (obj->Set(env->context(), env->onselect_string(), args[0]).IsNothing()) {
+    return;
+}
+```
+`return` where will return to `api-arguments.cc` line 26:
+```c++
+return GetReturnValue<Object>(isolate);
+```
+`GetReturnValue` can be found in `api-arguments.h'. It looks like this will see if there is a return value and 
+return a Handle to it or an empty Handle.
+After returning from `v8::internal::FunctionCallbackArguments::Call` we are the builtins-api.cc HandleApiCallHelper:
+
+    Handle<Object> result = custom.Call(callback); // this was our call to SetSNICallback
+ 
+    RETURN_EXCEPTION_IF_SCHEDULED_EXCEPTION(isolate, Object);
+
+`RETURN_EXCEPTION_IF_SCHEDULED_EXCEPTION` is a macro:
+
+    #define RETURN_EXCEPTION_IF_SCHEDULED_EXCEPTION(isolate, T) \
+      RETURN_VALUE_IF_SCHEDULED_EXCEPTION(isolate, MaybeHandle<T>())
+
+Which will expend to
+      RETURN_VALUE_IF_SCHEDULED_EXCEPTION(isolate, MaybeHandle<Object>())
+
+
+    #define RETURN_VALUE_IF_SCHEDULED_EXCEPTION(isolate, value) \
+      do {                                                      \
+        Isolate* __isolate__ = (isolate);                       \
+        DCHECK(!__isolate__->has_pending_exception());          \
+        if (__isolate__->has_scheduled_exception()) {           \
+          __isolate__->PromoteScheduledException();             \
+          return value;                                         \
+        }                                                       \
+      } while (false)
+
+So this will expand to (which will be places in HandleApiCallHelper replacing RETURN_EXCEPTION_IF_SCHEDULED_EXCEPTION) as:
+
+        Isolate* __isolate__ = (isolate);            
+        DCHECK(!__isolate__->has_pending_exception());
+        if (__isolate__->has_scheduled_exception()) {
+          __isolate__->PromoteScheduledException(); 
+          return MaybeHandle<Object(); 
+        }                             
+
+In this case there will be a pending exception so __isolate__->PromoteScheduledException will be called.
+
+PromoteScheduledException:
+```c++
+Object* thrown = scheduled_exception();
+clear_scheduled_exception();
+return ReThrow(thrown);
+```
+
+```console
+(lldb) job thrown
+0x11728e9a5401: [JS_ERROR_TYPE]
+ - map = 0x1172bc86cf79 [FastProperties]
+ - prototype = 0x117204d0d679
+ - elements = 0x1172afa82241 <FixedArray[0]> [HOLEY_SMI_ELEMENTS]
+ - properties = 0x11728e9a5469 <PropertyArray[3]> {
+    #stack: 0x1172b59ca9b9 <AccessorInfo> (const accessor descriptor)
+    #message: 0x1172c10b6711 <String[18]: dummy setter error> (data field 0) properties[0]
+    0x1172afa86899 <Symbol: detailed_stack_trace_symbol>: 0x11728e9a5491 <FixedArray[5]> (data field 1) properties[1]
+    0x1172afa87069 <Symbol: stack_trace_symbol>: 0x11728e9a5cf1 <JSArray[26]> (data field 2) properties[2]
+ }
+```
+
+ReThrow:
+```c++
+set_pending_exception(exception);
+return heap()->exception();
+```
+
+```c++
+void Isolate::set_pending_exception(Object* exception_obj) {
+  DCHECK(!exception_obj->IsException(this));
+  thread_local_top_.pending_exception_ = exception_obj;
+}
+```
+
+Now when returning we will land in `bootstrap_node.js` and `process_fatalException` callback:
+```javascript
+process._fatalException = function(er) {
+  ...
+     if (!caught)
+        caught = process.emit('uncaughtException', er);
+
+      // If someone handled it, then great.  otherwise, die in C++ land
+      // since that means that we'll exit the process, emit the 'exit' event
+      if (!caught) {
+        try {
+          if (!process._exiting) {
+            process._exiting = true;
+            process.emit('exit', 1);
+          }
+        } catch (er) {
+          // nothing to be done about it at this point.
+        }
+
+      } else {
+        ...
+      }
+
+      return caught;
+}
+```
+Where er will be:
+```console
+er = Error: dummy setter error at Object.set
+```
+
+The error would be: 
+
+```console
+throw error from setter...
+/Users/danielbevenius/work/nodejs/node/test/parallel/test-tls-legacy-onselect.js:13
+    throw Error('dummy setter error');
+    ^
+
+Error: dummy setter error
+    at Object.set (/Users/danielbevenius/work/nodejs/node/test/parallel/test-tls-legacy-onselect.js:13:11)
+    at Server.<anonymous> (/Users/danielbevenius/work/nodejs/node/test/parallel/test-tls-legacy-onselect.js:20:12)
+    at Server.<anonymous> (/Users/danielbevenius/work/nodejs/node/test/common/index.js:520:15)
+    at Server.emit (events.js:126:13)
+    at TCP.onconnection (net.js:1595:8)
+```
+This is more informative about the error and easier to understand where it happend.
+
+
+### v8::Object::Set walkthrough
+This function can be found in `api.cc`
+
+    Maybe<bool> v8::Object::Set(v8::Local<v8::Context> context, v8::Local<Value> key, v8::Local<Value> value) {
+      auto isolate = reinterpret_cast<i::Isolate*>(context->GetIsolate());
+      ENTER_V8(isolate, context, Object, Set, Nothing<bool>(), i::HandleScope);
+
+    }
+
+`ENTER_V8` is a macro which is defined as:
+
+    #define ENTER_V8(isolate, context, class_name, function_name, bailout_value, \
+                     HandleScopeClass)                                           \
+      ENTER_V8_HELPER_DO_NOT_USE(isolate, context, class_name, function_name,    \
+                             bailout_value, HandleScopeClass, true)
+
+So `ENTER_V8(isolate, context, Object, Set, Nothing<bool>(), i::HandleScope);` would expend to:
+
+    ENTER_V8_HELPER_DO_NOT_USE(isolate, context, Object, Set, Nothing<bool>(), i::HandleScope, true)
+
+    #define ENTER_V8_HELPER_DO_NOT_USE(isolate, context, Object,      \
+                                       function_name, bailout_value,  \
+                                       HandleScopeClass, do_callback) \
+      if (IsExecutionTerminatingCheck(isolate)) {                     \
+        return bailout_value;                                         \
+      }                                                               \
+      HandleScopeClass handle_scope(isolate);                         \
+      CallDepthScope<do_callback> call_depth_scope(isolate, context); \
+      LOG_API(isolate, class_name, function_name);                    \
+      i::VMState<v8::OTHER> __state__((isolate));                     \
+      bool has_pending_exception = false
+
+So back in our v8::Object::Set function these macros would expend to:
+
+    Maybe<bool> v8::Object::Set(v8::Local<v8::Context> context, v8::Local<Value> key, v8::Local<Value> value) {
+      auto isolate = reinterpret_cast<i::Isolate*>(context->GetIsolate());
+      if (IsExecutionTerminatingCheck(isolate)) {                     
+        return Nothing<bool>();                                         
+      }                                                               
+      HandleScopeClass handle_scope(isolate);                         
+      CallDepthScope<do_callback> call_depth_scope(isolate, context); 
+      LOG_API(isolate, Object, Set);                    
+      i::VMState<v8::OTHER> __state__((isolate));                     
+      bool has_pending_exception = false;
+
+      auto self = Utils::OpenHandle(this);
+      auto key_obj = Utils::OpenHandle(reinterpret_cast<Name*>(*key));
+      auto value_obj = Utils::OpenHandle(*value);
+      has_pending_exception = i::Runtime::SetObjectProperty(isolate, 
+                                                            self,
+                                                            key_obj,
+                                                            value_obj,
+                                                            i::LanguageMode::kSloppy).is_null();
+     RETURN_ON_FAILED_EXECUTION_PRIMITIVE(bool);
+     return Just(true);
+    }
+
+So, lets take a closer look at i::Runtime::SetObjectProperty (`i` is V8's internal namespace) which we can find in
+src/runtime/runtime-object.cc.
+
+    // Check if the given key is an array index.
+    bool success = false;
+    LookupIterator it = LookupIterator::PropertyOrElement(isolate, object, key, &success);
+    if (!success) return MaybeHandle<Object>();
+
+    MAYBE_RETURN_NULL(Object::SetProperty(&it, value, language_mode,
+                                          Object::MAY_BE_STORE_FROM_KEYED));
+    return value;
+
+`MAYBE_RETURN_NULL` macro :
+
+    #define MAYBE_RETURN_NULL(call) MAYBE_RETURN(call, MaybeHandle<Object>())
+
+    #define MAYBE_RETURN(call, value)         \
+      do {                                    \
+        if ((call).IsNothing()) return value; \
+      } while (false)
+    
+So, in this case our call will expend to:
+
+    if (Object::SetProperty(&it, value, language_mode, Object::MAY_BE_STORE_FROM_KEYED).IsNothing())
+       return value;
+
+    Maybe<bool> Object::SetProperty(LookupIterator* it, Handle<Object> value,
+                                LanguageMode language_mode,
+                                StoreFromKeyed store_mode) {
+    if (it->IsFound()) {
+      bool found = true;
+      Maybe<bool> result =
+        SetPropertyInternal(it, value, language_mode, store_mode, &found);
+    if (found) return result;
+  }
+
+  // If the receiver is the JSGlobalObject, the store was contextual. In case
+  // the property did not exist yet on the global object itself, we have to
+  // throw a reference error in strict mode.  In sloppy mode, we continue.
+  if (is_strict(language_mode) && it->GetReceiver()->IsJSGlobalObject()) {
+    it->isolate()->Throw(*it->isolate()->factory()->NewReferenceError(
+        MessageTemplate::kNotDefined, it->name()));
+    return Nothing<bool>();
+  }
+
+  ShouldThrow should_throw =
+      is_sloppy(language_mode) ? kDontThrow : kThrowOnError;
+  return AddDataProperty(it, value, NONE, should_throw, store_mode);
+}
+
+So the next line to be executed would then be:
+```c++
+  RETURN_ON_FAILED_EXECUTION_PRIMITIVE(bool);
+```
+This macro is defined as:
+```c++
+#define RETURN_ON_FAILED_EXECUTION_PRIMITIVE(T) \
+  EXCEPTION_BAILOUT_CHECK_SCOPED_DO_NOT_USE(isolate, Nothing<T>())
+```
+Which will expend to
+```c++
+  EXCEPTION_BAILOUT_CHECK_SCOPED_DO_NOT_USE(isolate, Nothing<bool>())
+
+  #define EXCEPTION_BAILOUT_CHECK_SCOPED_DO_NOT_USE(isolate, Nothing<bool>) \
+  do {                                                            \
+    if (has_pending_exception) {                                  \
+      call_depth_scope.Escape();                                  \
+      return Nothing<bool>;                                       \
+    }                                                             \
+  } while (false)
+```
+So the last lines in v8::Object::Set function will be:
+```c++
+    if (has_pending_exception) {
+      call_depth_scope.Escape();
+      return Nothing<bool>;
+    }                                                    
+    return Just(true);
+```
+
+
+objects.cc:1632
+Handle<Object> setter(AccessorPair::cast(*structure)->setter(), isolate);
+
+(lldb) job *setter
+0xdd55a3a3631: [Function]
+ - map = 0xdd502e02411 [FastProperties]
+ - prototype = 0xdd509204631
+ - elements = 0xdd57ec02241 <FixedArray[0]> [HOLEY_ELEMENTS]
+ - initial_map =
+ - shared_info = 0xdd5f0c558b1 <SharedFunctionInfo set>
+ - name = 0xdd57ec05f41 <String[3]: set>
+ - formal_parameter_count = 1
+ - kind = [ NormalFunction ]
+ - context = 0xdd58db40a71 <FixedArray[8]>
+ - code = 0xe536d087d01 <Code BUILTIN>
+ - source code = (f) {
+    console.log('throw error from setter...');
+    throw Error('dummy setter error');
+  }
+ - properties = 0xdd57ec02241 <FixedArray[0]> {
+    #length: 0xdd5c5e4a4f1 <AccessorInfo> (const accessor descriptor)
+    #name: 0xdd5c5e4a561 <AccessorInfo> (const accessor descriptor)
+    #prototype: 0xdd5c5e4a5d1 <AccessorInfo> (const accessor descriptor)
+ }
+
+ - feedback vector: not available
+
+
+return SetPropertyWithDefinedSetter(
+-> 1646        receiver, Handle<JSReceiver>::cast(setter), value, should_throw);
+
+
+Maybe<bool> Object::SetPropertyWithDefinedSetter(Handle<Object> receiver,
+                                                 Handle<JSReceiver> setter,
+                                                 Handle<Object> value,
+                                                 ShouldThrow should_throw) {
+  Isolate* isolate = setter->GetIsolate();
+
+  Handle<Object> argv[] = { value };
+  RETURN_ON_EXCEPTION_VALUE(isolate, Execution::Call(isolate, setter, receiver,
+                                                     arraysize(argv), argv),
+                            Nothing<bool>());
+  return Just(true);
+}
+
+src/execution.cc
+MaybeHandle<Object> Execution::Call(Isolate* isolate, Handle<Object> callable,
+                                    Handle<Object> receiver, int argc,
+                                    Handle<Object> argv[]) {
+  return CallInternal(isolate, callable, receiver, argc, argv,
+                      MessageHandling::kReport);
+}
+
+MaybeHandle<Object> CallInternal(Isolate* isolate, Handle<Object> callable,
+                                 Handle<Object> receiver, int argc,
+                                 Handle<Object> argv[],
+                                 Execution::MessageHandling message_handling) {
+  // Convert calls on global objects to be calls on the global
+  // receiver instead to avoid having a 'this' pointer which refers
+  // directly to a global object.
+  if (receiver->IsJSGlobalObject()) {
+    receiver =
+        handle(Handle<JSGlobalObject>::cast(receiver)->global_proxy(), isolate);
+  }
+  return Invoke(isolate, false, callable, receiver, argc, argv,
+                isolate->factory()->undefined_value(), message_handling);
+}
+
+
+typedef Object* (*JSEntryFunction)(Object* new_target, Object* target,
+                                   Object* receiver, int argc,
+                                   Object*** args);
+...
+JSEntryFunction stub_entry = FUNCTION_CAST<JSEntryFunction>(code->entry());
+Object* orig_func = *new_target;
+Object* func = *target;
+Object* recv = *receiver;
+Object*** argv = reinterpret_cast<Object***>(args);
+if (FLAG_profile_deserialization && target->IsJSFunction()) {
+  PrintDeserializedCodeInfo(Handle<JSFunction>::cast(target));
+}
+RuntimeCallTimerScope timer(isolate, &RuntimeCallStats::JS_Execution);
+value = CALL_GENERATED_CODE(isolate, stub_entry, orig_func, func, recv, argc, argv);
+
+(lldb) job orig_func
+#undefined
+(lldb) job func
+0xdd55a3a3631: [Function]
+ - map = 0xdd502e02411 [FastProperties]
+ - prototype = 0xdd509204631
+ - elements = 0xdd57ec02241 <FixedArray[0]> [HOLEY_ELEMENTS]
+ - initial_map =
+ - shared_info = 0xdd5f0c558b1 <SharedFunctionInfo set>
+ - name = 0xdd57ec05f41 <String[3]: set>
+ - formal_parameter_count = 1
+ - kind = [ NormalFunction ]
+ - context = 0xdd58db40a71 <FixedArray[8]>
+ - code = 0xe536d087d01 <Code BUILTIN>
+ - source code = (f) {
+    console.log('throw error from setter...');
+    throw Error('dummy setter error');
+  }
+ - properties = 0xdd57ec02241 <FixedArray[0]> {
+    #length: 0xdd5c5e4a4f1 <AccessorInfo> (const accessor descriptor)
+    #name: 0xdd5c5e4a561 <AccessorInfo> (const accessor descriptor)
+    #prototype: 0xdd5c5e4a5d1 <AccessorInfo> (const accessor descriptor)
+ }
+
+ - feedback vector: not available
+
+(lldb) job **argv
+0xdd55a3c54d1: [Function]
+ - map = 0xdd502e02411 [FastProperties]
+ - prototype = 0xdd509204631
+ - elements = 0xdd57ec02241 <FixedArray[0]> [HOLEY_ELEMENTS]
+ - initial_map =
+ - shared_info = 0xdd5821f9fe9 <SharedFunctionInfo>
+ - name = 0xdd57ec02431 <String[0]: >
+ - formal_parameter_count = 0
+ - kind = [ NormalFunction ]
+ - context = 0xdd55a3c30e1 <FixedArray[5]>
+ - code = 0xe536d087d01 <Code BUILTIN>
+ - source code = () {
+    context.actual++;
+    return fn.apply(this, arguments);
+  }
+ - properties = 0xdd57ec02241 <FixedArray[0]> {
+    #length: 0xdd5c5e4a4f1 <AccessorInfo> (const accessor descriptor)
+    #name: 0xdd5c5e4a561 <AccessorInfo> (const accessor descriptor)
+    #prototype: 0xdd5c5e4a5d1 <AccessorInfo> (const accessor descriptor)
+ }
+
+ - feedback vector: 0xdd5d793bc51: [FeedbackVector] in OldSpace
+ - length: 9
+ SharedFunctionInfo: 0xdd5821f9fe9 <SharedFunctionInfo>
+ Optimized Code: 0
+ Invocation Count: 1
+ Profiler Ticks: 0
+ Slot #0 LoadProperty PREMONOMORPHIC
+  [0]: 0xdd57ec06d59 <Symbol: premonomorphic_symbol>
+  [1]: 0xdd57ec071c1 <Symbol: uninitialized_symbol>
+ Slot #2 StoreNamedStrict PREMONOMORPHIC
+  [2]: 0xdd57ec06d59 <Symbol: premonomorphic_symbol>
+  [3]: 0xdd57ec071c1 <Symbol: uninitialized_symbol>
+ Slot #4 BinaryOp MONOMORPHIC
+  [4]: 1
+ Slot #5 Call MONOMORPHIC
+  [5]: 0xdd5d793bcc1 <WeakCell value= 0xdd5092088c1 <JSFunction apply (sfi = 0xdd57ec32181)>>
+  [6]: 1
+ Slot #7 LoadProperty PREMONOMORPHIC
+  [7]: 0xdd57ec06d59 <Symbol: premonomorphic_symbol>
+  [8]: 0xdd57ec071c1 <Symbol: uninitialized_symbol>
+
+
+value = CALL_GENERATED_CODE(isolate, stub_entry, orig_func, func, recv, argc, argv);
+
+`CALL_GENEREATED_CODE` is defined in `src/x64/simulator-x64.h`:
+#define CALL_GENERATED_CODE(isolate, entry, p0, p1, p2, p3, p4) \
+  (entry(p0, p1, p2, p3, p4))
+
+
+Now, `stub_entry is of type `JSEntryFunction` which is a typedef 
+    typedef Object* (*JSEntryFunction)(Object* new_target, Object* target,
+                                      Object* receiver, int argc,
+                                      Object*** args);
+    stub_entry(orig_func, func, recv, argc, argv)
+
+    JSEntryFunction stub_entry = FUNCTION_CAST<JSEntryFunction>(code->entry());
+
+From the comments about FUNCTION_CAST it is used to invoke generated code from within C:
+// FUNCTION_CAST<F>(addr) casts an address into a function
+// of type F. Used to invoke generated code from within C.
+template <typename F>
+F FUNCTION_CAST(Address addr) {
+  return reinterpret_cast<F>(reinterpret_cast<intptr_t>(addr));
+}
+
+
+This what will actually call the `func`, and this should break in the inspector if we have a break point
+enabled in it.
+
+If we set a break point after CALL_GENERATED_CODE we will see that this code does return and a value is
+provided:
+
+bool has_exception = value->IsException(isolate);
+In this case there was no exceptions so:
+isolate->clear_pending_message();
+
+return Handle<Object>(value, isolate);
+
+
+deps/v8/src/builtins/builtins-api.cc
+
+Handle<Object> result = custom.Call(callback);
+
+RETURN_EXCEPTION_IF_SCHEDULED_EXCEPTION(isolate, Object);
+which will expend to :
+```c++
+Isolate* __isolate__ = (isolate);                       
+DCHECK(!__isolate__->has_pending_exception());        
+if (__isolate__->has_scheduled_exception()) {        
+  __isolate__->PromoteScheduledException();         
+  return MaybeHandle<Object>();                                    
+}
+```
+In this case there will be a scheduled_exception.
+
+Object* Isolate::PromoteScheduledException() {
+  Object* thrown = scheduled_exception();
+  clear_scheduled_exception();
+  // Re-throw the exception to avoid getting repeated error reporting.
+  return ReThrow(thrown);
+}
+(lldb) job thrown
+0x136bbb969d61: [JS_ERROR_TYPE]
+ - map = 0x136bd865de81 [FastProperties]
+ - prototype = 0x136bddd8d679
+ - elements = 0x136ba4c82241 <FixedArray[0]> [HOLEY_SMI_ELEMENTS]
+ - properties = 0x136bbb969d79 <PropertyArray[3]> {
+    #stack: 0x136baa1ca9b9 <AccessorInfo> (const accessor descriptor)
+    #message: 0x136b27c6e981 <String[18]: dummy setter error> (data field 0) properties[0]
+    0x136ba4c87069 <Symbol: stack_trace_symbol>: 0x136bbb969f49 <JSArray[26]> (data field 1) properties[1]
+ }
+
+`ReThrow` will:
+```c++
+set_pending_exception(exception);
+return heap()->exception();
+``
+
+
+(lldb) job *code
+0x26aaff684001: [Code]
+kind = STUB
+major_key = JSEntryStub
+compiler = unknown
+Instructions (size = 234)
+0x26aaff684060     0  55             push rbp
+0x26aaff684061     1  4889e5         REX.W movq rbp,rsp
+0x26aaff684064     4  6a02           push 0x2
+0x26aaff684066     6  49ba7819800501000000 REX.W movq r10,0x105801978    ;; external reference (Isolate::context_address)
+0x26aaff684070    10  4d8b12         REX.W movq r10,[r10]
+0x26aaff684073    13  4152           push r10
+0x26aaff684075    15  4154           push r12
+0x26aaff684077    17  4155           push r13
+0x26aaff684079    19  4156           push r14
+0x26aaff68407b    1b  4157           push r15
+0x26aaff68407d    1d  53             push rbx
+0x26aaff68407e    1e  49bd4800800501000000 REX.W movq r13,0x105800048    ;; external reference (Heap::roots_array_start())
+0x26aaff684088    28  4981c580000000 REX.W addq r13,0x80
+0x26aaff68408f    2f  49bae819800501000000 REX.W movq r10,0x1058019e8    ;; external reference (Isolate::c_entry_fp_address)
+0x26aaff684099    39  41ff32         push [r10]
+0x26aaff68409c    3c  48a1081a800501000000 REX.W movq rax,(0x105801a08)    ;; external reference (Isolate::js_entry_sp_address)
+0x26aaff6840a6    46  4885c0         REX.W testq rax,rax
+0x26aaff6840a9    49  0f8514000000   jnz 0x26aaff6840c3  <+0x63>
+0x26aaff6840af    4f  6a02           push 0x2
+0x26aaff6840b1    51  488bc5         REX.W movq rax,rbp
+0x26aaff6840b4    54  48a3081a800501000000 REX.W movq (0x105801a08),rax    ;; external reference (Isolate::js_entry_sp_address)
+0x26aaff6840be    5e  e902000000     jmp 0x26aaff6840c5  <+0x65>
+0x26aaff6840c3    63  6a00           push 0x0
+0x26aaff6840c5    65  e916000000     jmp 0x26aaff6840e0  <+0x80>
+0x26aaff6840ca    6a  48a38819800501000000 REX.W movq (0x105801988),rax    ;; external reference (Isolate::pending_exception_address)
+0x26aaff6840d4    74  498b8588000000 REX.W movq rax,[r13+0x88]
+0x26aaff6840db    7b  e932000000     jmp 0x26aaff684112  <+0xb2>
+0x26aaff6840e0    80  49baf019800501000000 REX.W movq r10,0x1058019f0    ;; external reference (Isolate::handler_address)
+0x26aaff6840ea    8a  41ff32         push [r10]
+0x26aaff6840ed    8d  49baf019800501000000 REX.W movq r10,0x1058019f0    ;; external reference (Isolate::handler_address)
+0x26aaff6840f7    97  498922         REX.W movq [r10],rsp
+0x26aaff6840fa    9a  6a00           push 0x0
+0x26aaff6840fc    9c  e8bf000000     call 0x26aaff6841c0  (JSEntryTrampoline)    ;; code: BUILTIN
+0x26aaff684101    a1  49baf019800501000000 REX.W movq r10,0x1058019f0    ;; external reference (Isolate::handler_address)
+0x26aaff68410b    ab  418f02         pop [r10]
+0x26aaff68410e    ae  4883c400       REX.W addq rsp,0x0
+0x26aaff684112    b2  5b             pop rbx
+0x26aaff684113    b3  4883fb02       REX.W cmpq rbx,0x2
+0x26aaff684117    b7  0f8511000000   jnz 0x26aaff68412e  <+0xce>
+0x26aaff68411d    bd  49ba081a800501000000 REX.W movq r10,0x105801a08    ;; external reference (Isolate::js_entry_sp_address)
+0x26aaff684127    c7  49c70200000000 REX.W movq [r10],0x0
+0x26aaff68412e    ce  49bae819800501000000 REX.W movq r10,0x1058019e8    ;; external reference (Isolate::c_entry_fp_address)
+0x26aaff684138    d8  418f02         pop [r10]
+0x26aaff68413b    db  5b             pop rbx
+0x26aaff68413c    dc  415f           pop r15
+0x26aaff68413e    de  415e           pop r14
+0x26aaff684140    e0  415d           pop r13
+0x26aaff684142    e2  415c           pop r12
+0x26aaff684144    e4  4883c410       REX.W addq rsp,0x10
+0x26aaff684148    e8  5d             pop rbp
+0x26aaff684149    e9  c3             retl
+
+
+Handler Table (size = 24)
+
+RelocInfo (size = 23)
+0x26aaff684068  external reference (Isolate::context_address)  (0x105801978)
+0x26aaff684080  external reference (Heap::roots_array_start())  (0x105800048)
+0x26aaff684091  external reference (Isolate::c_entry_fp_address)  (0x1058019e8)
+0x26aaff68409e  external reference (Isolate::js_entry_sp_address)  (0x105801a08)
+0x26aaff6840b6  external reference (Isolate::js_entry_sp_address)  (0x105801a08)
+0x26aaff6840cc  external reference (Isolate::pending_exception_address)  (0x105801988)
+0x26aaff6840e2  external reference (Isolate::handler_address)  (0x1058019f0)
+0x26aaff6840ef  external reference (Isolate::handler_address)  (0x1058019f0)
+0x26aaff6840fd  code target (BUILTIN)  (0x26aaff6841c0)
+0x26aaff684103  external reference (Isolate::handler_address)  (0x1058019f0)
+0x26aaff68411f  external reference (Isolate::js_entry_sp_address)  (0x105801a08)
+0x26aaff684130  external reference (Isolate::c_entry_fp_address)  (0x1058019e8)
+
+
+
+### Setters
+I'm guessing getters/setters are added using V8 Accessor (TODO: look at the v8 examples I have)
+
+### factory.h
+When debugging you might come across a call that invokes a function in V8's factory, for example:
+```c++
+isolate->factory()->undefined_value();
+```
+Now, in the debugger you see something like:
+```console
+ROOT_LIST(ROOT_ACCESSOR)
+```
+Lets take a closer look at the `ROOT_LIST` macro. It is defined in factory.h:
+```c++
+#define ROOT_ACCESSOR(type, name, camel_name)                         \
+  inline Handle<type> name() {                                        \
+    return Handle<type>(bit_cast<type**>(                             \
+        &isolate()->heap()->roots_[Heap::k##camel_name##RootIndex])); \
+  }
+  ROOT_LIST(ROOT_ACCESSOR)
+#undef ROOT_ACCESSOR
+```
+
+src/heap/heap.h:
+```c++
+#define STRONG_ROOT_LIST(V)
+...
+V(Oddball, undefined_value, UndefinedValue)
+```
+
+Which would expand to:
+```c++
+  inline Handle<Oddball> undefined_value() {  
+    return Handle<Oddball>(bit_cast<Oddball**>(
+        &isolate()->heap()->roots_[Heap::kUndefinedValueRootIndex]));
+```
+Recall that Oddball describes objects null, undefined, true, and false
+
+### 
+Look closer at the error reporting from V8 and how it ties into Node. See the setting of OnMessage:
+isolate->AddMessageListener(OnMessage);
+
+
+  Local<String> fatal_exception_string = env->fatal_exception_string();
+  Local<Function> fatal_exception_function = process_object->Get(fatal_exception_string).As<Function>();
+
+And how this is set in lib/internal/bootstrap.js:
+
+  process._fatalException = function(er) {
+      var caught;
+      ...
+  }
+
+(lldb) jlh fatal_exception_function
+0x136bdddbeda1: [Function] in OldSpace
+ - map = 0x136bd8602411 [FastProperties]
+ - prototype = 0x136bddd84631
+ - elements = 0x136ba4c82241 <FixedArray[0]> [HOLEY_ELEMENTS]
+ - initial_map =
+ - shared_info = 0x136bdddbd121 <SharedFunctionInfo process._fatalException>
+ - name = 0x136ba4c82431 <String[0]: >
+ - formal_parameter_count = 1
+ - kind = [ NormalFunction ]
+ - context = 0x136b92913eb9 <FixedArray[11]>
+ - code = 0x3f3aa1807d01 <Code BUILTIN>
+ - source code = (er) {
+      var caught;
+
+      // It's possible that kInitTriggerAsyncId was set for a constructor call
+      // that threw and was never cleared. So clear it now.
+      async_id_fields[kInitTriggerAsyncId] = 0;
+
+      if (exceptionHandlerState.captureFn !== null) {
+        exceptionHandlerState.captureFn(er);
+        caught = true;
+      }
+
+      if (!caught)
+        caught = process.emit('uncaughtException', er);
+
+      // If someone handled it, then great.  otherwise, die in C++ land
+      // since that means that we'll exit the process, emit the 'exit' event
+      if (!caught) {
+        try {
+          if (!process._exiting) {
+            process._exiting = true;
+            process.emit('exit', 1);
+          }
+        } catch (er) {
+          // nothing to be done about it at this point.
+        }
+
+      } else {
+        // If we handled an error, then make sure any ticks get processed
+        NativeModule.require('timers').setImmediate(process._tickCallback);
+
+        // Emit the after() hooks now that the exception has been handled.
+        if (async_hook_fields[kAfter] > 0) {
+          do {
+            NativeModule.require('internal/async_hooks').emitAfter(
+              async_id_fields[kExecutionAsyncId]);
+          } while (asyncIdStackSize() > 0);
+        // Or completely empty the id stack.
+        } else {
+          clearAsyncIdStack();
+        }
+      }
+
+      return caught;
+    }
+ - properties = 0x136ba4c82241 <FixedArray[0]> {
+    #length: 0x136baa1ca4f1 <AccessorInfo> (const accessor descriptor)
+    #name: 0x136baa1ca561 <AccessorInfo> (const accessor descriptor)
+    #prototype: 0x136baa1ca5d1 <AccessorInfo> (const accessor descriptor)
+ }
