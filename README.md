@@ -166,72 +166,6 @@ referened that would cause the event loop to be considered alive and it will con
 So a different thread can use uv_async_sent(&dispatch_debug_messages_async) to to wake up the eventloop and have the DispatchDebugMessagesAsyncCallback
 function called.
 
-### DispatchDebugMessagesAsyncCallback
-If the debugger is not running this function will start it. This will print 'Starting debugger agent.' if it was not started. It will then start processing
-debugger messages.
-
-    ParseArgs(argc, argv, exec_argc, exec_argv, &v8_argc, &v8_argv);
-
-Parses the command line arguments passed. If you want to inspect them you can use:
-
-    (lldb) p *(char(*)[1]) new_v8_argv
-
-This is something that I've not seen before either:
-
-    if (v8_is_profiling) {
-        uv_loop_configure(uv_default_loop(), UV_LOOP_BLOCK_SIGNAL, SIGPROF);
-    }
-
-What does uv_loop_configure do?  
-It sets additional loop options. This [example](https://github.com/danbev/learning-libuv/blob/master/configure.c) was used to look a little closer 
-at it.
-
-
-    if (!use_debug_agent) {
-       RegisterDebugSignalHandler();
-    }
-
-use_debug_agent is the flag `--debug` that can be provided to node. So when it is not give RegisterDebugSignalHandler will be called.
-
-
-### RegisterDebugSignalHandler
-First thing that happens is :
-
-    CHECK_EQ(0, uv_sem_init(&debug_semaphore, 0));
-
-We are creating a semaphore with a count of 0.
-
-    sigset_t sigmask;
-    sigfillset(&sigmask);
-    CHECK_EQ(0, pthread_sigmask(SIG_SETMASK, &sigmask, &sigmask));
-
-Calling `sigfillset` initializes a signal set to contain all signals. Then a pthreads_sigmask will replace the old mask with the new one.
-
-     pthread_t thread;
-     const int err = pthread_create(&thread, &attr, DebugSignalThreadMain, nullptr);
-
-A new thread is created and its entry function will be DebugSignalThreadMain. The nullptr is the argument to the function.
-
-     CHECK_EQ(0, pthread_sigmask(SIG_SETMASK, &sigmask, nullptr));
-
-The last nullprt is the old set which can be stored (if it was not null that is)
-
-    RegisterSignalHandler(SIGUSR1, EnableDebugSignalHandler);
-
-This function will setup the sigaction struct and set the handler to EnableDebugSignalHandler. So sending USR1 to this process will invoke the
-handler. But nothing has been sent at this time, only configured to handle these signals.
-
-### DebugSignalThreadMain
-Will block waiting for the semaphore to become non zero. If you check above, the counter for the semaphore is zero so 
-any thread calling uv_sem_wait will block until it becomes non-zero. 
-
-    for (;;) {
-      uv_sem_wait(&debug_semaphore);
-      TryStartDebugger();
-    } 
-    return nullptr;
-
-So this thread will just wait until uv_sem_post(&debug_semaphore) is called. So where is that done? That is done in EnableDebugSignalHandler
 
 ### EnableDebugSignalHandler
 This is where we signal the semaphore which will increment the counter, and any threads in the wait queue will now run. So our thread that is
@@ -484,14 +418,14 @@ This is done in LoadEnvironment.
     Local<String> script_name = FIXED_ONE_BYTE_STRING(env->isolate(), "bootstrap_node.js");
 
 #### lib/internal/bootstrap_node.js
-This is the file that is loaded by LoadEnvironment as "bootstrap_node.js". 
+This is the file that is loaded by `LoadEnvironment` as "bootstrap_node.js". 
 I read that this file is actually precompiled, where/how?
 
-This file is referenced in node.gyp and is used with the target node_js2c. This target calls tools/js2c.py which is a tool for converting 
+This file is referenced in node.gyp and is used with the target `node_js2c`. This target calls `tools/js2c.py` which is a tool for converting 
 JavaScript source code into C-Style char arrays. This target will process all the library_files specified in the variables section which 
-lib/internal/bootstrap_node.js is one of. The output of this out/Debug/obj/gen/node_natives.h, depending on the type of build being performed. 
-So lib/internal/bootstrap_node.js will become internal_bootstrap_node_native in node_natives.h. 
-This is then later included in src/node_javascript.cc 
+`lib/internal/bootstrap_node.js` is one of. The output of this `out/Debug/obj/gen/node_natives.h`, depending on the type of build being performed. 
+So `lib/internal/bootstrap_node.js` will become `internal_bootstrap_node_native` in `node_natives.h`. 
+This is then later included in `src/node_javascript.cc`. 
 
 We can see the contents of this in lldb using:
 
@@ -820,7 +754,7 @@ Lets take a look at one:
 
     V(tcp_constructor_template, v8::FunctionTemplate)
 
-Like before these are only the declarations, the definitions can be found in src/env-inl.h:
+Like before these are only the declarations, the definitions can be found in `src/env-inl.h`:
 
     #define V(PropertyName, TypeName)                                             \
       inline v8::Local<TypeName> Environment::PropertyName() const {              \
@@ -832,7 +766,7 @@ Like before these are only the declarations, the definitions can be found in src
       ENVIRONMENT_STRONG_PERSISTENT_PROPERTIES(V)
     #undef V 
 
-So, in the case of `tcp_constructor_template` this would become:
+So, in the case of `tcp_constructor_template` this would expand to:
 
     inline v8::Local<v8::FunctionTemplate> Environment::tcp_constructor_template() const {              
       return StrongPersistentToLocal(tcp_constructor_template_);                        
@@ -865,7 +799,7 @@ The `nm_context_register_func` is `node::TCPWrap::Initialize`, which is a static
 
     wrap_data->MakeCallback(env->onconnection_string(), arraysize(argv), argv);
 
-`env->onconnection_string() is a simple getter generated by the preprocessor by a macro in env-inl.h
+`env->onconnection_string()` is a simple getter generated by the preprocessor by a macro in `env-inl.h`.
 
 
 ### TCPWrap::Initialize
@@ -875,7 +809,7 @@ Next, a function template is created:
 
     Local<FunctionTemplate> t = env->NewFunctionTemplate(New);
 
-Just to be clear `New` is the address of the function and we are just passing that to the NewFunctionTemplate method. It will use that address when creating a NewFunctionTemplate.
+Just to be clear `New` is the address of the function and we are just passing that to the `NewFunctionTemplate` method. It will use that address when creating a NewFunctionTemplate.
 
 ### TcpWrap::New
 This class is called TcpWrap because is wraps a libuv [uv_tcp_t](http://docs.libuv.org/en/v1.x/tcp.html) handle. 
@@ -1102,7 +1036,7 @@ So what would this look like after the preprocessor has processed it (need to do
 
 
 What does `__VA_ARGS__` do?   
-I've seen this before with variadic methods in c, but not sure what it means to return it. Turns out that is you don't pass anything apart from the required arguments then the `return __VA_ARGS_ statement will just be `return;`. There are other places when the usage of this macro does pass additional arguments, for example: 
+I've seen this before with variadic methods in c, but not sure what it means to return it. Turns out that if you don't pass anything apart from the required arguments then the `return __VA_ARGS_ statement will just be `return;`. There are other places when the usage of this macro does pass additional arguments, for example: 
 
     ASSIGN_OR_RETURN_UNWRAP(&wrap,
                            args.Holder(),
@@ -3673,6 +3607,13 @@ which causes us to exit the block.
 
 So we are declaring a JSEntryFunction which is of type pointer to function that returns a pointer to Object
 and takes the arguments listed.
+    
+    Handle<Code> code = is_construct
+      ? isolate->factory()->js_construct_entry_code()
+      : isolate->factory()->js_entry_code();
+
+How are js_entry_code() set? 
+See `Heap objects` for details.
 
     JSEntryFunction stub_entry = FUNCTION_CAST<JSEntryFunction>(code->entry());
 
@@ -3945,6 +3886,163 @@ What if we set verbose to false:
 
 In this case the message will still be created and the exception set on the thread_local, but 
 when we get to ReportPendingMessages is_verbose_ will be false and the callback will be skipped.
+
+In `src/api.cc` (line 2710) we can find the TryCatch constructor:
+```c++
+v8::TryCatch::TryCatch(v8::Isolate* isolate)
+    : isolate_(reinterpret_cast<i::Isolate*>(isolate)),
+      next_(isolate_->try_catch_handler()),
+      is_verbose_(false),
+      can_continue_(true),
+      capture_message_(true),
+      rethrow_(false),
+      has_terminated_(false) {
+  ResetInternal();
+  ...
+  isolate_->RegisterTryCatchHandler(this);
+}
+`ResetInternal` will do the following:
+```c++
+  i::Object* the_hole = isolate_->heap()->the_hole_value();
+  exception_ = the_hole;
+  message_obj_ = the_hole;
+```
+```console
+(lldb) p the_hole
+(v8::internal::Object *) $4 = 0x0000278095682321
+```
+```
+`RegisterTryCatchHandler` will do:
+```c++
+thread_local_top()->set_try_catch_handler(that);
+```
+
+After this call we can inspect thread_local_top_:
+```c++
+(lldb) p *thread_local_top()
+(v8::internal::ThreadLocalTop) $22 = {
+  isolate_ = 0x0000000104806e00
+  context_ = 0x000025b6fbf03af1
+  thread_id_ = (id_ = 1)
+  pending_exception_ = 0x000025b693f02321
+  wasm_caught_exception_ = 0x0000000000000000
+  pending_handler_context_ = 0x0000000000000000
+  pending_handler_code_ = 0x0000000000000000
+  pending_handler_offset_ = 0
+  pending_handler_fp_ = 0x0000000000000000 <no value available>
+  pending_handler_sp_ = 0x0000000000000000 <no value available>
+  rethrowing_message_ = false
+  pending_message_obj_ = 0x000025b693f02321
+  scheduled_exception_ = 0x000025b693f02321
+  external_caught_exception_ = false
+  save_context_ = 0x0000000000000000
+  c_entry_fp_ = 0x0000000000000000 <no value available>
+  handler_ = 0x0000000000000000 <no value available>
+  c_function_ = 0x0000000000000000 <no value available>
+  promise_on_stack_ = 0x0000000000000000
+  js_entry_sp_ = 0x0000000000000000 <no value available>
+  external_callback_scope_ = 0x0000000000000000
+  current_vm_state_ = EXTERNAL
+  failed_access_check_callback_ = 0x0000000000000000
+  try_catch_handler_ = 0x00007fff5fbfde60
+}
+```
+Notice that `pending_exception`, `pending_message_obj_`, and `scheduled_exception_` are all set to `the_hole`. The `try_catch_handler_` is also
+set.
+So these are memory locations, and from what I understand so far is that these are made available to generated code, enabling them
+to set values, like pending_message_obj_, but also have access to the try_catch_handler_.
+This means that a generated piece of code would directly call/jump to try_catch_handler_ and have it execute. But what sets this up?  
+When `CALL_GENERATED_CODE(isolate, stub_entry, orig_func, func, recv, argc, argv);` is called the stub_entry will point to the code generated
+for `JSEntryStub`.  This will place the correct values in the expected registers.
+
+For example, take the following from the generated assemble (created using (lldb) job *code):
+```console
+movq r10,0x104808790    ;; external reference (Isolate::context_address)
+movq r10,0x104808790    ;; external reference (Isolate::context_address)
+```
+This instruction is generated by `src/x64/code-stubs-x64.cc` `JSEntryStub::Generate`:
+```c++
+ExternalReference context_address(IsolateAddressId::kContextAddress, isolate());
+__ Load(kScratchRegister, context_address);o
+__ Push(kScratchRegister);  // context
+```
+The above will set `ExternalReference` address_:
+```c++
+ExternalReference::ExternalReference(IsolateAddressId id, Isolate* isolate)
+    : address_(isolate->get_address_from_id(id)) {}
+```
+And `get_address_from_id` look like this:
+```c++
+Address Isolate::get_address_from_id(IsolateAddressId id) {
+  return isolate_addresses_[id];
+}
+```
+```c++
+Move(kScratchRegister, source);
+```
+```console
+(lldb) expr kScratchRegister
+(const v8::internal::Register) $7 = {
+  v8::internal::RegisterBase<v8::internal::Register, 16> = (reg_code_ = 10)
+}
+```
+We can find the following function in `src/x64/macro-assembler-x64.h`:
+```c++
+void Move(Register dst, ExternalReference ext) {
+  movp(dst, reinterpret_cast<void*>(ext.address()), RelocInfo::EXTERNAL_REFERENCE);
+}
+```
+Notice the `RelocInfo::EXTERNAL_REFERENCE` which indicates that this is the address of an
+external C++ function
+
+```console
+(lldb) p ext.address()
+(v8::internal::Address) $8 = 0x0000000105813b50 <no value available>
+```
+
+Movp(destination, Operand(kScratchRegister, 0));
+
+To understand how this works we can set a break point and run mkshnapshot:
+```console
+$ $ lldb out.gn/learning/mksnapshot
+(lldb) br s -f code-stubs-x64.cc -n JSEntryStub::Generate
+(lldb) expr StackFrame::TypeToMarker(type())
+(int32_t) $1 = 2                                            // pushq  $0x2
+```
+
+0x3db66db84066  REX.W movq r10,0x104808790    ;; external reference (Isolate::context_address)
+0x3db66db84070: movq   (%r10), %r10
+Notice that `0x104808790` is a pointer. This is then dereferenced and that value placed into r10:
+```console
+(lldb) register read r10
+     r10 = 0x0000000104808790
+(lldb) memory read -f x -c 1 -s 8 `($r10)`
+0x104808790: 0x000025b6fbf03af1
+```
+So it contains the value `0x000025b6fbf03af1` and if we look at the `context_` entry from above we can see
+these match:
+```console
+context_ = 0x000025b6fbf03af1
+```
+
+One thing I noticed in x64/code-stubs-x64.cc JSEntry function was:
+```c++
+__ bind(&handler_entry);
+handler_offset_ = handler_entry.pos();
+```
+Now, `handler_offset_` is a private member of `JSEntryStub` in `src/code-stubs.h`. This field is set
+by `FinishCode`:
+```c++
+Handle<Code> new_object = GenerateCode();
+new_object->set_stub_key(GetKey());
+FinishCode(new_object);
+```
+Now, `handler_entry` is a label and this gets the position of the label. I'm guessing (at the moment) that the `handler_offet_` allows other 
+generated functions to addess the exception handler.
+
+
+deps/v8/src/x64/macro-assembler-x64.cc `EnterFrame`. Just note that when Builtins::Generate_JSEntryTrampoline generates 
+code it calls `EnterFrame` which does more than store/set rbp. Remember this or the code will be hard to follow.
 
 
 Member functions of SSLWrap:
@@ -5923,8 +6021,6 @@ write_head_data_ + write_head_write_pos_, the data to be copied is data + 0, and
  
 
 
-
-
 ### ClientHelloParser
 node_crypto.h has a class member that is declared like:
 
@@ -5961,11 +6057,6 @@ it first initilizes its fields and then calls Reset():
     }
 
 I can't find a reason for not resetting ocsp_request_ here. I'll create a PR to get some feedback.
-
-
-### Exception in Node/V8
-An empty Maybe(Local) in the V8 API always means that there is already a pending exception, 
-i.e. there’s no ThrowError necessary on our side.
 
 ### v8::Object::Set and exceptions
 This section goes through a call to Set and the possible exceptions that might be throws and 
@@ -6173,13 +6264,69 @@ This is more informative about the error and easier to understand where it happe
 
 
 ### v8::Object::Set walkthrough
-This function can be found in `api.cc`
+This function can be found in `api.cc`. In the walkthrough what we are setting is a callback on an object.
 
     Maybe<bool> v8::Object::Set(v8::Local<v8::Context> context, v8::Local<Value> key, v8::Local<Value> value) {
       auto isolate = reinterpret_cast<i::Isolate*>(context->GetIsolate());
       ENTER_V8(isolate, context, Object, Set, Nothing<bool>(), i::HandleScope);
-
+      ...
     }
+
+In this walk through the arguments are:
+```console
+(lldb) jlh key
+#onselect
+
+(lldb) jlh value
+0x2cfe064e7d11: [Function]
+ - map = 0x2cfea4f02411 [FastProperties]
+ - prototype = 0x2cfec3204631
+ - elements = 0x2cfea2482241 <FixedArray[0]> [HOLEY_ELEMENTS]
+ - initial_map =
+ - shared_info = 0x2cfec4a73ae1 <SharedFunctionInfo>
+ - name = 0x2cfea2482431 <String[0]: >
+ - formal_parameter_count = 0
+ - kind = [ NormalFunction ]
+ - context = 0x2cfe064e1be1 <FixedArray[5]>
+ - code = 0x6b17cf07d01 <Code BUILTIN>
+ - source code = () {
+    context.actual++;
+    return fn.apply(this, arguments);
+  }
+ - properties = 0x2cfea2482241 <FixedArray[0]> {
+    #length: 0x2cfed24ca4f1 <AccessorInfo> (const accessor descriptor)
+    #name: 0x2cfed24ca561 <AccessorInfo> (const accessor descriptor)
+    #prototype: 0x2cfed24ca5d1 <AccessorInfo> (const accessor descriptor)
+ }
+
+ - feedback vector: 0x2cfe7b857fa9: [FeedbackVector] in OldSpace
+ - length: 9
+ SharedFunctionInfo: 0x2cfec4a73ae1 <SharedFunctionInfo>
+ Optimized Code: 0
+ Invocation Count: 1
+ Profiler Ticks: 0
+ Slot #0 LoadProperty PREMONOMORPHIC
+  [0]: 0x2cfea2486d59 <Symbol: premonomorphic_symbol>
+  [1]: 0x2cfea24871c1 <Symbol: uninitialized_symbol>
+ Slot #2 StoreNamedStrict PREMONOMORPHIC
+  [2]: 0x2cfea2486d59 <Symbol: premonomorphic_symbol>
+  [3]: 0x2cfea24871c1 <Symbol: uninitialized_symbol>
+ Slot #4 BinaryOp MONOMORPHIC
+  [4]: 1
+ Slot #5 Call MONOMORPHIC
+  [5]: 0x2cfe7b858019 <WeakCell value= 0x2cfec32088c1 <JSFunction apply (sfi = 0x2cfea24b2181)>>
+  [6]: 1
+ Slot #7 LoadProperty PREMONOMORPHIC
+  [7]: 0x2cfea2486d59 <Symbol: premonomorphic_symbol>
+  [8]: 0x2cfea24871c1 <Symbol: uninitialized_symbol>
+```
+This is the callback passed in :
+```js
+pair.ssl.setSNICallback(common.mustCall(function() {
+  raw.destroy();
+  server.close();
+}));
+```
 
 `ENTER_V8` is a macro which is defined as:
 
@@ -6253,7 +6400,9 @@ src/runtime/runtime-object.cc.
 So, in this case our call will expend to:
 
     if (Object::SetProperty(&it, value, language_mode, Object::MAY_BE_STORE_FROM_KEYED).IsNothing())
-       return value;
+       return MaybeHandle<Object>();
+
+Lets follow `SetProperty` (in src/objects.cc line 4753) and see what it does:
 
     Maybe<bool> Object::SetProperty(LookupIterator* it, Handle<Object> value,
                                 LanguageMode language_mode,
@@ -6279,190 +6428,200 @@ So, in this case our call will expend to:
   return AddDataProperty(it, value, NONE, should_throw, store_mode);
 }
 
-So the next line to be executed would then be:
-```c++
-  RETURN_ON_FAILED_EXECUTION_PRIMITIVE(bool);
-```
-This macro is defined as:
-```c++
-#define RETURN_ON_FAILED_EXECUTION_PRIMITIVE(T) \
-  EXCEPTION_BAILOUT_CHECK_SCOPED_DO_NOT_USE(isolate, Nothing<T>())
-```
-Which will expend to
-```c++
-  EXCEPTION_BAILOUT_CHECK_SCOPED_DO_NOT_USE(isolate, Nothing<bool>())
+`SetPropertyInternal` (in src/objects.cc):
 
-  #define EXCEPTION_BAILOUT_CHECK_SCOPED_DO_NOT_USE(isolate, Nothing<bool>) \
-  do {                                                            \
-    if (has_pending_exception) {                                  \
-      call_depth_scope.Escape();                                  \
-      return Nothing<bool>;                                       \
-    }                                                             \
-  } while (false)
-```
-So the last lines in v8::Object::Set function will be:
-```c++
-    if (has_pending_exception) {
-      call_depth_scope.Escape();
-      return Nothing<bool>;
-    }                                                    
-    return Just(true);
-```
+    ShouldThrow should_throw = is_sloppy(language_mode) ? DONT_THROW : THROW_ON_ERROR;
 
+    switch (it->state()) {
+      ...
+    }
+ 
+    lldb) p it->state()
+    (v8::internal::LookupIterator::State) $22 = ACCESSOR
+    (lldb) expr should_throw
+    (ShouldThrow) $28 = DONT_THROW
 
-objects.cc:1632
-Handle<Object> setter(AccessorPair::cast(*structure)->setter(), isolate);
+    ....
+    return SetPropertyWithAccessor(it, value, should_throw);
 
+`SetPropertyWithAccessors`:
+
+    Handle<Object> structure = it->GetAccessors();
+    Handle<Object> receiver = it->GetReceiver();
+    ...
+    Handle<Object> setter(AccessorPair::cast(*structure)->setter(), isolate);
+
+```console
 (lldb) job *setter
-0xdd55a3a3631: [Function]
- - map = 0xdd502e02411 [FastProperties]
- - prototype = 0xdd509204631
- - elements = 0xdd57ec02241 <FixedArray[0]> [HOLEY_ELEMENTS]
+0x2cfe064bd1b1: [Function]
+ - map = 0x2cfea4f02411 [FastProperties]
+ - prototype = 0x2cfec3204631
+ - elements = 0x2cfea2482241 <FixedArray[0]> [HOLEY_ELEMENTS]
  - initial_map =
- - shared_info = 0xdd5f0c558b1 <SharedFunctionInfo set>
- - name = 0xdd57ec05f41 <String[3]: set>
+ - shared_info = 0x2cfe232eed51 <SharedFunctionInfo set>
+ - name = 0x2cfea2485f41 <String[3]: set>
  - formal_parameter_count = 1
  - kind = [ NormalFunction ]
- - context = 0xdd58db40a71 <FixedArray[8]>
- - code = 0xe536d087d01 <Code BUILTIN>
+ - context = 0x2cfedc582a29 <FixedArray[8]>
+ - code = 0x6b17cf07d01 <Code BUILTIN>
  - source code = (f) {
     console.log('throw error from setter...');
     throw Error('dummy setter error');
   }
- - properties = 0xdd57ec02241 <FixedArray[0]> {
-    #length: 0xdd5c5e4a4f1 <AccessorInfo> (const accessor descriptor)
-    #name: 0xdd5c5e4a561 <AccessorInfo> (const accessor descriptor)
-    #prototype: 0xdd5c5e4a5d1 <AccessorInfo> (const accessor descriptor)
+ - properties = 0x2cfea2482241 <FixedArray[0]> {
+    #length: 0x2cfed24ca4f1 <AccessorInfo> (const accessor descriptor)
+    #name: 0x2cfed24ca561 <AccessorInfo> (const accessor descriptor)
+    #prototype: 0x2cfed24ca5d1 <AccessorInfo> (const accessor descriptor)
  }
 
  - feedback vector: not available
+```
+We can see that this is our setter.
+
+So the next line of interest is:
+```c++
+  return SetPropertyWithDefinedSetter(receiver, Handle<JSReceiver>::cast(setter), value, should_throw);
+```
+
+`SetPropertyWithDefinedSetter`
+```c++
+RETURN_ON_EXCEPTION_VALUE(isolate, Execution::Call(isolate, setter, receiver,
+                                                   arraysize(argv), argv),
+                          Nothing<bool>());
+return Just(true);
+```
+
+`RETURN_ON_EXCEPTION_VALUE` checks if `Call` returned null and if so returns `Nothing<bool>()`. 
+
+So lets follow `Call` (src/execution.cc line 191):
+```c++
+return CallInternal(isolate, callable, receiver, argc, argv, MessageHandling::kReport);
+```
+`MessageHandling` is an enum define as:
+```c++
+enum class MessageHandling { kReport, kKeepPending };
+```
+
+`CallInternal`: 
+```c++
+return Invoke(isolate, false, callable, receiver, argc, argv,
+              isolate->factory()->undefined_value(), message_handling);
+```
+The second argument name is `is_construct` and undefined is passed for `new_target`.
+`Invoke` (src/execution.cc line 58):
+```c++
+MUST_USE_RESULT MaybeHandle<Object> Invoke(
+    Isolate* isolate, bool is_construct, Handle<Object> target,
+    Handle<Object> receiver, int argc, Handle<Object> args[],
+    Handle<Object> new_target, Execution::MessageHandling message_handling) {
+    ...
+    typedef Object* (*JSEntryFunction)(Object* new_target, Object* target,
+                                       Object* receiver, int argc,
+                                       Object*** args);
+    ...
+    Object* value = NULL;
+
+    JSEntryFunction stub_entry = FUNCTION_CAST<JSEntryFunction>(code->entry());
+
+    Handle<Code> code = is_construct
+       ? isolate->factory()->js_construct_entry_code()
+       : isolate->factory()->js_entry_code();
+```
+    (lldb) p is_construct
+    (bool) $74 = false
+
+So `isolate->factory()->js_entry_code() will be called. Lets take a look at this code. To do this we have to
+take the address from code->entry()
 
 
-return SetPropertyWithDefinedSetter(
--> 1646        receiver, Handle<JSReceiver>::cast(setter), value, should_throw);
+```console
+(lldb) job *code
+0x6b17cf04001: [Code]
+kind = STUB
+major_key = JSEntryStub
+compiler = unknown
+Instructions (size = 234)
+0x6b17cf04060     0  55             push rbp
+0x6b17cf04061     1  4889e5         REX.W movq rbp,rsp
+0x6b17cf04064     4  6a02           push 0x2
+0x6b17cf04066     6  49ba7819000601000000 REX.W movq r10,0x106001978    ;; external reference (Isolate::context_address)
+0x6b17cf04070    10  4d8b12         REX.W movq r10,[r10]
+0x6b17cf04073    13  4152           push r10
+0x6b17cf04075    15  4154           push r12
+0x6b17cf04077    17  4155           push r13
+0x6b17cf04079    19  4156           push r14
+0x6b17cf0407b    1b  4157           push r15
+0x6b17cf0407d    1d  53             push rbx
+0x6b17cf0407e    1e  49bd4800000601000000 REX.W movq r13,0x106000048    ;; external reference (Heap::roots_array_start())
+0x6b17cf04088    28  4981c580000000 REX.W addq r13,0x80
+0x6b17cf0408f    2f  49bae819000601000000 REX.W movq r10,0x1060019e8    ;; external reference (Isolate::c_entry_fp_address)
+0x6b17cf04099    39  41ff32         push [r10]
+0x6b17cf0409c    3c  48a1081a000601000000 REX.W movq rax,(0x106001a08)    ;; external reference (Isolate::js_entry_sp_address)
+0x6b17cf040a6    46  4885c0         REX.W testq rax,rax
+0x6b17cf040a9    49  0f8514000000   jnz 0x6b17cf040c3  <+0x63>
+0x6b17cf040af    4f  6a02           push 0x2
+0x6b17cf040b1    51  488bc5         REX.W movq rax,rbp
+0x6b17cf040b4    54  48a3081a000601000000 REX.W movq (0x106001a08),rax    ;; external reference (Isolate::js_entry_sp_address)
+0x6b17cf040be    5e  e902000000     jmp 0x6b17cf040c5  <+0x65>
+0x6b17cf040c3    63  6a00           push 0x0
+0x6b17cf040c5    65  e916000000     jmp 0x6b17cf040e0  <+0x80>
+0x6b17cf040ca    6a  48a38819000601000000 REX.W movq (0x106001988),rax    ;; external reference (Isolate::pending_exception_address)
+0x6b17cf040d4    74  498b8588000000 REX.W movq rax,[r13+0x88]
+0x6b17cf040db    7b  e932000000     jmp 0x6b17cf04112  <+0xb2>
+0x6b17cf040e0    80  49baf019000601000000 REX.W movq r10,0x1060019f0    ;; external reference (Isolate::handler_address)
+0x6b17cf040ea    8a  41ff32         push [r10]
+0x6b17cf040ed    8d  49baf019000601000000 REX.W movq r10,0x1060019f0    ;; external reference (Isolate::handler_address)
+0x6b17cf040f7    97  498922         REX.W movq [r10],rsp
+0x6b17cf040fa    9a  6a00           push 0x0
+0x6b17cf040fc    9c  e8bf000000     call 0x6b17cf041c0  (JSEntryTrampoline)    ;; code: BUILTIN
+0x6b17cf04101    a1  49baf019000601000000 REX.W movq r10,0x1060019f0    ;; external reference (Isolate::handler_address)
+0x6b17cf0410b    ab  418f02         pop [r10]
+0x6b17cf0410e    ae  4883c400       REX.W addq rsp,0x0
+0x6b17cf04112    b2  5b             pop rbx
+0x6b17cf04113    b3  4883fb02       REX.W cmpq rbx,0x2
+0x6b17cf04117    b7  0f8511000000   jnz 0x6b17cf0412e  <+0xce>
+0x6b17cf0411d    bd  49ba081a000601000000 REX.W movq r10,0x106001a08    ;; external reference (Isolate::js_entry_sp_address)
+0x6b17cf04127    c7  49c70200000000 REX.W movq [r10],0x0
+0x6b17cf0412e    ce  49bae819000601000000 REX.W movq r10,0x1060019e8    ;; external reference (Isolate::c_entry_fp_address)
+0x6b17cf04138    d8  418f02         pop [r10]
+0x6b17cf0413b    db  5b             pop rbx
+0x6b17cf0413c    dc  415f           pop r15
+0x6b17cf0413e    de  415e           pop r14
+0x6b17cf04140    e0  415d           pop r13
+0x6b17cf04142    e2  415c           pop r12
+0x6b17cf04144    e4  4883c410       REX.W addq rsp,0x10
+0x6b17cf04148    e8  5d             pop rbp
+0x6b17cf04149    e9  c3             retl
 
 
-Maybe<bool> Object::SetPropertyWithDefinedSetter(Handle<Object> receiver,
-                                                 Handle<JSReceiver> setter,
-                                                 Handle<Object> value,
-                                                 ShouldThrow should_throw) {
-  Isolate* isolate = setter->GetIsolate();
+Handler Table (size = 24)
 
-  Handle<Object> argv[] = { value };
-  RETURN_ON_EXCEPTION_VALUE(isolate, Execution::Call(isolate, setter, receiver,
-                                                     arraysize(argv), argv),
-                            Nothing<bool>());
-  return Just(true);
-}
+RelocInfo (size = 23)
+0x6b17cf04068  external reference (Isolate::context_address)  (0x106001978)
+0x6b17cf04080  external reference (Heap::roots_array_start())  (0x106000048)
+0x6b17cf04091  external reference (Isolate::c_entry_fp_address)  (0x1060019e8)
+0x6b17cf0409e  external reference (Isolate::js_entry_sp_address)  (0x106001a08)
+0x6b17cf040b6  external reference (Isolate::js_entry_sp_address)  (0x106001a08)
+0x6b17cf040cc  external reference (Isolate::pending_exception_address)  (0x106001988)
+0x6b17cf040e2  external reference (Isolate::handler_address)  (0x1060019f0)
+0x6b17cf040ef  external reference (Isolate::handler_address)  (0x1060019f0)
+0x6b17cf040fd  code target (BUILTIN)  (0x6b17cf041c0)
+0x6b17cf04103  external reference (Isolate::handler_address)  (0x1060019f0)
+0x6b17cf0411f  external reference (Isolate::js_entry_sp_address)  (0x106001a08)
+0x6b17cf04130  external reference (Isolate::c_entry_fp_address)  (0x1060019e8)
+```
 
-src/execution.cc
-MaybeHandle<Object> Execution::Call(Isolate* isolate, Handle<Object> callable,
-                                    Handle<Object> receiver, int argc,
-                                    Handle<Object> argv[]) {
-  return CallInternal(isolate, callable, receiver, argc, argv,
-                      MessageHandling::kReport);
-}
+    Object* orig_func = *new_target;
+    Object* func = *target;
+    Object* recv = *receiver;
+    Object*** argv = reinterpret_cast<Object***>(args);
+    if (FLAG_profile_deserialization && target->IsJSFunction()) {
+      PrintDeserializedCodeInfo(Handle<JSFunction>::cast(target));
+    }
+    RuntimeCallTimerScope timer(isolate, &RuntimeCallStats::JS_Execution);
+    value = CALL_GENERATED_CODE(isolate, stub_entry, orig_func, func, recv, argc, argv);
 
-MaybeHandle<Object> CallInternal(Isolate* isolate, Handle<Object> callable,
-                                 Handle<Object> receiver, int argc,
-                                 Handle<Object> argv[],
-                                 Execution::MessageHandling message_handling) {
-  // Convert calls on global objects to be calls on the global
-  // receiver instead to avoid having a 'this' pointer which refers
-  // directly to a global object.
-  if (receiver->IsJSGlobalObject()) {
-    receiver =
-        handle(Handle<JSGlobalObject>::cast(receiver)->global_proxy(), isolate);
-  }
-  return Invoke(isolate, false, callable, receiver, argc, argv,
-                isolate->factory()->undefined_value(), message_handling);
-}
-
-
-typedef Object* (*JSEntryFunction)(Object* new_target, Object* target,
-                                   Object* receiver, int argc,
-                                   Object*** args);
-...
-JSEntryFunction stub_entry = FUNCTION_CAST<JSEntryFunction>(code->entry());
-Object* orig_func = *new_target;
-Object* func = *target;
-Object* recv = *receiver;
-Object*** argv = reinterpret_cast<Object***>(args);
-if (FLAG_profile_deserialization && target->IsJSFunction()) {
-  PrintDeserializedCodeInfo(Handle<JSFunction>::cast(target));
-}
-RuntimeCallTimerScope timer(isolate, &RuntimeCallStats::JS_Execution);
-value = CALL_GENERATED_CODE(isolate, stub_entry, orig_func, func, recv, argc, argv);
-
-(lldb) job orig_func
-#undefined
-(lldb) job func
-0xdd55a3a3631: [Function]
- - map = 0xdd502e02411 [FastProperties]
- - prototype = 0xdd509204631
- - elements = 0xdd57ec02241 <FixedArray[0]> [HOLEY_ELEMENTS]
- - initial_map =
- - shared_info = 0xdd5f0c558b1 <SharedFunctionInfo set>
- - name = 0xdd57ec05f41 <String[3]: set>
- - formal_parameter_count = 1
- - kind = [ NormalFunction ]
- - context = 0xdd58db40a71 <FixedArray[8]>
- - code = 0xe536d087d01 <Code BUILTIN>
- - source code = (f) {
-    console.log('throw error from setter...');
-    throw Error('dummy setter error');
-  }
- - properties = 0xdd57ec02241 <FixedArray[0]> {
-    #length: 0xdd5c5e4a4f1 <AccessorInfo> (const accessor descriptor)
-    #name: 0xdd5c5e4a561 <AccessorInfo> (const accessor descriptor)
-    #prototype: 0xdd5c5e4a5d1 <AccessorInfo> (const accessor descriptor)
- }
-
- - feedback vector: not available
-
-(lldb) job **argv
-0xdd55a3c54d1: [Function]
- - map = 0xdd502e02411 [FastProperties]
- - prototype = 0xdd509204631
- - elements = 0xdd57ec02241 <FixedArray[0]> [HOLEY_ELEMENTS]
- - initial_map =
- - shared_info = 0xdd5821f9fe9 <SharedFunctionInfo>
- - name = 0xdd57ec02431 <String[0]: >
- - formal_parameter_count = 0
- - kind = [ NormalFunction ]
- - context = 0xdd55a3c30e1 <FixedArray[5]>
- - code = 0xe536d087d01 <Code BUILTIN>
- - source code = () {
-    context.actual++;
-    return fn.apply(this, arguments);
-  }
- - properties = 0xdd57ec02241 <FixedArray[0]> {
-    #length: 0xdd5c5e4a4f1 <AccessorInfo> (const accessor descriptor)
-    #name: 0xdd5c5e4a561 <AccessorInfo> (const accessor descriptor)
-    #prototype: 0xdd5c5e4a5d1 <AccessorInfo> (const accessor descriptor)
- }
-
- - feedback vector: 0xdd5d793bc51: [FeedbackVector] in OldSpace
- - length: 9
- SharedFunctionInfo: 0xdd5821f9fe9 <SharedFunctionInfo>
- Optimized Code: 0
- Invocation Count: 1
- Profiler Ticks: 0
- Slot #0 LoadProperty PREMONOMORPHIC
-  [0]: 0xdd57ec06d59 <Symbol: premonomorphic_symbol>
-  [1]: 0xdd57ec071c1 <Symbol: uninitialized_symbol>
- Slot #2 StoreNamedStrict PREMONOMORPHIC
-  [2]: 0xdd57ec06d59 <Symbol: premonomorphic_symbol>
-  [3]: 0xdd57ec071c1 <Symbol: uninitialized_symbol>
- Slot #4 BinaryOp MONOMORPHIC
-  [4]: 1
- Slot #5 Call MONOMORPHIC
-  [5]: 0xdd5d793bcc1 <WeakCell value= 0xdd5092088c1 <JSFunction apply (sfi = 0xdd57ec32181)>>
-  [6]: 1
- Slot #7 LoadProperty PREMONOMORPHIC
-  [7]: 0xdd57ec06d59 <Symbol: premonomorphic_symbol>
-  [8]: 0xdd57ec071c1 <Symbol: uninitialized_symbol>
-
+```
 
 value = CALL_GENERATED_CODE(isolate, stub_entry, orig_func, func, recv, argc, argv);
 
@@ -6487,18 +6646,177 @@ F FUNCTION_CAST(Address addr) {
   return reinterpret_cast<F>(reinterpret_cast<intptr_t>(addr));
 }
 
+Lets take a look at the arguments to entry which are:
 
-This what will actually call the `func`, and this should break in the inspector if we have a break point
-enabled in it.
+    stub_entry(orig_func, func, recv, argc, argv)
+
+
+To follow the code in `stub_entry` we need to step-inst (instruction level step) but there is not debug information
+as this is generated code. What we can do is after every step call dissasemble --pc:
+```console
+(lldb) target stop-hook add
+Enter your stop hook command(s).  Type 'DONE' to end.
+> disassemble --pc
+> DONE
+Stop hook #1 added.
+(lldb) undisplay
+```
+
+Now we should be able to step into using:
+```console
+(lldb) si
+Process 72301 stopped
+* thread #1: tid = 0xc2e41e, 0x000006b17cf04060, queue = 'com.apple.main-thread', stop reason = instruction step into
+    frame #0: 0x000006b17cf04060
+->  0x6b17cf04060: pushq  %rbp
+    0x6b17cf04061: movq   %rsp, %rbp
+    0x6b17cf04064: pushq  $0x2
+    0x6b17cf04066: movabsq $0x106001978, %r10        ; imm = 0x106001978
+```
+Notice that the address matches that of the output from `(lldb) job *code` above:
+```console
+0x6b17cf04060     0  55             push rbp
+0x6b17cf04061     1  4889e5         REX.W movq rbp,rsp
+0x6b17cf04064     4  6a02           push 0x2
+0x6b17cf04066     6  49ba7819000601000000 REX.W movq r10,0x106001978    ;; external reference (Isolate::context_address)
+```
+V8 uses Intel's assembly syntax and lldb uses AT&T syntax so the src/dest arguments are switched around, and registers 
+prefixes are not used in Intel syntax.
+
+Start of `(lldb) job *code`:
+```console
+0x6b17cf04060     0  55             push rbp
+0x6b17cf04061     1  4889e5         REX.W movq rbp,rsp
+0x6b17cf04064     4  6a02           push 0x2
+0x6b17cf04066     6  49ba7819000601000000 REX.W movq r10,0x106001978    ;; external reference (Isolate::context_address)
+0x6b17cf04070    10  4d8b12         REX.W movq r10,[r10]
+```
+I'm trying to line up the assembly code output with src/x64/code-stubs-x64.cc and `JSEntryStub::Generate` and see if I'm 
+looking at the correct code:
+
+`push rbp`       __ pushq(rbp);  
+`movq rpb, rsp`  __ movp(rbp, rsp);  
+`push 0x2`       -- Push(Immediate(StackFrame::TypeToMarker(type()))) 
+This pushed the type of the stack frame which is an emmediate value 2. I think this value is taken from src/frames.h 
+and StackFrame class which has an enum:
+```c++
+enum Type {
+  NONE = 0,
+  STACK_FRAME_TYPE_LIST(DECLARE_TYPE)
+  NUMBER_OF_TYPES,
+  // Used by FrameScope to indicate that the stack frame is constructed
+  // manually and the FrameScope does not need to emit code.
+  MANUAL
+};
+```
+And the first in the STACK_FRAME_LIST is:
+```c++
+#define STACK_FRAME_TYPE_LIST(V)                                          \
+  V(ENTRY, EntryFrame)                                                    \
+  ...
+```
+
+movq r10,0x106001978 matches:
+```c++
+ExternalReference context_address(IsolateAddressId::kContextAddress, isolate());
+__ Load(kScratchRegister, context_address);
+```
+`kScratchRegister` is r10 and we are moving `0x106001978` (the context_address) into register r10.  
+
+`movq r10,[r10]`   __ Load(kScratchRegister, context_address);  // get the pointer
+`push r10`         __ Push(kScratchRegister);  // push the pointer onto the stack
+`push r12`         __ pushq(r12);  
+`push r13`         __ pushq(r13);  
+`push r14`         __ pushq(r14);  
+`push r15`         __ pushq(r15); 
+`push rbx`         __ pushq(rbx);  
+
+`movq r13,0x106000048`   __ InitializeRootRegister();  //  external reference (Heap::roots_array_start())
+`addq r13,0x80`          __ Push(c_entry_fp_operand); 
+
+`movq r10,0x1060019e8`   __ Load(rax, js_entry_sp);   ;; external reference (Isolate::c_entry_fp_address)
+0x6b17cf04099    39  41ff32         push [r10]
+0x6b17cf0409c    3c  48a1081a000601000000 REX.W movq rax,(0x106001a08)    ;; external reference (Isolate::js_entry_sp_address)
+0x6b17cf040a6    46  4885c0         REX.W testq rax,rax
+0x6b17cf040a9    49  0f8514000000   jnz 0x6b17cf040c3  <+0x63>
+
+You might be wondering what that `__` is, well it is a macro:
+```c++
+#define __ ACCESS_MASM(masm)
+
+#define ACCESS_MASM(masm) masm->
+```
+So `__` will get expanded to masm->pushq(rbp) for example. I think this is done so that it look more like assembly and 
+not so much as C++/C.
+
+
+0x6b17cf04060     0  55             push rbp                                 // prologue
+0x6b17cf04061     1  4889e5         REX.W movq rbp,rsp                       // prologue
+0x6b17cf04064     4  6a02           push 0x2                                 // Stack frame type = Context Address type
+0x6b17cf04066     6  49ba7819000601000000 REX.W movq r10,0x106001978         // external reference (Isolate::context_address)
+0x6b17cf04070    10  4d8b12         REX.W movq r10,[r10]                     // dereference the context_address pointer
+0x6b17cf04073    13  4152           push r10                                 // push contents of r10 (ScratchRegister)
+0x6b17cf04075    15  4154           push r12                                 // push contents of r12 argument passed
+0x6b17cf04077    17  4155           push r13             
+0x6b17cf04079    19  4156           push r14
+0x6b17cf0407b    1b  4157           push r15
+0x6b17cf0407d    1d  53             push rbx                                 // push
+0x6b17cf0407e    1e  49bd4800000601000000 REX.W movq r13,0x106000048         // external reference (Heap::roots_array_start())
+0x6b17cf04088    28  4981c580000000 REX.W addq r13,0x80                      // push e_entry_fp_operand
+0x6b17cf0408f    2f  49bae819000601000000 REX.W movq r10,0x1060019e8         // external reference (Isolate::c_entry_fp_address)
+0x6b17cf04099    39  41ff32         push [r10]                               // push the scratch targed used above
+0x6b17cf0409c    3c  48a1081a000601000000 REX.W movq rax,(0x106001a08)       // external reference (Isolate::js_entry_sp_address)
+0x6b17cf040a6    46  4885c0         REX.W testq rax,rax                      // check if rax is zero
+0x6b17cf040a9    49  0f8514000000   jnz 0x6b17cf040c3  <+0x63>               // jump if not zero (ZF = 0)
+0x6b17cf040af    4f  6a02           push 0x2                                 //StackFrame::OUTERMOST_JSENTRY_FRAME
+0x6b17cf040b1    51  488bc5         REX.W movq rax,rbp                       // __ movp(rax, rbp)
+0x6b17cf040b4    54  48a3081a000601000000 REX.W movq (0x106001a08),rax       // __ Store(js_entry_sp, rax)
+0x6b17cf040be    5e  e902000000     jmp 0x6b17cf040c5  <+0x65> ---------+
+0x6b17cf040c3    63  6a00           push 0x0                            |    // __ Push(Immediate(StackFrame::INNER_JSENTRY_FRAME));
+    +-------------------------------------------------------------------+
+    |
+0x6b17cf040c5    65  e916000000     jmp 0x6b17cf040e0  <+0x80> ---------+    // __ jmp(&invoke);
+0x6b17cf040ca    6a  48a38819000601000000 REX.W movq (0x106001988),rax  |    // __ Store(pending_exception, rax)
+0x6b17cf040d4    74  498b8588000000 REX.W movq rax,[r13+0x88]           |    // __ LoadRoot(rax, Heap::kExceptionRootIndex);
+0x6b17cf040db    7b  e932000000     jmp 0x6b17cf04112  <+0xb2>          |    // __ jump(&exit)
+    +-------------------------------------------------------------------+
+    |
+0x6b17cf040e0    80  49baf019000601000000 REX.W movq r10,0x1060019f0         // external reference (Isolate::handler_address)
+0x6b17cf040ea    8a  41ff32         push [r10]                               // push value of the pointer onto the stack
+0x6b17cf040ed    8d  49baf019000601000000 REX.W movq r10,0x1060019f0         // PushStackHandler (Isolate::handler_address)
+0x6b17cf040f7    97  498922         REX.W movq [r10],rsp                     // 
+0x6b17cf040fa    9a  6a00           push 0x0                                 // RelocInfo::CODE_TARGET  ?
+0x6b17cf040fc    9c  e8bf000000     call 0x6b17cf041c0  (JSEntryTrampoline)  //  code: BUILTIN
+0x6b17cf04101    a1  49baf019000601000000 REX.W movq r10,0x1060019f0         // PopStackHandnler (Isolate::handler_address)
+0x6b17cf0410b    ab  418f02         pop [r10]
+0x6b17cf0410e    ae  4883c400       REX.W addq rsp,0x0
+0x6b17cf04112    b2  5b             pop rbx
+0x6b17cf04113    b3  4883fb02       REX.W cmpq rbx,0x2
+0x6b17cf04117    b7  0f8511000000   jnz 0x6b17cf0412e  <+0xce>
+0x6b17cf0411d    bd  49ba081a000601000000 REX.W movq r10,0x106001a08    ;; external reference (Isolate::js_entry_sp_address)
+0x6b17cf04127    c7  49c70200000000 REX.W movq [r10],0x0
+0x6b17cf0412e    ce  49bae819000601000000 REX.W movq r10,0x1060019e8    ;; external reference (Isolate::c_entry_fp_address)
+0x6b17cf04138    d8  418f02         pop [r10]
+0x6b17cf0413b    db  5b             pop rbx
+0x6b17cf0413c    dc  415f           pop r15
+0x6b17cf0413e    de  415e           pop r14
+0x6b17cf04140    e0  415d           pop r13
+0x6b17cf04142    e2  415c           pop r12
+0x6b17cf04144    e4  4883c410       REX.W addq rsp,0x10
+0x6b17cf04148    e8  5d             pop rbp
+0x6b17cf04149    e9  c3             retl
+
+0x6b17cf040fd  code target (BUILTIN)  (0x6b17cf041c0)
 
 If we set a break point after CALL_GENERATED_CODE we will see that this code does return and a value is
 provided:
-
+```c++
 bool has_exception = value->IsException(isolate);
 In this case there was no exceptions so:
 isolate->clear_pending_message();
 
 return Handle<Object>(value, isolate);
+```  
 
 
 deps/v8/src/builtins/builtins-api.cc
@@ -6541,80 +6859,35 @@ return heap()->exception();
 ``
 
 
-(lldb) job *code
-0x26aaff684001: [Code]
-kind = STUB
-major_key = JSEntryStub
-compiler = unknown
-Instructions (size = 234)
-0x26aaff684060     0  55             push rbp
-0x26aaff684061     1  4889e5         REX.W movq rbp,rsp
-0x26aaff684064     4  6a02           push 0x2
-0x26aaff684066     6  49ba7819800501000000 REX.W movq r10,0x105801978    ;; external reference (Isolate::context_address)
-0x26aaff684070    10  4d8b12         REX.W movq r10,[r10]
-0x26aaff684073    13  4152           push r10
-0x26aaff684075    15  4154           push r12
-0x26aaff684077    17  4155           push r13
-0x26aaff684079    19  4156           push r14
-0x26aaff68407b    1b  4157           push r15
-0x26aaff68407d    1d  53             push rbx
-0x26aaff68407e    1e  49bd4800800501000000 REX.W movq r13,0x105800048    ;; external reference (Heap::roots_array_start())
-0x26aaff684088    28  4981c580000000 REX.W addq r13,0x80
-0x26aaff68408f    2f  49bae819800501000000 REX.W movq r10,0x1058019e8    ;; external reference (Isolate::c_entry_fp_address)
-0x26aaff684099    39  41ff32         push [r10]
-0x26aaff68409c    3c  48a1081a800501000000 REX.W movq rax,(0x105801a08)    ;; external reference (Isolate::js_entry_sp_address)
-0x26aaff6840a6    46  4885c0         REX.W testq rax,rax
-0x26aaff6840a9    49  0f8514000000   jnz 0x26aaff6840c3  <+0x63>
-0x26aaff6840af    4f  6a02           push 0x2
-0x26aaff6840b1    51  488bc5         REX.W movq rax,rbp
-0x26aaff6840b4    54  48a3081a800501000000 REX.W movq (0x105801a08),rax    ;; external reference (Isolate::js_entry_sp_address)
-0x26aaff6840be    5e  e902000000     jmp 0x26aaff6840c5  <+0x65>
-0x26aaff6840c3    63  6a00           push 0x0
-0x26aaff6840c5    65  e916000000     jmp 0x26aaff6840e0  <+0x80>
-0x26aaff6840ca    6a  48a38819800501000000 REX.W movq (0x105801988),rax    ;; external reference (Isolate::pending_exception_address)
-0x26aaff6840d4    74  498b8588000000 REX.W movq rax,[r13+0x88]
-0x26aaff6840db    7b  e932000000     jmp 0x26aaff684112  <+0xb2>
-0x26aaff6840e0    80  49baf019800501000000 REX.W movq r10,0x1058019f0    ;; external reference (Isolate::handler_address)
-0x26aaff6840ea    8a  41ff32         push [r10]
-0x26aaff6840ed    8d  49baf019800501000000 REX.W movq r10,0x1058019f0    ;; external reference (Isolate::handler_address)
-0x26aaff6840f7    97  498922         REX.W movq [r10],rsp
-0x26aaff6840fa    9a  6a00           push 0x0
-0x26aaff6840fc    9c  e8bf000000     call 0x26aaff6841c0  (JSEntryTrampoline)    ;; code: BUILTIN
-0x26aaff684101    a1  49baf019800501000000 REX.W movq r10,0x1058019f0    ;; external reference (Isolate::handler_address)
-0x26aaff68410b    ab  418f02         pop [r10]
-0x26aaff68410e    ae  4883c400       REX.W addq rsp,0x0
-0x26aaff684112    b2  5b             pop rbx
-0x26aaff684113    b3  4883fb02       REX.W cmpq rbx,0x2
-0x26aaff684117    b7  0f8511000000   jnz 0x26aaff68412e  <+0xce>
-0x26aaff68411d    bd  49ba081a800501000000 REX.W movq r10,0x105801a08    ;; external reference (Isolate::js_entry_sp_address)
-0x26aaff684127    c7  49c70200000000 REX.W movq [r10],0x0
-0x26aaff68412e    ce  49bae819800501000000 REX.W movq r10,0x1058019e8    ;; external reference (Isolate::c_entry_fp_address)
-0x26aaff684138    d8  418f02         pop [r10]
-0x26aaff68413b    db  5b             pop rbx
-0x26aaff68413c    dc  415f           pop r15
-0x26aaff68413e    de  415e           pop r14
-0x26aaff684140    e0  415d           pop r13
-0x26aaff684142    e2  415c           pop r12
-0x26aaff684144    e4  4883c410       REX.W addq rsp,0x10
-0x26aaff684148    e8  5d             pop rbp
-0x26aaff684149    e9  c3             retl
+Notes:
+```c++
+  RETURN_ON_FAILED_EXECUTION_PRIMITIVE(bool);
+```
+This macro is defined as:
+```c++
+#define RETURN_ON_FAILED_EXECUTION_PRIMITIVE(T) \
+  EXCEPTION_BAILOUT_CHECK_SCOPED_DO_NOT_USE(isolate, Nothing<T>())
+```
+Which will expend to
+```c++
+  EXCEPTION_BAILOUT_CHECK_SCOPED_DO_NOT_USE(isolate, Nothing<bool>())
 
-
-Handler Table (size = 24)
-
-RelocInfo (size = 23)
-0x26aaff684068  external reference (Isolate::context_address)  (0x105801978)
-0x26aaff684080  external reference (Heap::roots_array_start())  (0x105800048)
-0x26aaff684091  external reference (Isolate::c_entry_fp_address)  (0x1058019e8)
-0x26aaff68409e  external reference (Isolate::js_entry_sp_address)  (0x105801a08)
-0x26aaff6840b6  external reference (Isolate::js_entry_sp_address)  (0x105801a08)
-0x26aaff6840cc  external reference (Isolate::pending_exception_address)  (0x105801988)
-0x26aaff6840e2  external reference (Isolate::handler_address)  (0x1058019f0)
-0x26aaff6840ef  external reference (Isolate::handler_address)  (0x1058019f0)
-0x26aaff6840fd  code target (BUILTIN)  (0x26aaff6841c0)
-0x26aaff684103  external reference (Isolate::handler_address)  (0x1058019f0)
-0x26aaff68411f  external reference (Isolate::js_entry_sp_address)  (0x105801a08)
-0x26aaff684130  external reference (Isolate::c_entry_fp_address)  (0x1058019e8)
+  #define EXCEPTION_BAILOUT_CHECK_SCOPED_DO_NOT_USE(isolate, Nothing<bool>) \
+  do {                                                            \
+    if (has_pending_exception) {                                  \
+      call_depth_scope.Escape();                                  \
+      return Nothing<bool>;                                       \
+    }                                                             \
+  } while (false)
+```
+So the last lines in v8::Object::Set function will be:
+```c++
+    if (has_pending_exception) {
+      call_depth_scope.Escape();
+      return Nothing<bool>;
+    }                                                    
+    return Just(true);
+```
 
 
 
@@ -6654,82 +6927,3786 @@ Which would expand to:
     return Handle<Oddball>(bit_cast<Oddball**>(
         &isolate()->heap()->roots_[Heap::kUndefinedValueRootIndex]));
 ```
-Recall that Oddball describes objects null, undefined, true, and false
+Recall that Oddball describes objects null, undefined, true, and false.
 
-### 
-Look closer at the error reporting from V8 and how it ties into Node. See the setting of OnMessage:
-isolate->AddMessageListener(OnMessage);
+`bit_cast` can be found in src/base/macros.h.
 
+### bootstrap.js part 2
+The goal of this section is to understand what happens when bootstrap_node.js is compiled and run. 
+```console
+    $ lldb -- out/Debug/node
+    (lldb) br s -f node.cc -l 1500
+    (lldb) br s -f node.cc -l 3399
+    (lldb) r
+```
 
-  Local<String> fatal_exception_string = env->fatal_exception_string();
-  Local<Function> fatal_exception_function = process_object->Get(fatal_exception_string).As<Function>();
+Our first break point will stop on the following line in `node::ExecuteString`:
+```c++
+Local<Value> f_value = ExecuteString(env, MainSource(env), script_name);
+```
+MainSource is a function in node_javascript.h which which is used by the node_js2c. This was documented earlier so I won't go
+into details about it now. You can see the content using:
+```console
+(lldb) jlh MainSource(env)
+```
+`ExecuteString` is a function in node.cc which calls `Compile`:
+```c++
+MaybeLocal<v8::Script> script = v8::Script::Compile(env->context(), source, &origin);
+```
 
-And how this is set in lib/internal/bootstrap.js:
+Will delegate to `ScriptCompiler::Compile`, and then to `ScriptCompiler::CompileUnboundInternal` which can be found in
+`deps/v8/src/api.cc`:
+```c++
+MaybeLocal<UnboundScript> ScriptCompiler::CompileUnboundInternal(
+   Isolate* v8_isolate, Source* source, CompileOptions options) {
+     ...
+     i::MaybeHandle<i::SharedFunctionInfo> maybe_function_info = i::Compiler::GetSharedFunctionInfoForScript(
+        str, name_obj, line_offset, column_offset, source->resource_options,
+        source_map_url, isolate->native_context(), NULL, &script_data,
+        options, i::NOT_NATIVES_CODE, host_defined_options);
+     
+```
 
-  process._fatalException = function(er) {
-      var caught;
-      ...
+`Compiler::GetSharedFunctionForScript` in `deps/v8/src/compiler.cc`:
+```c++
+  ParseInfo parse_info(script);
+  Zone compile_zone(isolate->allocator(), ZONE_NAME);
+  ...
+  maybe_result = CompileToplevel(&parse_info, isolate);
+```
+
+### CompileToplevel
+```c++
+  if (parse_info->literal() == nullptr && 
+      !parsing::ParseProgram(parse_info, isolate)) {
+  ...
+  std::unique_ptr<CompilationJob> outer_function_job(GenerateUnoptimizedCode(parse_info, isolate, &inner_function_jobs));
+...
+First, `parsing::ParseProgram` will parse the JavaScript and produce the abstract syntax tree.
+`ParseProgram`:
+```c++
+result = parser.ParseProgram(isolate, info);
+info->set_literal(result);
+```
+Next `GenerateUnoptimizedCode` will be called (`deps/v8/src/compiler.cc`):
+```c++
+  Compiler::EagerInnerFunctionLiterals inner_literals;
+  if (!Compiler::Analyze(parse_info, &inner_literals)) {
+    return std::unique_ptr<CompilationJob>();
   }
+  std::unique_ptr<CompilationJob> outer_function_job(
+      PrepareAndExecuteUnoptimizedCompileJob(parse_info, parse_info->literal(), isolate));
+```
 
-(lldb) jlh fatal_exception_function
-0x136bdddbeda1: [Function] in OldSpace
- - map = 0x136bd8602411 [FastProperties]
- - prototype = 0x136bddd84631
- - elements = 0x136ba4c82241 <FixedArray[0]> [HOLEY_ELEMENTS]
+`PrepareAndExecuteUnoptimizedCompileJob` `deps/v8/src/compiler.cc` 
+```console
+(lldb) br s -f compiler.cc -l 385
+```
+```c++
+std::unique_ptr<CompilationJob> job(interpreter::Interpreter::NewCompilationJob(parse_info, literal, isolate));
+  if (job->PrepareJob() == CompilationJob::SUCCEEDED && job->ExecuteJob() == CompilationJob::SUCCEEDED) {
+    return job;
+  }
+```
+Lets take a look at `parse_info`:
+```console
+(lldb) job parse_info->script_->source()
+"'use strict';\x0a\x0a(function frogger(process) {\x0a  process._rawDebug('entry function');\x0a\x0a  function startup() {\x0a  process._rawDebug('startup function');\x0a  return true;\x0a  }\x0a\x0a  startup();\x0a});\x0a"
+```
+Notice that this is the complete contents of bootstrap_node.js:
+```console
+(lldb) job parse_info->script_->name()
+"bootstrap_node.js"
+```
+`PrepareJob` will print the AST if configured with `--print-ast`:
+```console
+[generating bytecode for function: ]
+--- AST ---
+FUNC at 0
+. KIND 0
+. SUSPEND COUNT 0
+. NAME ""
+. INFERRED NAME ""
+. EXPRESSION STATEMENT at 284
+. . LITERAL "use strict"
+. EXPRESSION STATEMENT at 299
+. . ASSIGN at -1
+. . . VAR PROXY local[0] (0x10702f338) (mode = TEMPORARY) ".result"
+. . . FUNC LITERAL at 300
+. . . . NAME
+. . . . INFERRED NAME
+. . . . PARAMS
+. . . . . VAR (0x10701cd48) (mode = VAR) "process"
+. RETURN at -1
+. . VAR PROXY local[0] (0x10702f338) (mode = TEMPORARY) ".result"
+```
+`VAR PROXY` indicates that this scope resolution will connect these nodes declaring VAR nodes.
+This is all `PrepareJob` does.
+
+`ExecuteJob()` will call:
+```c++
+return UpdateState(ExecuteJobImpl(), State::kReadyToFinalize);
+```
+The call to `ExecuteJobImpl` will end up in interpreter.cc:191 in our case. In this function we find the following:
+```c++
+  generator()->GenerateBytecode(stack_limit());
+```
+Now we are getting closer to figuring out how the bytecode is generated. This will land us in bytecode-generator.cc:894.
+
+`GenerateBytecode`:
+```c++
+  InitializeAstVisitor(stack_limit);
+  ContextScope incoming_context(this, closure_scope());
+  RegisterAllocationScope register_scope(this);
+  AllocateTopLevelRegisters();
+...
+  GenerateBytecodeBody();
+```
+
+`GenerateBytecodeBody`:
+```c++
+  ...
+  VisitDeclarations(closure_scope()->declarations());  // no declarations in our case
+  VisitModuleNamespaceImports();
+  ...
+  builder()->StackCheck(info()->literal()->start_position());
+  VisitStatements(info()->literal()->body());
+  ...
+```
+This will later call `OutputStackCheck();`
+```console
+(lldb) p *node
+(v8::internal::interpreter::BytecodeNode) $73 = {
+  bytecode_ = kStackCheck
+  operands_ = ([0] = 0, [1] = 0, [2] = 0, [3] = 0, [4] = 0)
+  operand_count_ = 0
+  operand_scale_ = kSingle
+  source_info_ = (position_type_ = kExpression, source_position_ = 0)
+}
+```
+bytecode-array-writer.cc:60 will do the actual writing of the node:
+```c++
+  UpdateSourcePositionTable(node);
+  EmitBytecode(node);
+```
+TODO: take a closer look at the source position table.
+`EmitBytecode` can be found in bytecode-array-writer.cc:192:
+```c++
+Bytecode bytecode = node->bytecode();
+OperandScale operand_scale = node->operand_scale();
+```
+
+In this case bytecode is kStackCheck. Now, kStackCheck is an index into builtins_ array of the isolate:
+```console
+(lldb) job *isolate->builtins()->builtin_handle(Builtins::Name::kStackCheck)
+0x169cbdb41da1: [Code]
+kind = BUILTIN
+name = StackCheck
+compiler = unknown
+Instructions (size = 17)
+0x169cbdb41e00     0  33c0           xorl rax,rax
+0x169cbdb41e02     2  48bb0001440101000000 REX.W movq rbx,0x101440100    ;; external reference (Runtime::StackGuard)
+0x169cbdb41e0c     c  e92f29f4ff     jmp 0x169cbda84740      ;; code: STUB, CEntryStub, minor: 8
+
+
+RelocInfo (size = 3)
+0x169cbdb41e04  external reference (Runtime::StackGuard)  (0x101440100)
+0x169cbdb41e0d  code target (STUB)  (0x169cbda84740)
+```
+If you look closely the first instruction is just setting rax to zero using xor.
+Next, we are pushing the pointer to the function, in this case Runtime::StackGuard into rbx.
+We then jump to CEntryStub. 
+
+What is `StackGuard`?  
+Well, it is defined in a macro in src/runtime/runtime.h:
+```c++
+...
+F(StackGuard, 0, 1)
+...
+#define FOR_EACH_INTRINSIC(F)         \
+  FOR_EACH_INTRINSIC_RETURN_PAIR(F)   \
+  FOR_EACH_INTRINSIC_RETURN_OBJECT(F)
+
+
+#define F(name, nargs, ressize)                                 \
+  Object* Runtime_##name(int args_length, Object** args_object, \
+                         Isolate* isolate);
+FOR_EACH_INTRINSIC_RETURN_OBJECT(F)
+#undef F
+```
+`StackGuard` is included in `FOR_EACH_INTRINSIC_INTERNAL` which is included by `FOR_EACH_INTRINSIC_RETURN_OBJECT`.
+So that should expand to:
+```c++
+Object* Runtime_StackGuard(int args_lentgh, Object** args_object, Isolate* isolate);
+```
+We can verify this using:
+```console
+(lldb) expr v8::internal::Runtime::FunctionForId(static_cast<v8::internal::Runtime::FunctionId>(v8::internal::Runtime::FunctionId::kStackGuard))
+(const Function *) $1058 = 0x00000001029f0340
+(lldb) expr v8::internal::Runtime::FunctionForId(static_cast<v8::internal::Runtime::FunctionId>(v8::internal::Runtime::FunctionId::kStackGuard))->name
+(const char *const) $1059 = 0x0000000101c8be27 "StackGuard"
+(lldb) expr v8::internal::Runtime::FunctionForId(static_cast<v8::internal::Runtime::FunctionId>(v8::internal::Runtime::FunctionId::kStackGuard))->nargs
+(int8_t) $1060 = '\0'
+(lldb) expr v8::internal::Runtime::FunctionForId(static_cast<v8::internal::Runtime::FunctionId>(v8::internal::Runtime::FunctionId::kStackGuard))->intrinsic_type
+(const IntrinsicType) $1061 = RUNTIME
+(lldb) expr v8::internal::Runtime::FunctionForId(static_cast<v8::internal::Runtime::FunctionId>(v8::internal::Runtime::FunctionId::kStackGuard))->entry
+(v8::internal::Address) $1063 = 0x000000010142de70 "UH\x89�H��P�}�H�u�H�U�H�}���\x14\x04��\x01H\x83�
+```
+If `nargs` is `-1` then the funnction takes a variable number of arguments.
+We can also disassemble the address using:
+```console
+(lldb) dis -s 0x000000010142de70
+node`v8::internal::Runtime_StackGuard:
+    0x10142de70 <+0>:  pushq  %rbp
+    0x10142de71 <+1>:  movq   %rsp, %rbp
+    0x10142de74 <+4>:  subq   $0x50, %rsp
+    0x10142de78 <+8>:  movl   %edi, -0xc(%rbp)
+    0x10142de7b <+11>: movq   %rsi, -0x18(%rbp)
+    0x10142de7f <+15>: movq   %rdx, -0x20(%rbp)
+    0x10142de83 <+19>: movq   -0x20(%rbp), %rdi
+    0x10142de87 <+23>: callq  0x10046f360               ; v8::internal::Isolate::context at isolate.h:596
+    0x10142de8c <+28>: movb   $0x1, %cl
+```
+Now that we know this we can disassemble the complete function using:
+```console
+(lldb) dis -n v8::internal::Runtime_StackGuard
+```
+As well as any other runtime function we might be interested in later. How are these stored?  
+They are stored in a global named `kIntrinsicFunctions`:
+```console
+(lldb) expr kIntrinsicFunctions[238]
+(const v8::internal::Runtime::Function) $227 = (function_id = kStackGuard, intrinsic_type = RUNTIME, name = "StackGuard", entry = "UH\xffffff89\xffffffe5H\xffffff83\xffffffecP\xffffff89}\xfffffff4H\xffffff89u\xffffffe8H\xffffff89U\xffffffe0H\xffffff8b}\xffffffe0\xffffffe8td\x04\xffffffff\xffffffb1\x01H\xffffff83\xfffffff8", nargs = '\0', result_size = '\x01')
+(lldb) expr kIntrinsicFunctions[238].entry
+(v8::internal::Address) $229 = 0x0000000101440100 "UH\x89�H��P�}�H�u�H�U�H�}��td\x04��\x01H\x83�
+```
+When is this array populated?  
+Being a global it is part of the data section in the object file and will be loaded into memory upon start up.
+
+Just to recap, first the address of Runtime_StackGuard will be moved into register rbx, and then we will jump to the
+entry specified by `kIntrinsicFunctions[238].entry`
+```console
+0x2a9270441e02     2  48bb70de420101000000 REX.W movq rbx,0x10142de70    ;; external reference (Runtime::StackGuard)
+0x2a9270441e0c     c  e92f29f4ff     jmp 0x2a9270384740      ;; code: STUB, CEntryStub, minor: 8
+```
+
+```console
+(lldb) expr kIntrinsicFunctions[238].entry
+(v8::internal::Address) $235 = 0x0000000101440100
+(lldb) dis -s  0x0000000101440100
+node`v8::internal::Runtime_StackGuard:
+    0x101440100 <+0>:  pushq  %rbp
+    0x101440101 <+1>:  movq   %rsp, %rbp
+    0x101440104 <+4>:  subq   $0x50, %rsp
+    0x101440108 <+8>:  movl   %edi, -0xc(%rbp)
+    0x10144010b <+11>: movq   %rsi, -0x18(%rbp)
+    0x10144010f <+15>: movq   %rdx, -0x20(%rbp)
+    0x101440113 <+19>: movq   -0x20(%rbp), %rdi
+    0x101440117 <+23>: callq  0x100486590               ; v8::internal::Isolate::context at isolate.h:596
+    0x10144011c <+28>: movb   $0x1, %cl
+```
+ 
+`CEntryStub` is declared in `deps/v8/src/code-stubs.h`:
+```c++
+class CodeStub : public ZoneObject {
+  ...
+};
+class PlatformCodeStub : public CodeStub {
+  Handle<Code> GenerateCode() override;
+  ...
+};
+class CEntryStub : public PlatformCodeStub {
+  ...
+};
+
+
+```
+But how is the CEntryStub used?
+
+```c++
+IGNITION_HANDLER(StackCheck, InterpreterAssembler) {
+  Label ok(this), stack_check_interrupt(this, Label::kDeferred);
+
+  Node* interrupt = StackCheckTriggeredInterrupt();
+  Branch(interrupt, &stack_check_interrupt, &ok);
+
+  BIND(&ok);
+  Dispatch();
+
+  BIND(&stack_check_interrupt);
+  {
+    Node* context = GetContext();
+    CallRuntime(Runtime::kStackGuard, context);
+    Dispatch();
+  }
+}
+```
+```c++
+void MacroAssembler::CallRuntime(const Runtime::Function* f,
+                                 int num_arguments,
+                                 SaveFPRegsMode save_doubles) {
+  // If the expected number of arguments of the runtime function is
+  // constant, we check that the actual number of arguments match the
+  // expectation.
+  CHECK(f->nargs < 0 || f->nargs == num_arguments);
+
+  // TODO(1236192): Most runtime routines don't need the number of
+  // arguments passed in because it is constant. At some point we
+  // should remove this need and make the runtime routine entry code
+  // smarter.
+  Set(rax, num_arguments);
+  LoadAddress(rbx, ExternalReference(f, isolate()));
+  CEntryStub ces(isolate(), f->result_size, save_doubles);
+  CallStub(&ces);
+}
+```
+But, normally these will be called at compile time. 
+My thinking is that these are all callstubs (builtins/runtime), that are generated at compile time and then made availalbe
+in memory somewhere allowing V8 to jump to the address of the first instruction and start executing it.
+But how are these loaded into memory?  
+This is done as Isolate initialization. Lets set the following break point we can follow this process:
+```console
+(lldb) br s -n Isolate::Init
+```
+```console
+(lldb) br s -f isolate.cc -l 2703
+```
+
+```c++
+bool Isolate::Init(StartupDeserializer* des) {
+  ...
+  isolate_addresses_[IsolateAddressId::kHandlerAddress] = reinterpret_cast<Address>(handler_address());
+  isolate_addresses_[IsolateAddressId::kCEntryFPrAddress] = reinterpret_cast<Address>(centry_fp_address());
+  isolate_addresses_[IsolateAddressId::kFunctionAddress] = reinterpret_cast<Address>(function_address());
+  isolate_addresses_[IsolateAddressId::kContextAddress] = reinterpret_cast<Address>(context_address());
+  isolate_addresses_[IsolateAddressId::kPendingExceptionAddress] = reinterpret_cast<Address>(pending_exception_address());
+  isolate_addresses_[IsolateAddressId::kPendingHandlerContextAddress] = reinterpret_cast<Address>(pending_handler_context_address());
+  isolate_addresses_[IsolateAddressId::kPendingHandlerCodeAddress] = reinterpret_cast<Address>(pending_handler_code_address());
+  isolate_addresses_[IsolateAddressId::kPendingHandlerOffsetAddress] = reinterpret_cast<Address>(pending_handler_offset_address());
+  isolate_addresses_[IsolateAddressId::kPendingHandlerFPAddress] = reinterpret_cast<Address>(pending_handler_fp_address());
+  isolate_addresses_[IsolateAddressId::kPendingHandlerSPAddress] = reinterpret_cast<Address>(pending_handler_sp_address());
+  isolate_addresses_[IsolateAddressId::kExternalCaughtExceptionAddress] = reinterpret_cast<Address>(external_caught_exception_address());
+  isolate_addresses_[IsolateAddressId::kJSEntrySPAddress] = reinterpret_cast<Address>(js_entry_sp_address());
+  ...
+  InitializeThreadLocal();
+  ...
+  if (!create_heap_objects) des->DeserializeInto(this);
+```
+The functions, like handler_address(), can be found in v8/src/isolate.h: 
+```c++
+inline Address* handler_address() { return &thread_local_top_.handler_; }
+```
+Notice that when the isolate_addresses_ array is populated and when InitializeThreadLocal is call the heap is still empty. What is 
+happening is that pointers are being setup. When `DeserializeInto(this)` is called is when the heap is populated:
+```c++
+void StartupDeserializer::DeserializeInto(Isolate* isolate) {
+  Initialize(isolate);
+  BuiltinDeserializer builtin_deserializer(isolate, builtin_data_);
+  ...
+  builtin_deserializer.DeserializeEagerBuiltins();
+  ...
+  CodeStub::GenerateFPStubs(this);
+  StoreBufferOverflowStub::GenerateFixedRegStubsAheadOfTime(this); 
+}
+```
+DeserializeEagerBuiltins will populate the builtins_ array which is part of Builtins which is a member of Isolate.
+There seems to be codestubs that have to be generated, they cannot be serialized into the snapshot. 
+
+We can check that check the various data structures before and after using:
+```console
+(lldb) expr builtins_
+(lldb) expr heap->roots_
+(lldb) expr isolate_addresses_
+(lldb) expr thread_local_top_
+```
+For `isolate_addresses_` which are pointers we can inspect them like this:
+```console
+(lldb) expr isolate_addresses_[11]
+(v8::internal::Address) $194 = 0x0000000104808820 ""
+(lldb) memory read -f x -c 1 -s 8 0x0000000104808820
+0x104808820: 0x0000000000000000
+```
+
+
+```console
+(lldb) expr CodeStub::Major::CEntry
+(int) $120 = 4
+```
+
+Next, the body will be visited (BytecodeGenerator::VisitStatements():
+```c++
+void BytecodeGenerator::VisitStatements(ZoneList<Statement*>* statements) {
+  for (int i = 0; i < statements->length(); i++) {
+    // Allocate an outer register allocations scope for the statement.
+    RegisterAllocationScope allocation_scope(this);
+    Statement* stmt = statements->at(i);
+    Visit(stmt);
+    if (stmt->IsJump()) break;
+  }
+}
+```
+This this case we have three statements:
+```console
+(lldb) p statements->length()
+(int) $99 = 3
+
+(lldb) p stmt->Print()
+EXPRESSION STATEMENT at 284
+. LITERAL "use strict"
+```
+So the is one statement for 'use strict';
+
+The next statement is:
+```console
+(lldb) p stmt->Print()
+EXPRESSION STATEMENT at 299
+. ASSIGN at -1
+. . VAR PROXY local[0] (0x104892d38) (mode = TEMPORARY) ".result"
+. . FUNC LITERAL at 300
+. . . NAME
+. . . INFERRED NAME
+. . . PARAMS
+. . . . VAR (0x104880748) (mode = VAR) "process"
+```
+This matches the function literal:
+```javascript
+(function(process) {
+});
+```
+This will call `BytecodeGenerator::VisitFunctionLiteral` (src/interpreter/bytecode-generator.cc):
+```c++
+void BytecodeGenerator::VisitFunctionLiteral(FunctionLiteral* expr) {
+  DCHECK_EQ(expr->scope()->outer_scope(), current_scope());
+  uint8_t flags = CreateClosureFlags::Encode(
+      expr->pretenure(), closure_scope()->is_function_scope());
+  size_t entry = builder()->AllocateDeferredConstantPoolEntry();
+  int slot_index = feedback_index(expr->LiteralFeedbackSlot());
+  builder()->CreateClosure(entry, slot_index, flags);
+  function_literals_.push_back(std::make_pair(expr, entry));
+}
+```
+Now, my main interest is `builder()->CreateClosure` which will delegate to `BytecodeArrayBuilder::CreateClosure`:
+```c++
+  OutputCreateClosure(shared_function_info_entry, slot, flags);
+```
+This will output a BytecodeNode that looks like this:
+```console
+(v8::internal::interpreter::BytecodeNode) $875 = {
+  bytecode_ = kCreateClosure
+  operands_ = ([0] = 32767, [1] = 228, [2] = 0, [3] = 0, [4] = 0)
+  operand_count_ = 3
+  operand_scale_ = kSingle
+  source_info_ = (position_type_ = kStatement, source_position_ = 299)
+}
+```
+
+
+The third and last statement is:
+```console
+(lldb) p stmt->Print()
+RETURN at -1
+. VAR PROXY local[0] (0x104892d38) (mode = TEMPORARY) ".result"
+```
+I'm guessing that this is the return of the function literal.
+
+After this the job will be returned and we have completed the outer function job. This will land us back in `GenerateUnoptimizedCode`:
+(compiler.cc:415
+```c++
+for (auto it : inner_literals) {
+    FunctionLiteral* inner_literal = it->value();
+    std::unique_ptr<CompilationJob> inner_job(
+        PrepareAndExecuteUnoptimizedCompileJob(parse_info, inner_literal,
+                                               isolate));
+    if (!inner_job) return std::unique_ptr<CompilationJob>();
+    inner_function_jobs->emplace_front(std::move(inner_job));
+  } `
+```
+The first inner_literal is:
+```console
+(lldb) p inner_literal->Print()
+FUNC LITERAL at 300
+. NAME
+. INFERRED NAME
+. PARAMS
+. . VAR (0x10701cd48) (mode = VAR) "process"
+```
+This matches `function(process) {}` in bootstrap_node.js. The AST will look like this:
+```console
+[generating bytecode for function: ]
+--- AST ---
+FUNC at 0
+. KIND 0
+. SUSPEND COUNT 0
+. NAME ""
+. INFERRED NAME ""
+. EXPRESSION STATEMENT at 284
+. . LITERAL "use strict"
+. EXPRESSION STATEMENT at 299
+. . ASSIGN at -1
+. . . VAR PROXY local[0] (0x10702f338) (mode = TEMPORARY) ".result"
+. . . FUNC LITERAL at 300
+. . . . NAME
+. . . . INFERRED NAME
+. . . . PARAMS
+. . . . . VAR (0x10701cd48) (mode = VAR) "process"
+. RETURN at -1
+. . VAR PROXY local[0] (0x10702f338) (mode = TEMPORARY) ".result"
+```
+
+This function will require a context (in BytecodeGenerator::GenerateBytecode):
+```c++
+if (closure_scope()->NeedsContext()) {
+  BuildNewLocalActivationContext();
+  ContextScope local_function_context(this, closure_scope());
+  BuildLocalActivationContextInitialization();
+  GenerateBytecodeBody();
+}
+```
+
+`BytecodeGenerator::BuildNewLocalActivationContext`:
+```c++
+  builder()->CreateFunctionContext(slot_count);
+```
+This will delegate to `OutputCreateFunctionContext(slots)`
+```console
+(lldb) p *node
+(v8::internal::interpreter::BytecodeNode) $933 = {
+  bytecode_ = kCreateFunctionContext
+  operands_ = ([0] = 21, [1] = 0, [2] = 0, [3] = 0, [4] = 0)
+  operand_count_ = 1
+  operand_scale_ = kSingle
+  source_info_ = (position_type_ = kNone, source_position_ = -1)
+}
+```
+`BytecodeGenerator::BuildLocalActivationContextInitialization`:
+
+
+The OutputCreateFunctionContext(slots) will add bytecodes for:
+```console
+(lldb) p *node
+(v8::internal::interpreter::BytecodeNode) $173 = {
+  bytecode_ = kCreateFunctionContext
+  operands_ = ([0] = 21, [1] = 0, [2] = 0, [3] = 0, [4] = 0)
+  operand_count_ = 1
+  operand_scale_ = kSingle
+  source_info_ = (position_type_ = kNone, source_position_ = -1)
+```
+`BuildLocalActivationContextInitalization()` will set up the parameters:
+```console
+(lldb) p num_parameters
+(int) $186 = 1
+
+(lldb) expr *variable->name_
+(const v8::internal::AstRawString) $187 = {
+   = {
+    next_ = 0x0000000104857060
+    string_ = 0x0000000104857060
+  }
+  literal_bytes_ = (start_ = "process", length_ = 7)
+  hash_field_ = 2818393206
+  is_one_byte_ = true
+  has_string_ = true
+}
+```
+So we can see that this is the process parameter.
+```console
+builder()->LoadAccumulatorWithRegister(parameter).StoreContextSlot(
+           execution_context()->reg(), variable->index(), 0);
+```
+
+VisitVariableDeclaration:
+(lldb) p *variable->name_
+(const v8::internal::AstRawString) $247 = {
+   = {
+    next_ = 0x0000000104857068
+    string_ = 0x0000000104857068
+  }
+  literal_bytes_ = (start_ = "internalBinding", length_ = 15)
+  hash_field_ = 2406209186
+  is_one_byte_ = true
+  has_string_ = true
+}
+Next vars are:
+```
+#exceptionHandlerState
+#startup
+#setupProcessObject
+...
+```
+
+Lets take a look now at the SharedFunctionInfo generated for bootstrap_node.js:
+(done before returning from `CompileToplevel`)
+```
+(lldb) job shared_info->bytecode_array()
+0x338355dadf71: [BytecodeArray] in OldSpaceParameter count 1
+Frame size 8
+    0 E> 0x338355dadfaa @    0 : 93                StackCheck
+  299 S> 0x338355dadfab @    1 : 6f 00 00 00       CreateClosure [0], [0], #0
+         0x338355dadfaf @    5 : 1e fb             Star r0
+21946 S> 0x338355dadfb1 @    7 : 97                Return
+Constant pool (size = 1)
+0x338355dadf59: [FixedArray] in OldSpace
+ - map = 0x3383f20822f1 <Map(HOLEY_ELEMENTS)>
+ - length: 1
+           0: 0x338355dadea9 <SharedFunctionInfo>
+Handler Table (size = 16)
+```
+We can see that there is a `CreateClosure` which is indexing into the `Constant pool`. If we look at the entry we can see that entry 0 is 
+of type SharedFunctionInfo. It would be nice to see what it looks like.
+
+```console
+(lldb) job shared_info->code()
+0x2149e2c44281: [Code]
+kind = BUILTIN
+name = InterpreterEntryTrampoline
+compiler = unknown
+Instructions (size = 1004)
+0x2149e2c442e0     0  488b5f2f       REX.W movq rbx,[rdi+0x2f]
+0x2149e2c442e4     4  488b5b07       REX.W movq rbx,[rbx+0x7]
+0x2149e2c442e8     8  488b4b0f       REX.W movq rcx,[rbx+0xf]
+...
+```
+
+So, at this stage we have compiled bootstrap_node.js and it is time to run it. Bare in mind that 
+
+```c++
+Local<Value> result = script.ToLocalChecked()->Run();
+
+```
+
+```
+If we back down through the call frame again, we will be in `execution.cc` and see this now familar code:
+```c++
+    typedef Object* (*JSEntryFunction)(Object* new_target, Object* target,
+                                     Object* receiver, int argc,
+                                     Object*** args);
+    Handle<Code> code = is_construct
+       ? isolate->factory()->js_construct_entry_code()
+       : isolate->factory()->js_entry_code();
+    ...
+  
+    // start of the function identified by code->entry() address.
+    JSEntryFunction stub_entry = FUNCTION_CAST<JSEntryFunction>(code->entry());
+
+    // Call the function through the right JS entry stub.
+    Object* orig_func = *new_target;
+    Object* func = *target;
+    Object* recv = *receiver;
+    Object*** argv = reinterpret_cast<Object***>(args);
+    if (FLAG_profile_deserialization && target->IsJSFunction()) {
+      PrintDeserializedCodeInfo(Handle<JSFunction>::cast(target));
+    }
+    RuntimeCallTimerScope timer(isolate, &RuntimeCallStats::JS_Execution);
+    value = CALL_GENERATED_CODE(isolate, stub_entry, orig_func, func, recv, argc, argv);
+  }
+```
+Notice that `code` will be what `isolate->factory()->js_entry_code()` returns:
+```console
+(lldb) p isolate->factory()->js_entry_code()
+```
+
+You can verify that it is in fact bootstrap.js that `func` represents by issueing:
+```console
+(lldb) job func
+```
+
+`Handle<Code> code represents generated machine code, and we can see that this instance is on Kind `STUB`:
+```console
+(lldb) p code->kind()
+(v8::internal::Code::Kind) $32 = STUB
+```
+
+Next, we have `CALL_GENERATED_CODE` which can be found in `src/x64/simulator-x64.h`:
+```c++
+// Since there is no simulator for the x64 architecture the only thing we can
+// do is to call the entry directly.
+// TODO(X64): Don't pass p0, since it isn't used?
+#efine CALL_GENERATED_CODE(isolate, entry, p0, p1, p2, p3, p4) \
+  (entry(p0, p1, p2, p3, p4))
+```
+So this will be an call that looks like this:
+```c++
+entry(orig_func, func, recv, argc, argv);
+```
+```console
+    0x100e381b4 <+1348>: movq   -0x118(%rbp), %rdx                  // move the value of address of code->entry() into rdx
+    0x100e381bb <+1355>: movq   -0x120(%rbp), %rdi                  // first argument which is orig_func
+->  0x100e381c2 <+1362>: movq   -0x128(%rbp), %rsi                  // second argument which is func
+    0x100e381c9 <+1369>: movq   -0x130(%rbp), %rcx                  // third argument which is recv
+    0x100e381d0 <+1376>: movl   -0x30(%rbp), %eax                   // fourth arg which is argc 
+    0x100e381d3 <+1379>: movq   -0x138(%rbp), %r8                   // fifth argument which is argv
+    0x100e381da <+1386>: movq   %rdx, -0x1c0(%rbp)                  // move code->entry from rdx into local varialbe 
+    0x100e381e1 <+1393>: movq   %rcx, %rdx                          // move recv into rdx
+    0x100e381e4 <+1396>: movl   %eax, %ecx                          // move argc into ecx
+    0x100e381e6 <+1398>: movq   -0x1c0(%rbp), %r9                   // move code-entry into register r9
+    0x100e381ed <+1405>: callq  *%r9                                // call address in register 9
+
+(lldb) memory read -f x -c 1 -s 8 `$rbp - 0x118`
+0x7fff5fbfd828: 0x0000302f34084060
+(lldb) expr code->entry()
+(byte *) $186 = 0x0000302f34084060
+
+(lldb) memory read -f x -c 1 -s 8 `$rbp - 0x120`
+0x7fff5fbfd820: 0x00001d64e5d822e1
+(lldb) expr orig_func
+(v8::internal::Object *) $209 = 0x00001d64e5d822e1
+
+(lldb) memory read -f x -c 1 -s 8 `$rbp - 0x128`
+0x7fff5fbfd818: 0x00001d6417d30669
+(lldb) expr func
+(v8::internal::Object *) $211 = 0x00001d6417d30669
+
+(lldb) memory read -f x -c 1 -s 8 `$rbp - 0x130`
+0x7fff5fbfd810: 0x00001d64f0a82239
+(lldb) expr recv
+(v8::internal::Object *) $213 = 0x00001d64f0a82239
+
+(lldb) memory read -f x -c 1 -s 4 `$rbp - 0x30`
+0x7fff5fbfd910: 0x00000000
+(lldb) expr argc
+(int) $216 = 0
+
+(lldb) memory read -f x -c 1 -s 8 `$rbp - 0x138`
+0x7fff5fbfd808: 0x0000000000000000
+(lldb) expr argv
+(v8::internal::Object ***) $219 = 0x0000000000000000
+
+(lldb) memory read -f x -c 1 -s 8 `$rbp - 0x1c0`
+0x7fff5fbfd780: 0x0000302f34084060
+```
+
+The last instruction `callq *%r9` will call into JSEntryStub:
+```console
+->  0x302f34084060: pushq  %rbp                                  // push callers base frame pointer saving it so we can restore it
+    0x302f34084061: movq   %rsp, %rbp                            // mov the current value of rsp to into rbp which will be the frame pointer for this function
+    0x302f34084064: pushq  $0x2                                  // this is pushing an immediate value 2 onto the stack. Where does this come from, the following:
+(lldb) p v8::internal::StackFrame::TypeToMarker(static_cast<v8::internal::StackFrame::Type>(v8::internal::StackFrame::Type::ENTRY))
+(int32_t) $262 = 2
+    0x302f34084066: movabsq $0x106001990, %r10                   // move the context address into r10
+(lldb) expr isolate->isolate_addresses_[IsolateAddressId::kContextAddress]
+(v8::internal::Address) $230 = 0x0000000106001990 
+    0x302f34084070: movq   (%r10), %r10                          // the context address is a pointer, this will dereference it
+(lldb) memory read -f x -c 1 -s 8 `isolate->isolate_addresses_[IsolateAddressId::kContextAddress]`
+0x106001990: 0x00001d6417d03a59
+(lldb) register read r10
+     r10 = 0x00001d6417d03a59
+     0x302f34084073: pushq  %r10                                // push the dereferences context onto the stack
+     0x302f34084075: pushq  %r12                                // r12 must be preserved accross function calls so save it and pop it later before returning
+     0x302f34084077: pushq  %r13                                // r13 must be preserved accross function calls so save it and pop it later before returning
+     0x302f34084079: pushq  %r14                                // r14 must be preserved accross function calls so save it and pop it later before returning
+     0x302f3408407b: pushq  %r15                                // r14 must be preserved accross function calls so save it and pop it later before returning
+     0x302f3408407d: pushq  %rbx                                // rbx must be preserved accross function calls so save it and pop it later before returning
+     0x302f3408407e: movabsq $0x106000048, %r13                 // move the value of the roots_array_start into r13
+(lldb) expr isolate->heap()->roots_array_start()
+(v8::internal::Object **) $233 = 0x0000000106000048
+     0x302f34084088: addq   $0x80, %r13                         // addp(kRootRegister, Immediate(kRootRegisterBias)); kRootRegisterBias is 128
+     0x302f3408408f: movabsq $0x106001a00, %r10                 // move he CEntryFPAddress into r10
+(lldb) memory read -f x -c 1 -s 8 isolate->isolate_addresses_[IsolateAddressId::kCEntryFPAddress]
+0x106001a00: 0x0000000000000000
+    0x302f34084099: pushq  (%r10)                               // dereference CEntryAddress and push onto the stack
+(lldb) memory read -f x -c 1 -s 8 0x0000000106001a00
+0x106001a00: 0x0000000000000000
+    0x302f3408409c: movabsq 0x106001a20, %rax                   // move JSEntrySPAddress into rax
+(lldb) memory read -f x -c 1 -s 8 isolate->isolate_addresses_[IsolateAddressId::kJSEntrySPAddress]
+0x106001a20: 0x0000000000000000 
+    0x302f340840a6: testq  %rax, %rax                           // is rax zero? if so there is an outer js call
+(lldb) register read rax
+     rax = 0x0000000000000000
+    0x302f340840af: pushq  $0x2                                 // v8::internal::StackFrame::OUTERMOST_JSENTRY_FRAME))
+    0x302f340840b1: movq   %rbp, %rax                           // move this functions base pointer into rax 
+    0x302f340840b4: movabsq %rax, 0x106001a20                   // store the base pointer in isolate_addresses_[IsolateAddressId::kJSEntrySPAddress]
+(lldb) memory read -f x -c 1 -s 8 `isolate->isolate_addresses_[IsolateAddressId::kJSEntrySPAddress]`
+0x106001a20: 0x0000000000000000
+after
+(lldb) memory read -f x -c 1 -s 8 `isolate->isolate_addresses_[IsolateAddressId::kJSEntrySPAddress]`
+0x106001a20: 0x00007fff5fbfd760
+(lldb) register read rbp
+     rbp = 0x00007fff5fbfd940
+    0x302f340840be: jmp    0x302f340840c5
+    0x302f340840c5: jmp    0x302f340840e0
+    0x302f340840e0: movabsq $0x106001a08, %r10                  // move isolate_addresses_[IsolateAddressId::kHandlerAddress]` into r10
+(lldb) memory read -f x -c 1 -s 8 `isolate->isolate_addresses_[IsolateAddressId::kHandlerAddress]`
+0x106001a08: 0x0000000000000000
+    0x302f340840ea: pushq  (%r10)                               // push the dereferenced handler address
+    0x302f340840ed: movabsq $0x106001a08, %r10                  // move isolate_addresses_[IsolateAddressId::kHandlerAddress]` into r10
+    0x302f340840f7: movq   %rsp, (%r10)                         // move the value of the current stack pointer into the object pointed to be r10
+(lldb) memory read -f x -c 1 -s 8 0x106001a08
+0x106001a08: 0x00007fff5fbfd710
+(lldb) register read rsp
+     rsp = 0x00007fff5fbfd710
+    0x302f340840fa: callq  0x302f341418c0                       // call JSEntryTrampoline builtin
+(lldb) expr isolate->builtins()->builtin_handle(Builtins::Name::kJSEntryTrampoline)->entry()
+(byte *) $255 = 0x0000302f341418c0 
+      
+```
+In `deps/v8/src/builtins/x64/builtins-x64.cc` we can find `Generate_JSEntryTrampolineHelper` which is what generates the builtin. As this is done
+a compile time we can put a break point in it (you can debug mksnapshot though which is done elsewhere in this document).
+```console
+    0x302f341418c0: movq   %rdi, %r11                           // move the orig_fun into r11
+    0x302f341418c3: movq   %rsi, %rdi                           // move func into rdi
+    0x302f341418c6: xorl   %esi, %esi                           // zero out esi
+    0x302f341418c8: pushq  %rbp                                 // EnterFrame (deps/v8/src/x64/macro-assembler-x64.cc)
+    0x302f341418c9: movq   %rsp, %rbp                           // 
+    0x302f341418cc: pushq  $0x1c                                // push 0x1c (decimal 28)
+(lldb) p v8::internal::StackFrame::TypeToMarker(static_cast<v8::internal::StackFrame::Type>(v8::internal::StackFrame::Type::INTERNAL))
+(int32_t) $256 = 28
+    0x302f341418ce: movabsq $0x302f34141861, %r10               // CodeObject() what is this, seems like it is Handle<HeapObject> which will be patched later
+                                                                // Remember that we are currently setting up the stack frame and perhaps this is setting up the `this` pointer
+(lldb) memory read -f x -c 1 -s 8 0x302f34141861
+0x302f34141861: 0x6900001d64ceb827
+    0x302f341418d8: pushq  %r10                                 // push the HandleHeapObject into the stack
+    0x302f341418da: movabsq $0x1d64e5d822e1, %r10               // move undefined value into r10 
+(lldb) expr *isolate->factory()->undefined_value()
+(v8::internal::Oddball *) $264 = 0x00001d64e5d822e1
+    0x302f341418e4: cmpq   %r10, (%rsp)
+    0x302f341418e8: jne    0x302f341418fa                       // last of EnterFrame if we don't abort that is
+    0x302f341418fa: movabsq $0x106001990, %r10                  // move the ContextAdress into r10 (the scratch register for x86)
+(lldb) memory read -f x -c 1 -s 8 `isolate->isolate_addresses_[IsolateAddressId::kContextAddress]`
+0x106001990: 0x00001d6417d03a59
+    0x302f34141904: movq   (%r10), %rsi                         // deref and move into context into rsi
+    0x302f34141907: pushq  %rdi                                 // push function onto the stack
+    0x302f34141908: pushq  %rdx                                 // push recv onto the stack (this was moved above with 0x302f34141908: pushq  %rdx)
+    0x302f34141909: movq   %rcx, %rax                           // move argc into rax (this was moved above with 0x100e381e4 <+1396>: movl   %eax, %ecx)
+    0x302f3414190c: movq   %r8, %rbx                            // move argv into rbx
+    0x302f3414190f: movq   %r11, %rdx                           // move orig_func into rdx
+// Generate_CheckStackOverflow  TODO: got through this as I struggled to understand/map the generated instructions to the source code :( 
+    0x302f34141912: movq   0xd08(%r13), %r10                    // 
+    0x302f34141919: movq   %rsp, %rcx
+    0x302f3414191c: subq   %r10, %rcx
+    0x302f3414191f: movq   %rax, %r11
+    0x302f34141922: shlq   $0x3, %r11
+    0x302f34141926: cmpq   %r11, %rcx
+    0x302f34141929: jg     0x302f34141940
+// Generate_JSEntryTrampolineHelper
+    0x302f34141940: xorl   %ecx, %ecx                           // zero out ecx, for the following loop
+    0x302f34141942: jmp    0x302f3414194f                       // jump to entry label
+    0x302f3414194f: cmpq   %rax, %rcx                           // compare argc with rcx (this was moved above). 
+    0x302f34141952: jne    0x302f34141944                       // entry the loop if. This is pushing the argv values onto the stack in a loop, but we don't have any so we fall through
+    0x302f34141954: callq  0x302f3413c400                       //
+(lldb) expr isolate->builtins()->Call(static_cast<ConvertReceiverMode>(ConvertReceiverMode::kAny))->entry()
+(byte *) $279 = 0x0000302f3413c400 "@\xfffffff6\xffffffc7\x01\x0f\xffffff84F"
+// for the full object with assembly language instructions:
+(lldb) job *isolate->builtins()->Call(static_cast<ConvertReceiverMode>(ConvertReceiverMode::kAny))
+// Builtins::Generate_Call_ReceiverIsAny 'deps/v8/src/builtins/builtins-call-gen.cc':
+// void Builtins::Generate_Call_ReceiverIsAny(MacroAssembler* masm) {
+//   Generate_Call(masm, ConvertReceiverMode::kAny);
+// }
+// Builtins::Generate_Call `deps/v8/src/builtins/x64/builtins-x64.cc`
+    0x302f3413c400: testb  $0x1, %dil                           // move the immediate 1 into the low 8 bits or rdi  // __ JumpIfSmi(rdi, &non_callable); which consists of CheckSmi
+    0x302f3413c404: je     0x302f3413c450                       // if ZF = 1 then jump. This would happen if rdi was a SMI// __ JumpIfSmi(rdi, &non_callable: which after CheckSmi will jump. rdi is the target and not a smi in our case
+// recall that rdi is the function:
+(lldb) register read rdi
+     rdi = 0x00001d6417d30669
+(lldb) expr func
+(v8::internal::Object *) $280 = 0x00001d6417d30669
+// Now I think that func is/was of type JSFunction (deps/v8/src/objects.h) as it was cast to Object* by:
+// auto fun = i::Handle<i::JSFunction>::cast(Utils::OpenHandle(this));
+// class JSFunction: public JSObject {
+ public:
+  // [prototype_or_initial_map]:
+  DECL_ACCESSORS(prototype_or_initial_map, Object)
+    0x302f3413c40a: movq   -0x1(%rdi), %rcx                      // move the map into rcx. CmpObjectType(rdi, JS_FUNCTION_TYPE, rcx). HeapObject::kMapOffset which is the first field in JSFunction:
+(lldb) memory read -f x -c 1 -s 8 `$rdi - 1`
+0x1d6417d30668: 0x00001d6433c82521
+(lldb) expr JSFunction::cast(func)->prototype_or_initial_map()
+(v8::internal::Object *) $286 = 0x00001d64e5d82321
+    0x302f3413c40e: cmpb   $-0x1, 0xb(%rcx)                      // CmpObjectType(rdi, JS_FUNCTION_TYPE, rcx) calls CmpInstanceType. Check if the HeapObject is a JSFunction
+    0x302f3413c412: je     0x302f3413be20                        // __ j(equal, masm->isolate()->builtins()->CallFunction(mode), RelocInfo::CODE_TARGET);
+                                                                 // I was not sure where to find this `j` function but it is in src/x64/assembler-x64.cc (Assembler::j but note
+                                                                 // that there are multiple overloaded j functions so make sure  you are looking at the correct one. There is 
+                                                                 // as section that discusses Assembler::j in detail later in this document.
+                                                                 // so what are we jumping to? We can back up in the debugger and find out:
+                                                                 // (lldb) up 2
+                                                                 // (lldb job *isolate->builtins()->CallFunction(static_cast<ConvertReceiverMode>(ConvertReceiverMode::kAny))
+                                                                 // This will be a builtin named CallFunction_ReceiverIsAny, and being a builtin you'll find it in 
+                                                                 // `src/builtins/builtins-definitions.h`. The implementation will be in `src/builtins/builtins-call.cc` and
+                                                                 // will result in `return builtin_handle(kCallFunction_ReceiverIsAny)`. This code repsonsible for generating
+                                                                 // is Builtins::Generate_CallFunction and in our case that means `src/builtins/x64/builtins-x64.cc`
+(lldb) expr isolate->builtins()->CallFunction(static_cast<ConvertReceiverMode>(ConvertReceiverMode::kAny))->entry()
+(byte *) $317 = 0x0000302f3413be20
+// Builtins::Generate_CallFunction (deps/v8/src/builtins/x64/builtins-x64.cc)
+    0x302f3413be20: testb  $0x1, %dil                            // AssertFunction (deps/v8/src/x64/macro-assembler-x64.cc) check if rdi is of type smi (testb(object, Immediate(kSmiTagMask));)
+                                                                 // rdi is the function to call:
+(lldb) register read rdi
+     rdi = 0x00001d6417d30669
+(lldb) expr JSFunction::cast(func)
+(v8::internal::JSFunction *) $320 = 0x00001d6417d30669
+    0x302f3413be24: jne    0x302f3413be36                        // this is also generated by AssertFunciton and the call to Assembler::j If not equal this code will fall through
+    0x302f3413be36: pushq  %rdi                                  // AssertFunction still, push rdi (the function) onto the stack
+    0x302f3413be37: movq   -0x1(%rdi), %rdi                      // move the map into rdi. CmpObjectType(object, JS_FUNCTION_TYPE, object). HeapObject::kMapOffset which is the first field in JSFunction
+    0x302f3413be3b: cmpb   $-0x1, 0xb(%rdi)                      // CmpObjectType(rdi, JS_FUNCTION_TYPE, rcx) calls CmpInstanceType. Check if the HeapObject is a JSFunction
+    0x302f3413be3f: popq   %rdi                                  // pop function from stack into rdi again
+    0x302f3413be40: je     0x302f3413be52                        // jump if equal will jump to a L label and return from the Check call and then return from AssertFunction
+// Builtins::Generate_CallFunction (deps/v8/src/builtins/x64/builtins-x64.cc) 
+    0x302f3413be52: movq   0x1f(%rdi), %rdx                      // move the SharedFunctionInfo into rdx:
+(lldb) memory read -f x -c 1 -s 8 `$rdi + 0x1f`
+0x1d6417d30688: 0x00001d6417d2dc21
+(lldb) expr JSFunction::cast(func)->shared()
+(v8::internal::SharedFunctionInfo *) $325 = 0x00001d6417d2dc21
+    0x302f3413be56: testb  $-0x20, 0x87(%rdx)                    //  testl(FieldOperand(rdx, SharedFunctionInfo::kCompilerHintsOffset)
+(lldb) expr JSFunction::cast(func)->shared()->compiler_hints()
+(int) $332 = 1056770
+(lldb) memory read -f dec -c 1 -s 4 `($rdx + 0x87)`
+0x1d6417d2dca8: 1056770
+    0x302f3413be5d: jne    0x302f3413bfbc                        // __ j(not_zero, &class_constructor);
+    0x302f3413be63: movq   0x27(%rdi), %rsi                      // move the functions context info rsi:
+(lldb) memory read -f x -c 1 -s 8 `$rdi + 0x27`
+0x1d6417d30690: 0x00001d6417d03a59
+(lldb) expr JSFunction::cast(func)->context()
+(v8::internal::Context *) $345 = 0x00001d6417d03a59
+    0x302f3413be67: testb  $0x3, 0x87(%rdx)                      // check SharedFunctionInfo::IsNativeBit::kMask | SharedFunctionInfo::IsStrictBit::kMask 
+    0x302f3413be6e: jne    0x302f3413bf14                        // 
+    0x302f3413bf14: movslq 0x73(%rdx), %rbx                      // __ movsxlq(rbx, FieldOperand(rdx, SharedFunctionInfo::kFormalParameterCountOffset))
+    0x302f3413bf18: movabsq $0x105300b92, %r10                   // move hook_on_function_call_address into scratch register; part of CheckDebugHook
+(lldb) expr isolate->debug()->hook_on_function_call_address()
+(v8::internal::Address) $353 = 0x0000000105300b92
+    0x302f3413bf22: cmpb   $0x0, (%r10)                          // how is this generate? In CheckDebugHook I can only find cmpb(debug_hook_active_operand, Immediate(0)); but not he previous moveabsq
+    0x302f3413bf26: je     0x302f3413bfa4                        // will jump to the label at the end of CheckDebugHook
+// MacroAssembler::InvokeFunction
+    0x302f3413bfa4: movq   -0x60(%r13), %rdx                     // move the UndefinedValueRootIndex into rdx generated by LoadRoot(rdx, Heap::kUndefinedValueRootIndex);
+(lldb) memory read -f x -c 1 -s 8 `$r13 - 0x60`
+0x106000068: 0x00001d64e5d822e1
+lldb) expr isolate->heap()->roots_[Heap::RootListIndex::kUndefinedValueRootIndex]
+(v8::internal::Object *) $354 = 0x00001d64e5d822e1
+// InvokePrologue(expected, actual, &done, &definitely_mismatches, flag, Label::kNear)
+    0x302f3413bfa8: cmpq   %rax, %rbx                            // Set(rax, actual.immediate()); 
+    0x302f3413bfab: je     0x302f3413bfb2                        // will return from InvokePrologue
+    0x302f3413bfb2: movq   0x37(%rdi), %rcx                      // move the function code into rcx (movp(rcx, FieldOperand(function, JSFunction::kCodeOffset)))
+(lldb) memory read -f x -c 1 -s 8 `$rdi + 0x37`
+0x1d6417d306a0: 0x0000302f34144281
+(lldb) expr JSFunction::cast(func)->code()
+(v8::internal::Code *) $358 = 0x0000302f34144281
+    0x302f3413bfb6: addq   $0x5f, %rcx                           // addp(rcx, Immediate(Code::kHeaderSize - kHeapObjectTag)); the instruction start follows the Code object header
+(lldb) job JSFunction::cast(func)->code()
+0x302f34144281: [Code]
+kind = BUILTIN
+name = InterpreterEntryTrampoline
+compiler = unknown
+Instructions (size = 1004)
+0x302f341442e0     0  488b5f2f       REX.W movq rbx,[rdi+0x2f]
+(lldb) memory read -f x -c 1 -s8 `$rcx + 0x5f`
+0x302f341442e0: 0x075b8b482f5f8b48
+// notice that rcx now point to the first instruction.
+    0x302f3413bfba: jmpq   *%rcx                                // now jump to the first instruction of function :) 
+
+    0x302f341442e0: movq   0x2f(%rdi), %rbx                     // move the feedback vector into rbx
+(lldb) memory read -f x -c 1 -s 8 `$rdi + 0x2f`
+0x1d6417d30698: 0x00001d6417d306e9
+(lldb) expr JSFunction::cast(func)->feedback_vector()
+(v8::internal::FeedbackVector *) $363 = 0x00001d6417d306a9
+(lldb) job JSFunction::cast(func)->feedback_vector()
+0x1d6417d306a9: [FeedbackVector] in OldSpace
+ - length: 1
+ SharedFunctionInfo: 0x1d6417d2dc21 <SharedFunctionInfo>
+ Optimized Code: 0
+ Invocation Count: 0
+ Profiler Ticks: 0
+ Slot #0 kCreateClosure
+  [0]: 0x1d6417d306d9 <Cell value= 0x1d64e5d822e1 <undefined>>
+
+    302f341442e4: movq   0x7(%rbx), %rbx                     // move Slot[0] from the feedback vector into rbx
+(lldb) memory read -f x -c 1 -s 8 `$rbx + 0x7`
+0x1d6417d306f0: 0x00001d6417d306a9
+// MaybeTailCallOptimizedCodeSlot(masm, feedback_vector, rcx, r14, r15);
+// MaybeTailCallOptimizedCodeSlot(MacroAssembler* masm, Register feedback_vector, Register scratch1, Register scratch2, Register scratch3)
+// Register closure = rdi;
+// Register optimized_code_entry = rcx;
+    0x302f341442e8: movq   0xf(%rbx), %rcx                     // __ movp(optimized_code_entry, FieldOperand(feedback_vector, FeedbackVector::kOptimizedCodeOffset));
+(lldb) memory read -f x -c 1 -s 8 `$rbx + 0xf`
+0x1d6417d306b8: 0x0000000000000000
+(lldb) expr JSFunction::cast(func)->feedback_vector()->optimized_code()
+(v8::internal::Code *) $367 = 0x0000000000000000
+    0x302f341442ec: testb  $0x1, %cl                           // smi test against low 8 bit of rcx called from JumpIfNotSmi -> CheckSmi
+    0x302f341442ef: jne    0x302f34144486                      // JumpIfNotSmi -> Assembler::j 
+    0x302f341442f5: testb  $0x1, %cl                           // test again but this time from MacroAssembler::SmiCompare and its call to AssertSmi which calls CheckSmi
+    0x302f341442f8: je     0x302f3414430a                      // SmiCompare -> AssertSmi -> Check
+    
+
+   
+
+
+
+RelocInf  (size = 10) 0x302f341418d0  embedded object  (0x302f34141861 <Code BUILTIN>)
+0x302f341418dc  embedded object  (0x1d64e5d822e1 <undefined>)
+0x302f341418f5  code target (BUILTIN)  (0x302f341659c0)
+0x302f341418fc  external reference (Isolate::context_address)  (0x106001990)
+0x302f34141933  external reference (Runtime::ThrowStackOverflow)  (0x101438e80)
+0x302f3414193c  code target (STUB)  (0x302f34084740)
+0x302f34141955  code target (BUILTIN)  (0x302f3413c400)
+0x302f3414196b  code target (BUILTIN)  (0x302f341659c0)
+```
+
+### SharedFunctionInfo::kCompilerHintsOffset
+                                SHARED_FUNCTION_INFO_FIELDS)
+
+### JSEntryStub 
+```console
+Process 568 stopped
+* thread #1: tid = 0xf3b301, 0x000020819e104060, queue = 'com.apple.main-thread', stop reason = instruction step into
+    frame #0: 0x000020819e104060
+->  0x20819e104060: pushq  %rbp
+    0x20819e104061: movq   %rsp, %rbp
+    0x20819e104064: pushq  $0x2
+    0x20819e104066: movabsq $0x104803190, %r10        ; imm = 0x104803190
+```
+I've previously mapped the assembly with the void `JSEntryStub::Generate` function but I did not cover:
+```console
+0x20819e1040fa    9a  e8c1d70b00     call 0x20819e1c18c0  (JSEntryTrampoline)    ;; code: BUILTIN
+```
+This  matches the assembly generated in `Generate_JSEntryTrampolineHelper(MacroAssembler* masm, bool is_construct)` 
+in `src/builtins/x64/builtins-x64.cc`:
+```console
+    frame #0: 0x000020819e1c18c0
+->  0x20819e1c18c0: movq   %rdi, %r11               // __ movp(r11, rdi);
+    0x20819e1c18c3: movq   %rsi, %rdi               // __ movp(rdi, rsi);
+    0x20819e1c18c6: xorl   %esi, %esi               // __ Set(rsi, 0);
+    0x20819e1c18c8: pushq  %rbp                     // FrameScope scope(masm, StackFrame::INTERNAL);
+    0x20819e1c18c9: movq   %rsp, %rbp               // FrameScope scope(masm, StackFrame::INTERNAL);
+    0x20819e1c18cc: pushq  $0x1c                    // Is this also generated by the above scope?
+    0x20819e1c18ce: movabsq $0x20819e1c1861, %r10   // Is this also generated by the above scope?
+    ...
+->  0x20819e1c1904: movq   (%r10), %rsi             // 
+    0x20819e1c1907: pushq  %rdi                     // __ Push(rdi); func onto the stack
+    0x20819e1c1908: pushq  %rdx                     // __ Push(rdx); recv onto the stack
+    0x20819e1c1909: movq   %rcx, %rax               // __ movp(rax, rcx); argc
+    0x20819e1c190c: movq   %r8, %rbx                // __ movp(rbx, r8); pointer to args
+    0x20819e1c190f: movq   %r11, %rdx               // __ movp(rdx, r11); new target into rdx
+    0x20819e1c1912: movq   0xd08(%r13), %r10        // Generate_CheckStackOverflow(masm, kRaxIsUntaggedInt);
+    0x20819e1c1919: movq   %rsp, %rcx               // Generate_CheckStackOverflow(masm, kRaxIsUntaggedInt);
+    0x20819e1c191c: subq   %r10, %rcx               // Generate_CheckStackOverflow(masm, kRaxIsUntaggedInt);
+    0x20819e1c191f: movq   %rax, %r11               // Generate_CheckStackOverflow(masm, kRaxIsUntaggedInt);
+    0x20819e1c1922: shlq   $0x3, %r11               // Generate_CheckStackOverflow(masm, kRaxIsUntaggedInt);
+    0x20819e1c1926: cmpq   %r11, %rcx               // Generate_CheckStackOverflow(masm, kRaxIsUntaggedInt);
+    0x20819e1c1929: jg     0x20819e1c1940           // jump if alright
+    0x20819e1c192f: xorl   %eax, %eax               // handle stack overflow
+    0x20819e1c1931: movabsq $0x1014259b0, %rbx      // handle stack overflow
+    0x20819e1c193b: callq  0x20819e104740           // handle stack overflow
+->  0x20819e1c1940: xorl   %ecx, %ecx               // __ Set(rcx, 0);  // Set loop variable to 0.
+    0x20819e1c1942: jmp    0x20819e1c194f           // __ jmp(&entry, Label::kNear);
+->  0x20819e1c194f: cmpq   %rax, %rcx               // both are zero at this stage
+->  0x20819e1c1952: jne    0x20819e1c1944
+                                                    // Handle<Code> builtin = is_construct
+                                                    //     ? BUILTIN_CODE(masm->isolate(), Construct)
+                                                    //     : masm->isolate()->builtins()->Call();
+    0x20819e1c1954: callq  0x20819e1bc400           //__ Call(builtin, RelocInfo::CODE_TARGET);
+```
+Lets take a look `Call` in `src/x64/macro-assembler-x64.h`:
+```c++
+void Call(Handle<Code> code_object, RelocInfo::Mode rmode);
+```
+And the implementation look like this:
+```c++
+void TurboAssembler::Call(Handle<Code> code_object, RelocInfo::Mode rmode) {
+#ifdef DEBUG
+  int end_position = pc_offset() + CallSize(code_object);
+#endif
+  DCHECK(RelocInfo::IsCodeTarget(rmode));
+  call(code_object, rmode);
+#ifdef DEBUG
+  DCHECK_EQ(end_position, pc_offset());
+#endif
+}
+```
+I think that `call` will end up in `src/x64/assembler-x64.cc`:
+```c++
+void Assembler::call(Handle<Code> target, RelocInfo::Mode rmode) {
+  EnsureSpace ensure_space(this);
+  // 1110 1000 #32-bit disp.
+  emit(0xE8);
+  emit_code_target(target, rmode);
+}
+```
+`src/x64/assembler-x64-inl.h`
+emit(0xE8)
+
+### RUNTIME_FUNCTION
+```c++
+RUNTIME_FUNCTION(Runtime_InterpreterNewClosure) {
+  HandleScope scope(isolate);
+  DCHECK_EQ(4, args.length());
+  CONVERT_ARG_HANDLE_CHECKED(SharedFunctionInfo, shared, 0);
+  CONVERT_ARG_HANDLE_CHECKED(FeedbackVector, vector, 1);
+  CONVERT_SMI_ARG_CHECKED(index, 2);
+  CONVERT_SMI_ARG_CHECKED(pretenured_flag, 3);
+  Handle<Context> context(isolate->context(), isolate);
+  FeedbackSlot slot = FeedbackVector::ToSlot(index);
+  Handle<Cell> vector_cell(Cell::cast(vector->Get(slot)), isolate);
+  return *isolate->factory()->NewFunctionFromSharedFunctionInfo(
+      shared, context, vector_cell,
+      static_cast<PretenureFlag>(pretenured_flag));
+}
+```
+`deps/v8/src/arguments.h` we find the `RUNTIME_FUNCTION` macro:
+```c++
+#define RUNTIME_FUNCTION_RETURNS_TYPE(Type, Name)                             \
+  static INLINE(Type __RT_impl_##Name(Arguments args, Isolate* isolate));     \
+                                                                              \
+  V8_NOINLINE static Type Stats_##Name(int args_length, Object** args_object, \
+                                       Isolate* isolate) {                    \
+    RuntimeCallTimerScope timer(isolate, &RuntimeCallStats::Name);            \
+    TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.runtime"),                     \
+                 "V8.Runtime_" #Name);                                        \
+    Arguments args(args_length, args_object);                                 \
+    return __RT_impl_##Name(args, isolate);                                   \
+  }                                                                           \
+                                                                              \
+  Type Name(int args_length, Object** args_object, Isolate* isolate) {        \
+    DCHECK(isolate->context() == nullptr || isolate->context()->IsContext()); \
+    CLOBBER_DOUBLE_REGISTERS();                                               \
+    if (V8_UNLIKELY(FLAG_runtime_stats)) {                                    \
+      return Stats_##Name(args_length, args_object, isolate);                 \
+    }                                                                         \
+    Arguments args(args_length, args_object);                                 \
+    return __RT_impl_##Name(args, isolate);                                   \
+  }                                                                           \
+                                                                              \
+  static Type __RT_impl_##Name(Arguments args, Isolate* isolate)
+
+#define RUNTIME_FUNCTION(Name) RUNTIME_FUNCTION_RETURNS_TYPE(Object*, Name)
+```
+So lets see what that expands to:
+```c++
+  static INLINE(Type __RT_impl_Runtime_InterpreterNewClosure(Arguments args, Isolate* isolate));
+
+  V8_NOINLINE static Object* Stats_InterpreterNewClosure(int args_length, Object** args_object, Isolate* isolate) {                    
+    RuntimeCallTimerScope timer(isolate, &RuntimeCallStats::Name);            
+    TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.runtime"), "V8.Runtime_" InterpreterNewClosure);                                        
+    Arguments args(args_length, args_object);                                 
+    return __RT_impl_InterpreterNewClosure(args, isolate);                                   
+  }                                                                           
+
+  Object* Runtime_InterpreterNewClosure(int args_length, Object** args_object, Isolate* isolate) {        
+    DCHECK(isolate->context() == nullptr || isolate->context()->IsContext()); 
+    CLOBBER_DOUBLE_REGISTERS();                                               
+    if (V8_UNLIKELY(FLAG_runtime_stats)) {                                    
+      return Stats_Runtime_InterpreterNewClosure(args_length, args_object, isolate);                 
+    }                                                                         
+    Arguments args(args_length, args_object);                                 
+    return __RT_impl_Runtime_InterpreterNewClosure(args, isolate);                                   
+  }                                                                           
+
+  static Object* __RT_impl_Runtime_InterpreterNewClosure(Arguments args, Isolate* isolate)
+    HandleScope scope(isolate);
+    DCHECK_EQ(4, args.length());
+    CONVERT_ARG_HANDLE_CHECKED(SharedFunctionInfo, shared, 0);
+    CONVERT_ARG_HANDLE_CHECKED(FeedbackVector, vector, 1);
+    CONVERT_SMI_ARG_CHECKED(index, 2);
+    CONVERT_SMI_ARG_CHECKED(pretenured_flag, 3);
+    Handle<Context> context(isolate->context(), isolate);
+    FeedbackSlot slot = FeedbackVector::ToSlot(index);
+    Handle<Cell> vector_cell(Cell::cast(vector->Get(slot)), isolate);
+    return *isolate->factory()->NewFunctionFromSharedFunctionInfo(
+      shared, context, vector_cell,
+      static_cast<PretenureFlag>(pretenured_flag));
+  }
+```
+Notice that `Runtime_InterpreterNewClosure` is called.
+
+NewFunctionFromSharedFunctionInfo will call NewFunction which will create a new function:
+```c++
+  function->initialize_properties();
+  function->initialize_elements();
+  function->set_shared(*info);
+  function->set_code(info->code());
+  function->set_context(*context_or_undefined);
+  function->set_prototype_or_initial_map(*the_hole_value());
+  function->set_feedback_vector_cell(*undefined_cell());
+  isolate()->heap()->InitializeJSObjectBody(*function, *map, JSFunction::kSize);
+  return function;
+```
+Notice the call `function->set_code(info->code())`. This is the assembly code for `InterpreterEntryTrampoline`.
+
+
+value = CALL_GENERATED_CODE(isolate, stub_entry, orig_func, func, recv,
+   147                                 argc, argv);
+So we are back here. Value is of type Function and is the function for node_bootstrap.js. I'm confused as I thought that the above call
+to `CALL_GENEREATED_CODE` would run the script. The actuall calling of the functions is done in :
+
+ auto ret = f->Call(env->context(), Null(env->isolate()), 1, &arg);
+
+(lldb) dis -f
+node`v8::internal::Runtime_InterpreterNewClosure:
+
+```c++
+Handle<JSFunction> Factory::NewFunctionFromSharedFunctionInfo(
+    Handle<Map> initial_map, Handle<SharedFunctionInfo> info,
+    Handle<Object> context_or_undefined, Handle<Cell> vector,
+    PretenureFlag pretenure) {
+    
+    Handle<JSFunction> result =
+      NewFunction(initial_map, info, context_or_undefined, pretenure);
+```
+```console
+(lldb) job *info
+0x2e6ef602e159: [SharedFunctionInfo] in OldSpace
+ - name = 0x2e6ea0e02441 <String[0]: >
+ - kind = [ NormalFunction ]
+ - function_map_index = 129
+ - formal_parameter_count = 1
+ - expected_nof_properties = 10
+ - language_mode = strict
+ - instance class name = #Object
+ - code = 0x20819e1c4281 <Code BUILTIN>
+ - bytecode_array = 0x2e6ef6030501
+ - source code = (process) {
+  let internalBinding;
+  const exceptionHandlerState = { captureFn: null };
+
+  function startup() {
+    const EventEmitter = NativeModule.require('events');
+
+    const origProcProto = Object.getPrototypeOf(process);
+    Object.setPrototypeOf(origProcProto, EventEmitter.prototype);
+
+    EventEmitter.call(process);
+
+    setupProcessObject();
+    ...
+
+  startup();
+}
+ - anonymous expression
+ - function token position = 300
+ - start position = 308
+ - end position = 21943
+ - no debug info
+ - length = 1
+ - feedback_metadata = 0x2e6ef6030759: [FeedbackMetadata] in OldSpace
+ - length: 15
+ - slot_count: 83
+```
+So we can see this is indeed `bootstrap.js`
+
+```c++
+Handle<JSFunction> Factory::NewFunction(Handle<Map> map,
+                                        Handle<SharedFunctionInfo> info,
+                                        Handle<Object> context_or_undefined,
+                                        PretenureFlag pretenure) {
+  AllocationSpace space = pretenure == TENURED ? OLD_SPACE : NEW_SPACE;
+  Handle<JSFunction> function = New<JSFunction>(map, space);
+  DCHECK(context_or_undefined->IsContext() ||
+         context_or_undefined->IsUndefined(isolate()));
+
+  function->initialize_properties();
+  function->initialize_elements();
+  function->set_shared(*info);
+  function->set_code(info->code());
+  function->set_context(*context_or_undefined);
+  function->set_prototype_or_initial_map(*the_hole_value());
+  function->set_feedback_vector_cell(*undefined_cell());
+  isolate()->heap()->InitializeJSObjectBody(*function, *map, JSFunction::kSize);
+  return function;
+}
+```
+Lets now take a look at `info->code()`
+```console
+(lldb) job info->code()
+0x20819e1c4281: [Code]
+kind = BUILTIN
+name = InterpreterEntryTrampoline
+compiler = unknown
+Instructions (size = 1133)
+0x20819e1c42e0     0  488b5f2f       REX.W movq rbx,[rdi+0x2f]
+0x20819e1c42e4     4  488b5b07       REX.W movq rbx,[rbx+0x7]
+0x20819e1c42e8     8  488b4b0f       REX.W movq rcx,[rbx+0xf]
+0x20819e1c42ec     c  f6c101         testb rcx,0x1
+0x20819e1c42ef     f  0f8512020000   jnz 0x20819e1c4507  (InterpreterEntryTrampoline)
+0x20819e1c42f5    15  f6c101         testb rcx,0x1
+0x20819e1c42f8    18  7410           jz 0x20819e1c430a  (InterpreterEntryTrampoline)
+0x20819e1c42fa    1a  48ba000000003d000000 REX.W movq rdx,0x3d00000000
+0x20819e1c4304    24  e8b7180200     call 0x20819e1e5bc0  (Abort)    ;; code: BUILTIN
+0x20819e1c4309    29  cc             int3l
+0x20819e1c430a    2a  4885c9         REX.W testq rcx,rcx
+0x20819e1c430d    2d  0f8407030000   jz 0x20819e1c461a  (InterpreterEntryTrampoline)
+0x20819e1c4313    33  f6c101         testb rcx,0x1
+0x20819e1c4316    36  7410           jz 0x20819e1c4328  (InterpreterEntryTrampoline)
+0x20819e1c4318    38  48ba000000003d000000 REX.W movq rdx,0x3d00000000
+0x20819e1c4322    42  e899180200     call 0x20819e1e5bc0  (Abort)    ;; code: BUILTIN
+0x20819e1c4327    47  cc             int3l
+0x20819e1c4328    48  49ba0000000001000000 REX.W movq r10,0x100000000
+0x20819e1c4332    52  493bca         REX.W cmpq rcx,r10
+0x20819e1c4335    55  7579           jnz 0x20819e1c43b0  (InterpreterEntryTrampoline)
+0x20819e1c4337    57  55             push rbp
+0x20819e1c4338    58  4889e5         REX.W movq rbp,rsp
+0x20819e1c433b    5b  6a1c           push 0x1c
+0x20819e1c433d    5d  49ba81421c9e81200000 REX.W movq r10,0x20819e1c4281  (InterpreterEntryTrampoline)    ;; object: 0x20819e1c4281 <Code BUILTIN>
+0x20819e1c4347    67  4152           push r10
+0x20819e1c4349    69  49bae122e0a06e2e0000 REX.W movq r10,0x2e6ea0e022e1    ;; object: 0x2e6ea0e022e1 <undefined>
+0x20819e1c4353    73  4c391424       REX.W cmpq [rsp],r10
+0x20819e1c4357    77  7510           jnz 0x20819e1c4369  (InterpreterEntryTrampoline)
+0x20819e1c4359    79  48ba0000000009000000 REX.W movq rdx,0x900000000
+0x20819e1c4363    83  e858180200     call 0x20819e1e5bc0  (Abort)    ;; code: BUILTIN
+0x20819e1c4368    88  cc             int3l
+0x20819e1c4369    89  48c1e020       REX.W shlq rax, 32
+0x20819e1c436d    8d  50             push rax
+0x20819e1c436e    8e  57             push rdi
+0x20819e1c436f    8f  52             push rdx
+0x20819e1c4370    90  57             push rdi
+0x20819e1c4371    91  b801000000     movl rax,0x1
+0x20819e1c4376    96  48bb602d3e0101000000 REX.W movq rbx,0x1013e2d60    ;; external reference (Runtime::CompileOptimized_NotConcurrent)
+0x20819e1c4380    a0  e8bb03f4ff     call 0x20819e104740     ;; code: STUB, CEntryStub, minor: 8
+0x20819e1c4385    a5  488bd8         REX.W movq rbx,rax
+0x20819e1c4388    a8  5a             pop rdx
+0x20819e1c4389    a9  5f             pop rdi
+0x20819e1c438a    aa  58             pop rax
+0x20819e1c438b    ab  48c1e820       REX.W shrq rax, 32
+0x20819e1c438f    af  48837df81c     REX.W cmpq [rbp-0x8],0x1c
+0x20819e1c4394    b4  7410           jz 0x20819e1c43a6  (InterpreterEntryTrampoline)
+0x20819e1c4396    b6  48ba000000004f000000 REX.W movq rdx,0x4f00000000
+0x20819e1c43a0    c0  e81b180200     call 0x20819e1e5bc0  (Abort)    ;; code: BUILTIN
+0x20819e1c43a5    c5  cc             int3l
+0x20819e1c43a6    c6  488be5         REX.W movq rsp,rbp
+0x20819e1c43a9    c9  5d             pop rbp
+0x20819e1c43aa    ca  488d5b5f       REX.W leaq rbx,[rbx+0x5f]
+0x20819e1c43ae    ce  ffe3           jmp rbx
+0x20819e1c43b0    d0  f6c101         testb rcx,0x1
+0x20819e1c43b3    d3  7410           jz 0x20819e1c43c5  (InterpreterEntryTrampoline)
+0x20819e1c43b5    d5  48ba000000003d000000 REX.W movq rdx,0x3d00000000
+0x20819e1c43bf    df  e8fc170200     call 0x20819e1e5bc0  (Abort)    ;; code: BUILTIN
+0x20819e1c43c4    e4  cc             int3l
+0x20819e1c43c5    e5  49ba0000000002000000 REX.W movq r10,0x200000000
+0x20819e1c43cf    ef  493bca         REX.W cmpq rcx,r10
+0x20819e1c43d2    f2  7579           jnz 0x20819e1c444d  (InterpreterEntryTrampoline)
+0x20819e1c43d4    f4  55             push rbp
+0x20819e1c43d5    f5  4889e5         REX.W movq rbp,rsp
+0x20819e1c43d8    f8  6a1c           push 0x1c
+0x20819e1c43da    fa  49ba81421c9e81200000 REX.W movq r10,0x20819e1c4281  (InterpreterEntryTrampoline)    ;; object: 0x20819e1c4281 <Code BUILTIN>
+0x20819e1c43e4   104  4152           push r10
+0x20819e1c43e6   106  49bae122e0a06e2e0000 REX.W movq r10,0x2e6ea0e022e1    ;; object: 0x2e6ea0e022e1 <undefined>
+0x20819e1c43f0   110  4c391424       REX.W cmpq [rsp],r10
+0x20819e1c43f4   114  7510           jnz 0x20819e1c4406  (InterpreterEntryTrampoline)
+0x20819e1c43f6   116  48ba0000000009000000 REX.W movq rdx,0x900000000
+0x20819e1c4400   120  e8bb170200     call 0x20819e1e5bc0  (Abort)    ;; code: BUILTIN
+0x20819e1c4405   125  cc             int3l
+0x20819e1c4406   126  48c1e020       REX.W shlq rax, 32
+0x20819e1c440a   12a  50             push rax
+0x20819e1c440b   12b  57             push rdi
+0x20819e1c440c   12c  52             push rdx
+0x20819e1c440d   12d  57             push rdi
+0x20819e1c440e   12e  b801000000     movl rax,0x1
+0x20819e1c4413   133  48bbd0273e0101000000 REX.W movq rbx,0x1013e27d0    ;; external reference (Runtime::CompileOptimized_Concurrent)
+0x20819e1c441d   13d  e81e03f4ff     call 0x20819e104740     ;; code: STUB, CEntryStub, minor: 8
+0x20819e1c4422   142  488bd8         REX.W movq rbx,rax
+0x20819e1c4425   145  5a             pop rdx
+0x20819e1c4426   146  5f             pop rdi
+0x20819e1c4427   147  58             pop rax
+0x20819e1c4428   148  48c1e820       REX.W shrq rax, 32
+0x20819e1c442c   14c  48837df81c     REX.W cmpq [rbp-0x8],0x1c
+0x20819e1c4431   151  7410           jz 0x20819e1c4443  (InterpreterEntryTrampoline)
+0x20819e1c4433   153  48ba000000004f000000 REX.W movq rdx,0x4f00000000
+0x20819e1c443d   15d  e87e170200     call 0x20819e1e5bc0  (Abort)    ;; code: BUILTIN
+0x20819e1c4442   162  cc             int3l
+0x20819e1c4443   163  488be5         REX.W movq rsp,rbp
+0x20819e1c4446   166  5d             pop rbp
+0x20819e1c4447   167  488d5b5f       REX.W leaq rbx,[rbx+0x5f]
+0x20819e1c444b   16b  ffe3           jmp rbx
+0x20819e1c444d   16d  f6c101         testb rcx,0x1
+0x20819e1c4450   170  7410           jz 0x20819e1c4462  (InterpreterEntryTrampoline)
+0x20819e1c4452   172  48ba000000003d000000 REX.W movq rdx,0x3d00000000
+0x20819e1c445c   17c  e85f170200     call 0x20819e1e5bc0  (Abort)    ;; code: BUILTIN
+0x20819e1c4461   181  cc             int3l
+0x20819e1c4462   182  49ba0000000003000000 REX.W movq r10,0x300000000
+0x20819e1c446c   18c  493bca         REX.W cmpq rcx,r10
+0x20819e1c446f   18f  7410           jz 0x20819e1c4481  (InterpreterEntryTrampoline)
+0x20819e1c4471   191  48ba0000000017000000 REX.W movq rdx,0x1700000000
+0x20819e1c447b   19b  e840170200     call 0x20819e1e5bc0  (Abort)    ;; code: BUILTIN
+0x20819e1c4480   1a0  cc             int3l
+0x20819e1c4481   1a1  493ba5000d0000 REX.W cmpq rsp,[r13+0xd00]
+0x20819e1c4488   1a8  0f838c010000   jnc 0x20819e1c461a  (InterpreterEntryTrampoline)
+0x20819e1c448e   1ae  55             push rbp
+0x20819e1c448f   1af  4889e5         REX.W movq rbp,rsp
+0x20819e1c4492   1b2  6a1c           push 0x1c
+0x20819e1c4494   1b4  49ba81421c9e81200000 REX.W movq r10,0x20819e1c4281  (InterpreterEntryTrampoline)    ;; object: 0x20819e1c4281 <Code BUILTIN>
+0x20819e1c449e   1be  4152           push r10
+0x20819e1c44a0   1c0  49bae122e0a06e2e0000 REX.W movq r10,0x2e6ea0e022e1    ;; object: 0x2e6ea0e022e1 <undefined>
+0x20819e1c44aa   1ca  4c391424       REX.W cmpq [rsp],r10
+0x20819e1c44ae   1ce  7510           jnz 0x20819e1c44c0  (InterpreterEntryTrampoline)
+0x20819e1c44b0   1d0  48ba0000000009000000 REX.W movq rdx,0x900000000
+0x20819e1c44ba   1da  e801170200     call 0x20819e1e5bc0  (Abort)    ;; code: BUILTIN
+0x20819e1c44bf   1df  cc             int3l
+0x20819e1c44c0   1e0  48c1e020       REX.W shlq rax, 32
+0x20819e1c44c4   1e4  50             push rax
+0x20819e1c44c5   1e5  57             push rdi
+0x20819e1c44c6   1e6  52             push rdx
+0x20819e1c44c7   1e7  57             push rdi
+0x20819e1c44c8   1e8  b801000000     movl rax,0x1
+0x20819e1c44cd   1ed  48bba0573e0101000000 REX.W movq rbx,0x1013e57a0    ;; external reference (Runtime::TryInstallOptimizedCode)
+0x20819e1c44d7   1f7  e86402f4ff     call 0x20819e104740     ;; code: STUB, CEntryStub, minor: 8
+0x20819e1c44dc   1fc  488bd8         REX.W movq rbx,rax
+0x20819e1c44df   1ff  5a             pop rdx
+0x20819e1c44e0   200  5f             pop rdi
+0x20819e1c44e1   201  58             pop rax
+0x20819e1c44e2   202  48c1e820       REX.W shrq rax, 32
+0x20819e1c44e6   206  48837df81c     REX.W cmpq [rbp-0x8],0x1c
+0x20819e1c44eb   20b  7410           jz 0x20819e1c44fd  (InterpreterEntryTrampoline)
+0x20819e1c44ed   20d  48ba000000004f000000 REX.W movq rdx,0x4f00000000
+0x20819e1c44f7   217  e8c4160200     call 0x20819e1e5bc0  (Abort)    ;; code: BUILTIN
+0x20819e1c44fc   21c  cc             int3l
+0x20819e1c44fd   21d  488be5         REX.W movq rsp,rbp
+0x20819e1c4500   220  5d             pop rbp
+0x20819e1c4501   221  488d5b5f       REX.W leaq rbx,[rbx+0x5f]
+0x20819e1c4505   225  ffe3           jmp rbx
+0x20819e1c4507   227  488b4907       REX.W movq rcx,[rcx+0x7]
+0x20819e1c450b   22b  f6c101         testb rcx,0x1
+0x20819e1c450e   22e  0f8406010000   jz 0x20819e1c461a  (InterpreterEntryTrampoline)
+0x20819e1c4514   234  f7413f00000001 testl [rcx+0x3f],0x1000000
+0x20819e1c451b   23b  0f8580000000   jnz 0x20819e1c45a1  (InterpreterEntryTrampoline)
+0x20819e1c4521   241  48894f37       REX.W movq [rdi+0x37],rcx
+0x20819e1c4525   245  4c8bf1         REX.W movq r14,rcx
+0x20819e1c4528   248  4c8d7f37       REX.W leaq r15,[rdi+0x37]
+0x20819e1c452c   24c  41f6c707       testb r15,0x7
+0x20819e1c4530   250  7401           jz 0x20819e1c4533  (InterpreterEntryTrampoline)
+0x20819e1c4532   252  cc             int3l
+0x20819e1c4533   253  40f6c701       testb rdi,0x1
+0x20819e1c4537   257  7510           jnz 0x20819e1c4549  (InterpreterEntryTrampoline)
+0x20819e1c4539   259  48ba0000000038000000 REX.W movq rdx,0x3800000000
+0x20819e1c4543   263  e878160200     call 0x20819e1e5bc0  (Abort)    ;; code: BUILTIN
+0x20819e1c4548   268  cc             int3l
+0x20819e1c4549   269  4d3b37         REX.W cmpq r14,[r15]
+0x20819e1c454c   26c  7401           jz 0x20819e1c454f  (InterpreterEntryTrampoline)
+0x20819e1c454e   26e  cc             int3l
+0x20819e1c454f   26f  4981e60000f8ff REX.W andq r14,0xfffffffffff80000
+0x20819e1c4556   276  41f6460802     testb [r14+0x8],0x2
+0x20819e1c455b   27b  7416           jz 0x20819e1c4573  (InterpreterEntryTrampoline)
+0x20819e1c455d   27d  49c7c60000f8ff REX.W movq r14,0xfff80000
+0x20819e1c4564   284  4c23f7         REX.W andq r14,rdi
+0x20819e1c4567   287  41f6460804     testb [r14+0x8],0x4
+0x20819e1c456c   28c  7405           jz 0x20819e1c4573  (InterpreterEntryTrampoline)
+0x20819e1c456e   28e  e80d1ff6ff     call 0x20819e126480     ;; code: STUB, RecordWriteStub, minor: 8167
+0x20819e1c4573   293  49bfefbeadbeedbeadde REX.W movq r15,0xdeadbeedbeadbeef
+0x20819e1c457d   29d  49beefbeadbeedbeadde REX.W movq r14,0xdeadbeedbeadbeef
+0x20819e1c4587   2a7  49beefbeadbeedbeadde REX.W movq r14,0xdeadbeedbeadbeef
+0x20819e1c4591   2b1  49bfefbeadbeedbeadde REX.W movq r15,0xdeadbeedbeadbeef
+0x20819e1c459b   2bb  4883c15f       REX.W addq rcx,0x5f
+0x20819e1c459f   2bf  ffe1           jmp rcx
+0x20819e1c45a1   2c1  55             push rbp
+0x20819e1c45a2   2c2  4889e5         REX.W movq rbp,rsp
+0x20819e1c45a5   2c5  6a1c           push 0x1c
+0x20819e1c45a7   2c7  49ba81421c9e81200000 REX.W movq r10,0x20819e1c4281  (InterpreterEntryTrampoline)    ;; object: 0x20819e1c4281 <Code BUILTIN>
+0x20819e1c45b1   2d1  4152           push r10
+0x20819e1c45b3   2d3  49bae122e0a06e2e0000 REX.W movq r10,0x2e6ea0e022e1    ;; object: 0x2e6ea0e022e1 <undefined>
+0x20819e1c45bd   2dd  4c391424       REX.W cmpq [rsp],r10
+0x20819e1c45c1   2e1  7510           jnz 0x20819e1c45d3  (InterpreterEntryTrampoline)
+0x20819e1c45c3   2e3  48ba0000000009000000 REX.W movq rdx,0x900000000
+0x20819e1c45cd   2ed  e8ee150200     call 0x20819e1e5bc0  (Abort)    ;; code: BUILTIN
+0x20819e1c45d2   2f2  cc             int3l
+0x20819e1c45d3   2f3  48c1e020       REX.W shlq rax, 32
+0x20819e1c45d7   2f7  50             push rax
+0x20819e1c45d8   2f8  57             push rdi
+0x20819e1c45d9   2f9  52             push rdx
+0x20819e1c45da   2fa  57             push rdi
+0x20819e1c45db   2fb  b801000000     movl rax,0x1
+0x20819e1c45e0   300  48bbf0323e0101000000 REX.W movq rbx,0x1013e32f0    ;; external reference (Runtime::EvictOptimizedCodeSlot)
+0x20819e1c45ea   30a  e85101f4ff     call 0x20819e104740     ;; code: STUB, CEntryStub, minor: 8
+0x20819e1c45ef   30f  488bd8         REX.W movq rbx,rax
+0x20819e1c45f2   312  5a             pop rdx
+0x20819e1c45f3   313  5f             pop rdi
+0x20819e1c45f4   314  58             pop rax
+0x20819e1c45f5   315  48c1e820       REX.W shrq rax, 32
+0x20819e1c45f9   319  48837df81c     REX.W cmpq [rbp-0x8],0x1c
+0x20819e1c45fe   31e  7410           jz 0x20819e1c4610  (InterpreterEntryTrampoline)
+0x20819e1c4600   320  48ba000000004f000000 REX.W movq rdx,0x4f00000000
+0x20819e1c460a   32a  e8b1150200     call 0x20819e1e5bc0  (Abort)    ;; code: BUILTIN
+0x20819e1c460f   32f  cc             int3l
+0x20819e1c4610   330  488be5         REX.W movq rsp,rbp
+0x20819e1c4613   333  5d             pop rbp
+0x20819e1c4614   334  488d5b5f       REX.W leaq rbx,[rbx+0x5f]
+0x20819e1c4618   338  ffe3           jmp rbx
+0x20819e1c461a   33a  55             push rbp
+0x20819e1c461b   33b  4889e5         REX.W movq rbp,rsp
+0x20819e1c461e   33e  56             push rsi
+0x20819e1c461f   33f  57             push rdi
+0x20819e1c4620   340  488b471f       REX.W movq rax,[rdi+0x1f]
+0x20819e1c4624   344  4c8b7037       REX.W movq r14,[rax+0x37]
+0x20819e1c4628   348  f6404701       testb [rax+0x47],0x1
+0x20819e1c462c   34c  0f8500010000   jnz 0x20819e1c4732  (InterpreterEntryTrampoline)
+0x20819e1c4632   352  ff431b         incl [rbx+0x1b]
+0x20819e1c4635   355  41f6c601       testb r14,0x1
+0x20819e1c4639   359  7510           jnz 0x20819e1c464b  (InterpreterEntryTrampoline)
+0x20819e1c463b   35b  48ba0000000038000000 REX.W movq rdx,0x3800000000
+0x20819e1c4645   365  e876150200     call 0x20819e1e5bc0  (Abort)    ;; code: BUILTIN
+0x20819e1c464a   36a  cc             int3l
+0x20819e1c464b   36b  498b46ff       REX.W movq rax,[r14-0x1]
+0x20819e1c464f   36f  80780b89       cmpb [rax+0xb],0x89
+0x20819e1c4653   373  7410           jz 0x20819e1c4665  (InterpreterEntryTrampoline)
+0x20819e1c4655   375  48ba000000001e000000 REX.W movq rdx,0x1e00000000
+0x20819e1c465f   37f  e85c150200     call 0x20819e1e5bc0  (Abort)    ;; code: BUILTIN
+0x20819e1c4664   384  cc             int3l
+0x20819e1c4665   385  41c6463800     movb [r14+0x38],0x0
+0x20819e1c466a   38a  49c7c439000000 REX.W movq r12,0x39
+0x20819e1c4671   391  4156           push r14
+0x20819e1c4673   393  4489e1         movl rcx,r12
+0x20819e1c4676   396  48c1e120       REX.W shlq rcx, 32
+0x20819e1c467a   39a  51             push rcx
+0x20819e1c467b   39b  418b4e27       movl rcx,[r14+0x27]
+0x20819e1c467f   39f  4889e0         REX.W movq rax,rsp
+0x20819e1c4682   3a2  482bc1         REX.W subq rax,rcx
+0x20819e1c4685   3a5  493b85080d0000 REX.W cmpq rax,[r13+0xd08]
+0x20819e1c468c   3ac  7311           jnc 0x20819e1c469f  (InterpreterEntryTrampoline)
+0x20819e1c468e   3ae  33c0           xorl rax,rax
+0x20819e1c4690   3b0  48bbb059420101000000 REX.W movq rbx,0x1014259b0    ;; external reference (Runtime::ThrowStackOverflow)
+0x20819e1c469a   3ba  e8a100f4ff     call 0x20819e104740     ;; code: STUB, CEntryStub, minor: 8
+0x20819e1c469f   3bf  498b45a0       REX.W movq rax,[r13-0x60]
+0x20819e1c46a3   3c3  e901000000     jmp 0x20819e1c46a9  (InterpreterEntryTrampoline)
+0x20819e1c46a8   3c8  50             push rax
+0x20819e1c46a9   3c9  4883e908       REX.W subq rcx,0x8
+0x20819e1c46ad   3cd  7df9           jge 0x20819e1c46a8  (InterpreterEntryTrampoline)
+0x20819e1c46af   3cf  4963462f       REX.W movsxlq rax,[r14+0x2f]
+0x20819e1c46b3   3d3  85c0           testl rax,rax
+0x20819e1c46b5   3d5  7405           jz 0x20819e1c46bc  (InterpreterEntryTrampoline)
+0x20819e1c46b7   3d7  488954c500     REX.W movq [rbp+rax*8+0x0],rdx
+0x20819e1c46bc   3dc  498b45a0       REX.W movq rax,[r13-0x60]
+0x20819e1c46c0   3e0  49bf10fa830401000000 REX.W movq r15,0x10483fa10    ;; external reference (Interpreter::dispatch_table_address)
+0x20819e1c46ca   3ea  430fb61c26     movzxbl rbx,[r14+r12*1]
+0x20819e1c46cf   3ef  498b1cdf       REX.W movq rbx,[r15+rbx*8]
+0x20819e1c46d3   3f3  ffd3           call rbx
+0x20819e1c46d5   3f5  4c8b75e8       REX.W movq r14,[rbp-0x18]
+0x20819e1c46d9   3f9  4c8b65e0       REX.W movq r12,[rbp-0x20]
+0x20819e1c46dd   3fd  49c1ec20       REX.W shrq r12, 32
+0x20819e1c46e1   401  430fb61c26     movzxbl rbx,[r14+r12*1]
+0x20819e1c46e6   406  80fb97         cmpb bl,0x97
+0x20819e1c46e9   409  7439           jz 0x20819e1c4724  (InterpreterEntryTrampoline)
+0x20819e1c46eb   40b  48b9a0f2d90101000000 REX.W movq rcx,0x101d9f2a0    ;; external reference (Bytecodes::bytecode_size_table_address)
+0x20819e1c46f5   415  80fb01         cmpb bl,0x1
+0x20819e1c46f8   418  7724           ja 0x20819e1c471e  (InterpreterEntryTrampoline)
+0x20819e1c46fa   41a  7411           jz 0x20819e1c470d  (InterpreterEntryTrampoline)
+0x20819e1c46fc   41c  41ffc4         incl r12
+0x20819e1c46ff   41f  430fb61c26     movzxbl rbx,[r14+r12*1]
+0x20819e1c4704   424  4881c1ac020000 REX.W addq rcx,0x2ac
+0x20819e1c470b   42b  eb11           jmp 0x20819e1c471e  (InterpreterEntryTrampoline)
+0x20819e1c470d   42d  41ffc4         incl r12
+0x20819e1c4710   430  430fb61c26     movzxbl rbx,[r14+r12*1]
+0x20819e1c4715   435  4881c158050000 REX.W addq rcx,0x558
+0x20819e1c471c   43c  eb00           jmp 0x20819e1c471e  (InterpreterEntryTrampoline)
+0x20819e1c471e   43e  44032499       addl r12,[rcx+rbx*4]
+0x20819e1c4722   442  eb9c           jmp 0x20819e1c46c0  (InterpreterEntryTrampoline)
+0x20819e1c4724   444  488b5de8       REX.W movq rbx,[rbp-0x18]
+0x20819e1c4728   448  8b5b2b         movl rbx,[rbx+0x2b]
+0x20819e1c472b   44b  c9             leavel
+0x20819e1c472c   44c  59             pop rcx
+0x20819e1c472d   44d  4803e3         REX.W addq rsp,rbx
+0x20819e1c4730   450  51             push rcx
+0x20819e1c4731   451  c3             retl
+0x20819e1c4732   452  488b4847       REX.W movq rcx,[rax+0x47]
+0x20819e1c4736   456  448b512b       movl r10,[rcx+0x2b]
+0x20819e1c473a   45a  41f6c201       testb r10,0x1
+0x20819e1c473e   45e  0f84eefeffff   jz 0x20819e1c4632  (InterpreterEntryTrampoline)
+0x20819e1c4744   464  4c8b7117       REX.W movq r14,[rcx+0x17]
+0x20819e1c4748   468  e9e5feffff     jmp 0x20819e1c4632  (InterpreterEntryTrampoline)
+
+
+RelocInfo (size = 46)
+0x20819e1c4305  code target (BUILTIN)  (0x20819e1e5bc0)
+0x20819e1c4323  code target (BUILTIN)  (0x20819e1e5bc0)
+0x20819e1c433f  embedded object  (0x20819e1c4281 <Code BUILTIN>)
+0x20819e1c434b  embedded object  (0x2e6ea0e022e1 <undefined>)
+0x20819e1c4364  code target (BUILTIN)  (0x20819e1e5bc0)
+0x20819e1c4378  external reference (Runtime::CompileOptimized_NotConcurrent)  (0x1013e2d60)
+0x20819e1c4381  code target (STUB)  (0x20819e104740)
+0x20819e1c43a1  code target (BUILTIN)  (0x20819e1e5bc0)
+0x20819e1c43c0  code target (BUILTIN)  (0x20819e1e5bc0)
+0x20819e1c43dc  embedded object  (0x20819e1c4281 <Code BUILTIN>)
+0x20819e1c43e8  embedded object  (0x2e6ea0e022e1 <undefined>)
+0x20819e1c4401  code target (BUILTIN)  (0x20819e1e5bc0)
+0x20819e1c4415  external reference (Runtime::CompileOptimized_Concurrent)  (0x1013e27d0)
+0x20819e1c441e  code target (STUB)  (0x20819e104740)
+0x20819e1c443e  code target (BUILTIN)  (0x20819e1e5bc0)
+0x20819e1c445d  code target (BUILTIN)  (0x20819e1e5bc0)
+0x20819e1c447c  code target (BUILTIN)  (0x20819e1e5bc0)
+0x20819e1c4496  embedded object  (0x20819e1c4281 <Code BUILTIN>)
+0x20819e1c44a2  embedded object  (0x2e6ea0e022e1 <undefined>)
+0x20819e1c44bb  code target (BUILTIN)  (0x20819e1e5bc0)
+0x20819e1c44cf  external reference (Runtime::TryInstallOptimizedCode)  (0x1013e57a0)
+0x20819e1c44d8  code target (STUB)  (0x20819e104740)
+0x20819e1c44f8  code target (BUILTIN)  (0x20819e1e5bc0)
+0x20819e1c4544  code target (BUILTIN)  (0x20819e1e5bc0)
+0x20819e1c456f  code target (STUB)  (0x20819e126480)
+0x20819e1c45a9  embedded object  (0x20819e1c4281 <Code BUILTIN>)
+0x20819e1c45b5  embedded object  (0x2e6ea0e022e1 <undefined>)
+0x20819e1c45ce  code target (BUILTIN)  (0x20819e1e5bc0)
+0x20819e1c45e2  external reference (Runtime::EvictOptimizedCodeSlot)  (0x1013e32f0)
+0x20819e1c45eb  code target (STUB)  (0x20819e104740)
+0x20819e1c460b  code target (BUILTIN)  (0x20819e1e5bc0)
+0x20819e1c4646  code target (BUILTIN)  (0x20819e1e5bc0)
+0x20819e1c4660  code target (BUILTIN)  (0x20819e1e5bc0)
+0x20819e1c4692  external reference (Runtime::ThrowStackOverflow)  (0x1014259b0)
+0x20819e1c469b  code target (STUB)  (0x20819e104740)
+0x20819e1c46c2  external reference (Interpreter::dispatch_table_address)  (0x10483fa10)
+0x20819e1c46ed  external reference (Bytecodes::bytecode_size_table_address)  (0x101d9f2a0)
+```
+
+Setting through again and we will be back in:
+```c++
+value = CALL_GENERATED_CODE(isolate, stub_entry, orig_func, func, recv,
+                           argc, argv);
+```
+```console
+(lldb) job value
+0x2e6e9e80ea49: [Function]
+ - map = 0x2e6e8f082521 [FastProperties]
+ - prototype = 0x2e6ef60043d1
+ - elements = 0x2e6ea0e02251 <FixedArray[0]> [HOLEY_ELEMENTS]
  - initial_map =
- - shared_info = 0x136bdddbd121 <SharedFunctionInfo process._fatalException>
- - name = 0x136ba4c82431 <String[0]: >
+ - shared_info = 0x2e6ef602e159 <SharedFunctionInfo>
+ - name = 0x2e6ea0e02441 <String[0]: >
  - formal_parameter_count = 1
  - kind = [ NormalFunction ]
- - context = 0x136b92913eb9 <FixedArray[11]>
- - code = 0x3f3aa1807d01 <Code BUILTIN>
- - source code = (er) {
-      var caught;
-
-      // It's possible that kInitTriggerAsyncId was set for a constructor call
-      // that threw and was never cleared. So clear it now.
-      async_id_fields[kInitTriggerAsyncId] = 0;
-
-      if (exceptionHandlerState.captureFn !== null) {
-        exceptionHandlerState.captureFn(er);
-        caught = true;
-      }
-
-      if (!caught)
-        caught = process.emit('uncaughtException', er);
-
-      // If someone handled it, then great.  otherwise, die in C++ land
-      // since that means that we'll exit the process, emit the 'exit' event
-      if (!caught) {
-        try {
-          if (!process._exiting) {
-            process._exiting = true;
-            process.emit('exit', 1);
-          }
-        } catch (er) {
-          // nothing to be done about it at this point.
-        }
-
-      } else {
-        // If we handled an error, then make sure any ticks get processed
-        NativeModule.require('timers').setImmediate(process._tickCallback);
-
-        // Emit the after() hooks now that the exception has been handled.
-        if (async_hook_fields[kAfter] > 0) {
-          do {
-            NativeModule.require('internal/async_hooks').emitAfter(
-              async_id_fields[kExecutionAsyncId]);
-          } while (asyncIdStackSize() > 0);
-        // Or completely empty the id stack.
-        } else {
-          clearAsyncIdStack();
-        }
-      }
-
-      return caught;
-    }
- - properties = 0x136ba4c82241 <FixedArray[0]> {
-    #length: 0x136baa1ca4f1 <AccessorInfo> (const accessor descriptor)
-    #name: 0x136baa1ca561 <AccessorInfo> (const accessor descriptor)
-    #prototype: 0x136baa1ca5d1 <AccessorInfo> (const accessor descriptor)
+ - context = 0x2e6ef6003af9 <FixedArray[281]>
+ - code = 0x20819e1c4281 <Code BUILTIN>
+ - interpreted
+ - bytecode = 0x2e6ef6030501
+ - source code = (process) {
+  let internalBinding;
+  ...
+}
+ - properties = 0x2e6ea0e02251 <FixedArray[0]> {
+    #length: 0x2e6ea9c034f9 <AccessorInfo> (const accessor descriptor)
+    #name: 0x2e6ea9c03569 <AccessorInfo> (const accessor descriptor)
+    #prototype: 0x2e6ea9c035d9 <AccessorInfo> (const accessor descriptor)
  }
+
+ - feedback vector: 0x2e6ef60308f1: [FeedbackVector] in OldSpace
+ - length: 83
+ SharedFunctionInfo: 0x2e6ef602e159 <SharedFunctionInfo>
+ Optimized Code: 0
+ Invocation Count: 0
+ Profiler Ticks: 0
+...
+```
+
+This will then return to node.cc:
+```c++
+Local<Value> result = script.ToLocalChecked()->Run();
+if (result.IsEmpty()) {
+  ReportException(env, try_catch);
+  exit(4);
+}
+```
+
+So the generated code will be entered. When it gets around to processing:
+```javascript
+const EventEmitter = NativeModule.require('events');
+```
+This will result in another call to Invoke and the contents of func will be lib/event.js.
+
+
+### Code
+Is a class in `src/objects.h` which represents generated machine code.
+
+```c++
+DECL_PRINTER(Code)
+```
+This macro looks like this:
+```c++
+#ifdef OBJECT_PRINT
+#define DECL_PRINTER(Name) void Name##Print(std::ostream& os);  // NOLINT
+#else
+#define DECL_PRINTER(Name)
+#endif
+```
+So if OBJECT_PRINT is defined there will be a function named:
+```c++
+void CodePrint(std::ostream& os);
+```
+
+Anything that extends v8::internal::Object can also have a `Print` function:
+```c++
+(lldb) expr recv->Print()
+0x343ceb998159: [JS_API_OBJECT_TYPE]
+ - map = 0x343c184c7d01 [FastProperties]
+ - prototype = 0x343cbcce6ee9
+ - elements = 0x343cad402251 <FixedArray[0]> [HOLEY_ELEMENTS]
+ - embedder fields: 1
+ - properties = 0x343ceb99a599 <PropertyArray[3]> {
+    #close: 0x343c78ce8bd1 <JSFunction JSStreamWrap.handle.close (sfi = 0x343c78ce83f1)> (const data descriptor)
+    #isClosing: 0x343cbccf8271 <JSFunction isClosing (sfi = 0x343c78ca3a49)> (const data descriptor)
+    #onreadstart: 0x343cbccf82b1 <JSFunction onreadstart (sfi = 0x343c78ca3af9)> (const data descriptor)
+    #onreadstop: 0x343cbccf82f1 <JSFunction onreadstop (sfi = 0x343c78ca3ba9)> (const data descriptor)
+    #onshutdown: 0x343cbccf8331 <JSFunction onshutdown (sfi = 0x343c78ca3c59)> (const data descriptor)
+    #onwrite: 0x343cbccf8371 <JSFunction onwrite (sfi = 0x343c78ca3d09)> (const data descriptor)
+    #owner: 0x343ceb998719 <Socket map = 0x343c184c7cb1> (data field 0) properties[0]
+    #onread: 0x343cbccb7619 <JSFunction onread (sfi = 0x343cb163e541)> (const data descriptor)
+    #reading: 0x343cad402381 <true> (data field 1) properties[1]
+ }
+ - embedder fields = {
+    0x105d053f0
+ }
+```
+### CHECK
+These macros Can be found in src/util.h.
+
+```c++
+#define LIKELY(expr) __builtin_expect(!!(expr), 1)
+#define UNLIKELY(expr) __builtin_expect(!!(expr), 0)
+
+#define CHECK(expr)                                                           \
+  do {                                                                        \
+    if (UNLIKELY(!(expr))) {                                                  \
+      static const char* const args[] = { __FILE__, STRINGIFY(__LINE__),      \
+                                          #expr, PRETTY_FUNCTION_NAME };      \
+      node::Assert(&args);                                                    \
+    }                                                                         \
+  } while (0)
+
+#define CHECK_EQ(a, b) CHECK((a) == (b))
+```
+So take the following expression:
+```c++
+CHECK_EQ(false, try_catch.IsVerbose());
+```
+it would expand to:
+```c++
+if (__builtin_expect(!!(false == try_catch.IsVerbose()), 0)) {
+  static const char* const args[] = { __FILE__, STRINGIFY(__LINE__), #expr, __PRETTY_FUNCTION_NAME__ };
+  node::Assert(args);
+}
+```
+`__builtin_expect` expects its parameters to be of type long and not bool, so there is a need to cast.
+
+(lldb) expr !!(false == try_catch.IsVerbose())
+(bool) $122 = true 
+This is already bool but the macro can be used with other types. 
+
+
+
+
+
+-> 191   generator()->GenerateBytecode(stack_limit());
+
+bytecode-generator.cc:968
+
+builder()->StackCheck(info()->literal()->start_position());
+
+src/interpreter/bytecode-array-builder.cc
+
+OutputStackCheck();
+`OutputStackCheck` is generated using a macro:
+```c++
+#define DEFINE_BYTECODE_OUTPUT(name, ...)                             \
+  template <typename... Operands>                                     \
+  BytecodeNode BytecodeArrayBuilder::Create##name##Node(              \
+      Operands... operands) {                                         \
+    return BytecodeNodeBuilder<Bytecode::k##name, __VA_ARGS__>::Make( \
+        this, operands...);                                           \
+  }                                                                   \
+                                                                      \
+  template <typename... Operands>                                     \
+  void BytecodeArrayBuilder::Output##name(Operands... operands) {     \
+    BytecodeNode node(Create##name##Node(operands...));               \
+    Write(&node);                                                     \
+  }                                                                   \
+                                                                      \
+  template <typename... Operands>                                     \
+  void BytecodeArrayBuilder::Output##name(BytecodeLabel* label,       \
+                                          Operands... operands) {     \
+    DCHECK(Bytecodes::IsJump(Bytecode::k##name));                     \
+    BytecodeNode node(Create##name##Node(operands...));               \
+    WriteJump(&node, label);                                          \
+    LeaveBasicBlock();                                                \
+  }
+BYTECODE_LIST(DEFINE_BYTECODE_OUTPUT)
+#undef DEFINE_BYTECODE_OUTPUT
+```
+`BYTECODE_LIST` is a macro defined in `src/interpreter/bytecodes.h`:
+```c++
+// The list of bytecodes which are interpreted by the interpreter.
+// Format is V(<bytecode>, <accumulator_use>, <operands>).
+#define BYTECODE_LIST(V)
+ ...
+ V(StackCheck, AccumulatorUse::kNone)                                         \
+
+```
+```c++
+  template <typename... Operands>                                     
+  BytecodeNode BytecodeArrayBuilder::CreateStackCheckNode(Operands... operands) {
+    return BytecodeNodeBuilder<Bytecode::kStackCheck, __VA_ARGS__>::Make(this, operands...);
+  }                                                                   
+                                                                      
+  template <typename... Operands>                                     
+  void BytecodeArrayBuilder::OutputStackCheck(Operands... operands) {     
+    BytecodeNode node(CreateStackCheckNode(operands...));               
+    Write(&node);                                                     
+  }                                                                   
+                                                                      
+  template <typename... Operands>                                     
+  void BytecodeArrayBuilder::OutputStackCheck(BytecodeLabel* label,       
+                                          Operands... operands) {     
+    DCHECK(Bytecodes::IsJump(Bytecode::kStackCheck));                     
+    BytecodeNode node(CreateStackCheckNode(operands...));               
+    WriteJump(&node, label);                                          
+    LeaveBasicBlock();                                                
+  }
+```
+Our call does not have any parameters so the first `OutputStackCheck` will be called in this case which will create
+the BytecodeNode and then call `Write(&node)`
+```c++
+(lldb) p *node
+(v8::internal::interpreter::BytecodeNode) $218 = {
+  bytecode_ = kStackCheck
+  operands_ = ([0] = 0, [1] = 0, [2] = 0, [3] = 0, [4] = 0)
+  operand_count_ = 0
+  operand_scale_ = kSingle
+  source_info_ = (position_type_ = kExpression, source_position_ = 0)
+}
+```
+
+compiler.cc:803
+ Handle<SharedFunctionInfo> shared_info =
+   801       isolate->factory()->NewSharedFunctionInfoForLiteral(parse_info->literal(),
+   802                                                           parse_info->script());
+
+(lldb) job *shared_info
+
+I'm not showing the whole output but this is the contents of node_bootstrap.js
+
+interpreter.cc:211
+ Handle<BytecodeArray> bytecodes =
+211       generator()->FinalizeBytecode(isolate(), parse_info()->script());
+
+
+-> 225   compilation_info()->SetBytecodeArray(bytecodes);
+   226   compilation_info()->SetCode(
+   227       BUILTIN_CODE(compilation_info()->isolate(), InterpreterEntryTrampoline));
+   228   return SUCCEEDED;
+
+So `BUILTIN_CODE` will expand to:
+```c++
+isolate->builtins()->builtin_handle(Builtins::kInterpreterEntryTrampoline);
+```
+So that line will become:
+```c++
+compilation_info()->SetCode(isolate->builtins()->builtin_handle(Builtins::kInterpreterEntryTrampoline));
+```
+To recap, `builtins/builtins.h' has a macro that creates an enum entry for all of the builtins listed in 
+`src/builtins/builtins-definitions.h`. And we are then calling builtin_handle with that enum value:
+```c++
+V8_EXPORT_PRIVATE Handle<Code> builtin_handle(int index);
+```
+So what does this function do?  
+src/builtins/builtins.cc
+```c++
+Handle<Code> Builtins::builtin_handle(int index) {
+  DCHECK(IsBuiltinId(index));
+  return Handle<Code>(reinterpret_cast<Code**>(builtin_address(index)));
+}
+```
+
+### How builtins get initialized
+
+But how does the builtins_ array get?
+
+`src/builtins/builtins.h`:
+```c++
+BUILTIN_LIST(IGNORE_BUILTIN, IGNORE_BUILTIN, DECLARE_TF, DECLARE_TF,
+               DECLARE_TF, DECLARE_TF, DECLARE_ASM)
+```
+Where `DECLARE_ASM` is defined as:
+```c++
+#define DECLARE_ASM(Name, ...) \
+  static void Generate_##Name(MacroAssembler* masm);
+```
+So there will be a function named Generate_InterpreterEntryTrampoline.
+
+But we want to know where the builtins_ array is populated. Well, it 
+```c++
+Object* builtins_[builtin_count];
+```
+And `builtins_count` is a member of the Name enum:
+```c++
+  enum Name : int32_t {
+#define DEF_ENUM(Name, ...) k##Name,
+    BUILTIN_LIST_ALL(DEF_ENUM)
+#undef DEF_ENUM
+        builtin_count
+  };
+```
+It seems like these entries will get populated when the snapshot is deserialized:
+(snapshot/builtin-deserializer.cc)
+```c++
+builtins->set_builtin(i, DeserializeBuiltin(i));
+```
+
+Lets take a look at the stack when running generated code from V8. In src/globals.h we find:
+```c++
+typedef byte* Address;
+...
+#define FOR_EACH_ISOLATE_ADDRESS_NAME(C)                \
+  C(Handler, handler)                                   \
+  C(CEntryFP, c_entry_fp)                               \
+  C(CFunction, c_function)                              \
+  C(Context, context)                                   \
+  C(PendingException, pending_exception)                \
+  C(PendingHandlerContext, pending_handler_context)     \
+  C(PendingHandlerCode, pending_handler_code)           \
+  C(PendingHandlerOffset, pending_handler_offset)       \
+  C(PendingHandlerFP, pending_handler_fp)               \
+  C(PendingHandlerSP, pending_handler_sp)               \
+  C(ExternalCaughtException, external_caught_exception) \
+  C(JSEntrySP, js_entry_sp)
+
+enum IsolateAddressId {
+#define DECLARE_ENUM(CamelName, hacker_name) k##CamelName##Address,
+  FOR_EACH_ISOLATE_ADDRESS_NAME(DECLARE_ENUM)
+#undef DECLARE_ENUM
+      kIsolateAddressCount
+};
+```
+Will expand to:
+```c++
+enum IsolateAddressId {
+  kHandlerAddress,
+  ...
+};
+```
+Notice that `hacker_name` parameter is not used in this call.
+In isolate.cc when an Isolate is initialized by `bool Isolate::Init(StartupDeserializer* des)`:
+```c++
+#define ASSIGN_ELEMENT(CamelName, hacker_name)                  \
+  isolate_addresses_[IsolateAddressId::k##CamelName##Address] = \
+      reinterpret_cast<Address>(hacker_name##_address());
+  FOR_EACH_ISOLATE_ADDRESS_NAME(ASSIGN_ELEMENT)
+#undef ASSIGN_ELEMENT
+```
+```c++
+isolate_addresses_[IsolateAddressId::HandlerAddress] = reinterpret_cast<Address>(handler_address());
+```
+`isolate_addresses` can be found in isolate.h:
+```c++
+Address isolate_addresses_[kIsolateAddressCount + 1];
+```
+So where does `handler_address()` come from?  
+This is defined in `isolate.h`:
+```c++
+inline Address* c_entry_fp_address() { return &thread_local_top_.c_entry_fp_; }
+inline Address* handler_address() { return &thread_local_top_.handler_; }
+inline Address* js_entry_sp_address() { return &thread_local_top_.js_entry_sp_; }
+inline Address* c_function_address() { return &thread_local_top_.c_function_; }
+Context** context_address() { return &thread_local_top_.context_; }
+Address pending_message_obj_address() { return reinterpret_cast<Address>(&thread_local_top_.pending_message_obj_); }
+
+THREAD_LOCAL_TOP_ADDRESS(Context*, pending_handler_context)
+THREAD_LOCAL_TOP_ADDRESS(Code*, pending_handler_code)
+THREAD_LOCAL_TOP_ADDRESS(intptr_t, pending_handler_offset)
+THREAD_LOCAL_TOP_ADDRESS(Address, pending_handler_fp)
+THREAD_LOCAL_TOP_ADDRESS(Address, pending_handler_sp)
+
+
+#define THREAD_LOCAL_TOP_ADDRESS(type, name) \
+  type* name##_address() { return &thread_local_top_.name##_; }
+
+Context* pending_handler_context_address() { return &thread_local_top_.pending_handler_context_;
+```
+
+When is `Isolate::Init` called?  
+It is called from node::Start
+```console
+Isolate* const isolate = Isolate::New(params);
+```
+This will invoke `return IsolateNewImpl(isolate, params);`
+
+
+```console
+(lldb) expr target->Print()
+(lldb) expr v8::internal::JSFunction::cast(*target)
+(v8::internal::JSFunction *) $1115 = 0x000017771f4b05f1
+(lldb) expr v8::internal::JSFunction::cast(*target)->code()
+(v8::internal::Code *) $1116 = 0x0000262dec344281
+
+(lldb) job v8::internal::JSFunction::cast(*target)->code()
+```
+So that target functions byte code is of type InterpreterEntryTrampoline
+
+### JSEntryStub
+So stub_entry is from x64/code-stubs-x64.cc` by `void JSEntryStub::Generate`:
+(lldb) p stub_entry
+(JSEntryFunction) $1126 = 0x0000262dec284060
+
+(lldb) job *code
+0x262dec284001: [Code]
+kind = STUB
+major_key = JSEntryStub
+compiler = unknown
+Instructions (size = 232)
+0x262dec284060     0  55             push rbp
+0x262dec284061     1  4889e5         REX.W movq rbp,rsp
+0x262dec284064     4  6a02           push 0x2
+
+Notice that `0x0000262dec284060` from `stub_entry` matches the first instruction in code.
+
+0x262dec2840ed    8d  49ba088c800501000000 REX.W movq r10,0x105808c08    ;; external reference (Isolate::handler_address)
+0x262dec2840f7    97  498922         REX.W movq [r10],rsp
+0x262dec2840fa    9a  e8c1d70b00     call 0x262dec3418c0  (JSEntryTrampoline)    ;; code: BUILTIN
+
+
+(lldb) dis -s 0x262dec3418c0
+    0x262dec3418c0: movq   %rdi, %r11
+    0x262dec3418c3: movq   %rsi, %rdi
+    0x262dec3418c6: xorl   %esi, %esi
+    0x262dec3418c8: pushq  %rbp
+    0x262dec3418c9: movq   %rsp, %rbp
+    0x262dec3418cc: pushq  $0x1c
+    0x262dec3418ce: movabsq $0x262dec341861, %r10     ; imm = 0x262DEC341861
+    0x262dec3418d8: pushq  %r10
+
+### Runtime_CompileLazy
+There is a V8 builtin named CompileLazy which when called can compile the function being called (runtime/runtime-compiler.cc):
+(See RUNTIME_FUNCTION for details regarding the RUNTIME_FUNCTION macro) 
+```c++
+RUNTIME_FUNCTION(Runtime_CompileLazy) {
+  ...
+  if (!Compiler::Compile(function, Compiler::KEEP_EXCEPTION)) {
+    return isolate->heap()->exception();
+  }
+  DCHECK(function->is_compiled());
+  return function->code();
+```
+
+First time, what is compiled is the entire node_bootstrap.js:
+InterpreterCompilationJob::Status InterpreterCompilationJob::FinalizeJobImpl()
+(deps/v8/src/interpreter/interpreter.cc)
+```console
+(lldb) br s -f interpreter.cc -l 201
+```
+```c++
+  Handle<BytecodeArray> bytecodes = generator()->FinalizeBytecode(isolate(), parse_info()->script());
+```
+```console
+(lldb) job *bytecodes
+0x18d63b2dfe1: [BytecodeArray] in OldSpaceParameter count 1
+Frame size 8
+    0 E> 0x18d63b2e01a @    0 : 93                StackCheck
+  299 S> 0x18d63b2e01b @    1 : 6f 00 00 00       CreateClosure [0], [0], #0
+         0x18d63b2e01f @    5 : 1e fb             Star r0
+21946 S> 0x18d63b2e021 @    7 : 97                Return
+Constant pool (size = 1)
+0x18d63b2dfc9: [FixedArray] in OldSpace
+ - map = 0x18ddb3022f1 <Map(HOLEY_ELEMENTS)>
+ - length: 1
+           0: 0x18d63b2df19 <SharedFunctionInfo>
+Handler Table (size = 16)
+```
+Notice that the byte code for this is pretty short. If you look at node_bootstrap.js you see that it is a function. I think
+this is why the CreateClosure operator is for. 
+```console
+(lldb) job  *shared_info
+0x1606df4adc91: [SharedFunctionInfo] in OldSpace
+ - name = 0x160691002441 <String[0]: >
+ - kind = [ NormalFunction ]
+ - function_map_index = 129
+ - formal_parameter_count = 0
+ - expected_nof_properties = 10
+ - language_mode = strict
+ - instance class name = #Object
+ - code = 0x2066fa144281 <Code BUILTIN>
+ - bytecode_array = 0x1606df4adfe1
+ - source code = // Hello, and welcome to hacking node.js!
+//
+// This file is invoked by node::LoadEnvironment in src/node.cc, and is
+// responsible for bootstrapping the node.js core. As special caution is given
+// to the performance of the startup process, many dependencies are invoked
+// lazily.
+```
+Notice that `source code` contains the entire content of bootstrap_node.js.
+
+If you later look at `0x18d63b2df19` (from bytecodes above) we can see that this is the inner function:
+```console
+(lldb) job  *inner_shared_info
+0x1606df4adf19: [SharedFunctionInfo] in OldSpace
+ - name = 0x160691002441 <String[0]: >
+ - kind = [ NormalFunction ]
+ - function_map_index = 129
+ - formal_parameter_count = 1
+ - expected_nof_properties = 10
+ - language_mode = strict
+ - instance class name = #Object
+ - code = 0x2066fa1450e1 <Code BUILTIN>
+ - source code = (process) {
+  let internalBinding;
+  const exceptionHandlerState = { captureFn: null };
+
+  function startup() {
+```
+And notice that this in now the anonymous function that takes the process object. This is what will be 
+called later.
+
+Next, we have:
+```c++
+compilation_info()->SetBytecodeArray(bytecodes);
+compilation_info()->SetCode(BUILTIN_CODE(compilation_info()->isolate(), InterpreterEntryTrampoline));
+```
+
+InstallUnoptimizedCode will later use this Code and set that as on the SharedFunctionInfo:
+```c++
+shared->set_code(*compilation_info->code());
+```
+
+The inner_shared_info will also be compiled by `FinalizeUnoptimizedCode` and 
+the bytecode for it will much longer as expected:
+```console
+(lldb) job *bytecodes
+```
+Next this is compiled by `FinalizeJobImpl`:
+```c++
+compilation_info()->SetBytecodeArray(bytecodes);
+compilation_info()->SetCode(BUILTIN_CODE(compilation_info()->isolate(), InterpreterEntryTrampoline));
+```
+Again notice that the code is set to `InterpreterEntryTrampoline`.
+
+After having done the function will return success.
+
+This will now return and we will end up back in node.cc:
+```c++
+Local<Value> result = script.ToLocalChecked()->Run();
+```
+This will land us in `v8::Script::Run` and the following line:
+```c++
+auto fun = i::Handle<i::JSFunction>::cast(Utils::OpenHandle(this));
+```
+Now if we print this JSFunction using `job *fun` we can see the complete object including the source. 
+We can also take a look at the code and the bytecode:
+```console
+(lldb) job  fun->abstract_code()
+0x1606df4adfe1: [BytecodeArray] in OldSpaceParameter count 1
+Frame size 8
+    0 E> 0x1606df4ae01a @    0 : 93                StackCheck
+  299 S> 0x1606df4ae01b @    1 : 6f 00 00 00       CreateClosure [0], [0], #0
+         0x1606df4ae01f @    5 : 1e fb             Star r0
+21946 S> 0x1606df4ae021 @    7 : 97                Return
+Constant pool (size = 1)
+0x1606df4adfc9: [FixedArray] in OldSpace
+ - map = 0x1606023022f1 <Map(HOLEY_ELEMENTS)>
+ - length: 1
+           0: 0x1606df4adf19 <SharedFunctionInfo>
+Handler Table (size = 16)
+```
+And a snipped of the code:
+```console
+(lldb) job  fun->code()
+0x2066fa144281: [Code]
+kind = BUILTIN
+name = InterpreterEntryTrampoline
+compiler = unknown
+Instructions (size = 1004)
+0x2066fa1442e0     0  488b5f2f       REX.W movq rbx,[rdi+0x2f]
+0x2066fa1442e4     4  488b5b07       REX.W movq rbx,[rbx+0x7]
+0x2066fa1442e8     8  488b4b0f       REX.W movq rcx,[rbx+0xf]
+0x2066fa1442ec     c  f6c101         testb rcx,0x1
+0x2066fa1442ef     f  0f8591010000   jnz 0x2066fa144486  (InterpreterEntryTrampoline)
+0x2066fa1442f5    15  f6c101         testb rcx,0x1
+```
+Once again we will be back in `Invoke` and this following line:
+```c++
+Handle<Code> code = is_construct ? isolate->factory()->js_construct_entry_code() : isolate->factory()->js_entry_code();
+```
+In this case `is_construct` is false so Handle<Code> will be what ever `isolate->factory()->js_entry_code()` returns. And it
+returns:
+```console
+(lldb) job *code
+0x2066fa084001: [Code]
+kind = STUB
+major_key = JSEntryStub
+```
+Lets take a closer look at the call `isolate->factory()->js_entry_code()`. In src/factory.h we can find:
+```c++
+#define ROOT_ACCESSOR(type, name, camel_name) inline Handle<type> name();
+  ROOT_LIST(ROOT_ACCESSOR)
+#undef ROOT_ACCESSOR
+```
+And we can find `ROOT_LIST` in `src/heap/heap.h`:
+```c++
+#define ROOT_LIST(V)  \
+  STRONG_ROOT_LIST(V) \
+  SMI_ROOT_LIST(V)    \
+  V(StringTable, string_table, StringTable)
+```
+`STRONG_ROOT_LIST(V)` contains (among others):
+```c++
+  /* JS Entries */                                                             \
+  V(Code, js_entry_code, JsEntryCode)                                          \
+  V(Code, js_construct_entry_code, JsConstructEntryCode)
+```
+And in `factory-inl.h` we have:
+```c++
+#define ROOT_ACCESSOR(type, name, camel_name)                         \
+  Handle<type> Factory::name() {                                      \
+    return Handle<type>(bit_cast<type**>(                             \
+        &isolate()->heap()->roots_[Heap::k##camel_name##RootIndex])); \
+  }
+ROOT_LIST(ROOT_ACCESSOR)
+#undef ROOT_ACCESSOR
+```
+So, for `js_entry_code` the following would be expanded by the preprocessor:
+```c++
+  Handle<JsEntryCode> Factory::js_entry_code() {  
+    return Handle<JsEntryCode>(bit_cast<JsEntryCode**>(&isolate()->heap()->roots_[Heap::kJsEntryCodeRootIndex]));
+  }
+```
+
+Ok so back to the `Invoke` function:
+```c++
+JSEntryFunction stub_entry = FUNCTION_CAST<JSEntryFunction>(code->entry());
+...
+value = CALL_GENERATED_CODE(isolate, stub_entry, orig_func, func, recv, argc, argv);
+```
+Now, we know that `stub_entry` is the `JSEntryStub` (src/x64/code-stubs-x64.cc) and `func` is the `InterpreterEntryTrampoline` (src/builtins/x64/builtins-x64.cc). 
+
+```console
+->  0xd099dd84060: pushq  %rbp                      // function prologue
+    0xd099dd84061: movq   %rsp, %rbp                // function prologue                                                                  Stack
+    0xd099dd84064: pushq  $0x2                      // the stack frame marker type                                                        2 (Marker Type ConstructEntryFrame)
+    0xd099dd84066: movabsq $0x105808b90, %r10       // mov the value of the current context address
+    0xd099dd84070: movq   (%r10), %r10              // dereference so the address is in r10
+    0xd099dd84073: pushq  %r10                      // push the context address onto the stack                                            address to current context
+    0xd099dd84075: pushq  %r12                      // store callee saved registers which need to be preserved                            whatever was in r12
+    0xd099dd84077: pushq  %r13                      // as above                                                                           whatever was in r13
+    0xd099dd84079: pushq  %r14                      // as above                                                                           whatever was in r14
+    0xd099dd8407b: pushq  %r15                      // as above                                                                           whatever was in r15
+    0xd099dd8407d: pushq  %rbx                      // as above                                                                           whatever was in rbx
+    0xd099dd8407e: movabsq $0x105807248, %r13       // InitializeRootRegister (x64/macro-assembler-x64.h)
+    0xd099dd84088: addq   $0x80, %r13               // also part of InitializeRootRegister
+    0x16e271f840f: movabsq $0x105808c00, %r10       // mov the frame pointer address into r10
+    0x16e271f8409: pushq  (%r10)                    // dereferense so that the address on the stack                                       address to frame pointer descriptor 
+    0x16e271f840C: movabsq 0x105808c20, %rax        // mov the js_entry_sp (stack pointer) into rax
+    0x16e271f840a6: testq  %rax, %rax               // test 
+    0x16e271f840a9: jne    0x16e271f840c3           // and jump if zero flag is 0 (rax is not all zeros) which is not the case
+    0xd099dd840af: pushq  $0x2                      // StackFrame::OUTERMOST_JSENTRY_FRAME))
+    0xd099dd840b1: movq   %rbp, %rax                // move the current frame base pointer to rax
+    0xd099dd840b4: movabsq %rax, 0x105808c20        // move the base frame pointer to memory location 
+    0xd099dd840be: jmp    0xd099dd840c5             // unconditional jump (jmp &cont)
+    0xd099dd840c5: jmp    0xd099dd840e0             // unconditional jump (jmp &invok)
+    0xd099dd840e0: movabsq $0x105808c08, %r10       // move handler_address to r10 (PushStackHandler src/x64/macro-assembler-x64.cc)
+    0xd099dd840ea: pushq  (%r10)                    // push the dereferenced address of handler_address onto the stack                    address to handler
+    0xd099dd840ed: movabsq $0x105808c08, %r10       // move the address again. not sure why this is done again through
+    0xd099dd840f7: movq   %rsp, (%r10)              // set the stack pointer to be that of the handler. This will be the I
+    0xd099dd840fa: callq  0xd099de418c0             // __ Call(BUILTIN_CODE(isolate(), JSEntryTrampoline), RelocInfo::CODE_TARGET);
+
+    `Generate_JSEntryTrampolineHelper(MacroAssembler* masm, bool is_construct)` in `src/builtins/x64/builtins-x64.cc`:
+    0x16e2720418c0: movq   %rdi, %r11               // mov new_target into r11 
+    0x16e2720418c3: movq   %rsi, %rdi               // move func into rdi
+    0x16e2720418c6: xorl   %esi, %esi               // __ Set(rsi, 0);
+    0x16e2720418c8: pushq  %rbp                     // function prologue                                                                  previous base frame pointer
+    0x16e2720418c9: movq   %rsp, %rbp               // function prologue
+    0x16e2720418cc: pushq  $0x1c                    // the stack frame marker type                                                        1c (28)
+    0x16e2720418ce: movabsq $0x16e272041861, %r10   // move the CodeObject address into r10??
+    0x16e2720418d8: pushq  %r10                     // push the CodeObject onto the stack                                                 code object
+    0x16e2720418da: movabsq $0x37b3a2c022e1, %r10   // emit_debug_code
+    0x16e2720418e4: cmpq   %r10, (%rsp)             // emit_debug_code
+    0x16e2720418e8: jne    0x16e2720418fa           // emit_debug_code
+    0x16e2720418fa: movabsq $0x105808b90, %r10
+    0x16e272041904: movq   (%r10), %rsi
+    0x16e272041907: pushq  %rdi                                                                                                           function
+    0x16e272041908: pushq  %rdx                                                                                                           receiver
+    0x16e272041909: movq   %rcx, %rax
+    0x16e27204190c: movq   %r8, %rbx
+    0x16e27204190f: movq   %r11, %rdx
+    Generate_CheckStackOverflow(masm, kRaxIsUntaggedInt):
+    0x16e272041912: movq   0xd08(%r13), %r10         // LoadRoot (x64/macro-assembler-x64.cc) (index << kPointerSizeLog2) - kRootRegisterBias))
+    0x16e272041919: movq   %rsp, %rcx                // 
+    0x16e27204191c: subq   %r10, %rcx
+    0x16e27204191f: movq   %rax, %r11
+    0x16e272041922: shlq   $0x3, %r11
+    0x16e272041926: cmpq   %r11, %rcx
+    0x16e272041929: jg     0x16e272041940
+    0x16e272041940: xorl   %ecx, %ecx                // __ Set(rcx, 0);  Start loop to copy args onto the stack
+    0x16e272041942: jmp    0x16e27204194f
+    0x16e27204194f: cmpq   %rax, %rcx                // __ cmpp(rcx, rax);
+    0x16e272041954: callq  0x16e27203c400            // __ Call(masm->isolate()->builtins()->Call(), RelocInfo::CODE_TARGET)
+    
+    
+The last `Call` I think will land in (x64/macro-assembler-x64.cc line 2003):
+```c++
+void TurboAssembler::Call(Handle<Code> code_object, RelocInfo::Mode rmode) {
+  call(code_object, rmode);
+#endif
+}
+```
+`call` is declared in `src/x64/assembler-x64.h`:
+```c++
+void call(Handle<Code> target, RelocInfo::Mode rmode = RelocInfo::CODE_TARGET);
+```
+The definition can be found in `src/x64/assembler-x64.cc`:
+```c++
+void Assembler::call(Address entry, RelocInfo::Mode rmode) {
+  DCHECK(RelocInfo::IsRuntimeEntry(rmode));
+  EnsureSpace ensure_space(this);
+  // 1110 1000 #32-bit disp.
+  emit(0xE8);
+  emit_runtime_entry(entry, rmode);
+}
+```
+If we look again at the callq:
+```console
+    0x16e272041954: callq  0x16e27203c400
+```
+And display the opcode for callq:
+```console
+(lldb) dis -f -b
+->  0x16e272041954: e8 a7 aa ff ff                 callq  0x16e27203c400
+```
+We can see match the opcode emitted by `emit(0xE8)` to `e8.
+But what is returned by the call to `masm->isolate()-builtins()->call()`?  
+In src/isolate.h we have:
+```c++
+Builtins* builtins() { return &builtins_; }
+```
+If I back up 2 frames and try to execute isolate()->builtins()->Call() I get:
+```console
+(lldb) job *isolate->builtins()->Call(static_cast<ConvertReceiverMode>(ConvertReceiverMode::kAny))
+```
+In `src/builtins/builtins.h` we can find the `Call` function with has a default value for the mode
+parameter:
+```c++
+Handle<Code> Call(ConvertReceiverMode = ConvertReceiverMode::kAny);
+```
+If we take a look in `src/builtins/builtins-call.cc` we find the definition of `Builtins::Call`:
+```c++
+Handle<Code> Builtins::Call(ConvertReceiverMode mode) {
+  switch (mode) {
+    case ConvertReceiverMode::kNullOrUndefined:
+      return builtin_handle(kCall_ReceiverIsNullOrUndefined);
+    case ConvertReceiverMode::kNotNullOrUndefined:
+      return builtin_handle(kCall_ReceiverIsNotNullOrUndefined);
+    case ConvertReceiverMode::kAny:
+      return builtin_handle(kCall_ReceiverIsAny);
+  }
+  UNREACHABLE();
+}
+```
+And if we look in src/builtins/builtins-definitions.h we can find Call_ReceiverIsAny`:
+```c++
+ASM(Call_ReceiverIsAny)
+```
+And we should be able to use `ConvertReceiverMode::kAny` with the `Call` function to find out
+what is going to be called (the code_object in `call(code_object, rmode);`:
+```console
+(lldb) job *isolate->builtins()->Call(static_cast<ConvertReceiverMode>(ConvertReceiverMode::kAny))
+0x16e27203c3a1: [Code]
+kind = BUILTIN
+name = Call_ReceiverIsAny
+compiler = unknown
+Instructions (size = 178)
+0x16e27203c400     0  40f6c701       testb rdi,0x1
+0x16e27203c404     4  0f8446000000   jz 0x16e27203c450  (Call_ReceiverIsAny)
+0x16e27203c40a     a  488b4fff       REX.W movq rcx,[rdi-0x1]
+0x16e27203c40e     e  80790bff       cmpb [rcx+0xb],0xff
+0x16e27203c412    12  0f8408faffff   jz 0x16e27203be20  (CallFunction_ReceiverIsAny)    ;; code: BUILTIN
+0x16e27203c418    18  80790bfe       cmpb [rcx+0xb],0xfe
+0x16e27203c41c    1c  0f845efcffff   jz 0x16e27203c080  (CallBoundFunction)    ;; code: BUILTIN
+0x16e27203c422    22  f6410c02       testb [rcx+0xc],0x2
+0x16e27203c426    26  0f8424000000   jz 0x16e27203c450  (Call_ReceiverIsAny)
+0x16e27203c42c    2c  80790bb7       cmpb [rcx+0xb],0xb7
+0x16e27203c430    30  0f8505000000   jnz 0x16e27203c43b  (Call_ReceiverIsAny)
+0x16e27203c436    36  e9e5000000     jmp 0x16e27203c520  (CallProxy)    ;; code: BUILTIN
+0x16e27203c43b    3b  48897cc408     REX.W movq [rsp+rax*8+0x8],rdi
+0x16e27203c440    40  488b7e27       REX.W movq rdi,[rsi+0x27]
+0x16e27203c444    44  488bbfff000000 REX.W movq rdi,[rdi+0xff]
+0x16e27203c44b    4b  e970f7ffff     jmp 0x16e27203bbc0  (CallFunction_ReceiverIsNotNullOrUndefined)    ;; code: BUILTIN
+0x16e27203c450    50  55             push rbp
+0x16e27203c451    51  4889e5         REX.W movq rbp,rsp
+0x16e27203c454    54  6a1c           push 0x1c
+0x16e27203c456    56  49baa1c30372e2160000 REX.W movq r10,0x16e27203c3a1  (Call_ReceiverIsAny)    ;; object: 0x16e27203c3a1 <Code BUILTIN>
+0x16e27203c460    60  4152           push r10
+0x16e27203c462    62  49bae122c0a2b3370000 REX.W movq r10,0x37b3a2c022e1    ;; object: 0x37b3a2c022e1 <undefined>
+0x16e27203c46c    6c  4c391424       REX.W cmpq [rsp],r10
+0x16e27203c470    70  7510           jnz 0x16e27203c482  (Call_ReceiverIsAny)
+0x16e27203c472    72  48ba0000000009000000 REX.W movq rdx,0x900000000
+0x16e27203c47c    7c  e83f950200     call 0x16e2720659c0  (Abort)    ;; code: BUILTIN
+0x16e27203c481    81  cc             int3l
+0x16e27203c482    82  57             push rdi
+0x16e27203c483    83  b801000000     movl rax,0x1
+0x16e27203c488    88  48bb9002430101000000 REX.W movq rbx,0x101430290    ;; external reference (Runtime::ThrowCalledNonCallable)
+0x16e27203c492    92  e8a982f4ff     call 0x16e271f84740     ;; code: STUB, CEntryStub, minor: 8
+0x16e27203c497    97  48837df81c     REX.W cmpq [rbp-0x8],0x1c
+0x16e27203c49c    9c  7410           jz 0x16e27203c4ae  (Call_ReceiverIsAny)
+0x16e27203c49e    9e  48ba000000004f000000 REX.W movq rdx,0x4f00000000
+0x16e27203c4a8    a8  e813950200     call 0x16e2720659c0  (Abort)    ;; code: BUILTIN
+0x16e27203c4ad    ad  cc             int3l
+0x16e27203c4ae    ae  488be5         REX.W movq rsp,rbp
+0x16e27203c4b1    b1  5d             pop rbp
+
+
+RelocInfo (size = 11)
+0x16e27203c414  code target (BUILTIN)  (0x16e27203be20)
+0x16e27203c41e  code target (BUILTIN)  (0x16e27203c080)
+0x16e27203c437  code target (BUILTIN)  (0x16e27203c520)
+0x16e27203c44c  code target (BUILTIN)  (0x16e27203bbc0)
+0x16e27203c458  embedded object  (0x16e27203c3a1 <Code BUILTIN>)
+0x16e27203c464  embedded object  (0x37b3a2c022e1 <undefined>)
+0x16e27203c47d  code target (BUILTIN)  (0x16e2720659c0)
+0x16e27203c48a  external reference (Runtime::ThrowCalledNonCallable)  (0x101430290)
+0x16e27203c493  code target (STUB)  (0x16e271f84740)
+0x16e27203c4a9  code target (BUILTIN)  (0x16e2720659c0)
+```
+
+To find out what generated this code we can look in `src/builtins/builtins-call-gen.cc`: 
+```c++
+void Builtins::Generate_Call_ReceiverIsAny(MacroAssembler* masm) {
+  Generate_Call(masm, ConvertReceiverMode::kAny);
+}
+```
+And an implementation can be found in `src/builtins/x64/builtins-x64.cc`:
+```c++
+void Builtins::Generate_Call(MacroAssembler* masm, ConvertReceiverMode mode) {
+}
+```
+Now, the actual produced assembly code looks like this:
+(lldb) register read rax rdi
+     rax = 0x0000000000000000                 // number of args
+     rdi = 0x000037b34d8b06d9                 // the target to call
+
+```console
+0x16e27203c400: testb  $0x1, %dil            // __ JumpIfSmi(rdi, &non_callable); which consists of CheckSmi. dil is the low 8 bits of rdi
+0x16e27203c404: je     0x16e27203c450        // __ JumpIfSmi(rdi, &non_callable: which after CheckSmi will jump. rdi is the target and not a smi in our case
+0x16e27203c40a: movq   -0x1(%rdi), %rcx      // __ CmpObjectType(rdi, JS_FUNCTION_TYPE, rcx); which does a movp
+0x16e27203c40e: cmpb   $-0x1, 0xb(%rcx)      // __ CmpObjectType(rdi, JS_FUNCTION_TYPE, rcx); which does a cmpb
+0x16e27203c412: je     0x16e27203be20        // __ j(equal, masm->isolate()->builtins()->CallFunction(mode), RelocInfo::CODE_TARGET);
+                                             // I was not sure where to find this `j` function but it is in src/x64/assembler-x64.cc
+                                             // so what are we jumping to? We can back up in the debugger and find out:
+                                             // (lldb) up 2
+                                             // (lldb job *isolate->builtins()->CallFunction(static_cast<ConvertReceiverMode>(ConvertReceiverMode::kAny))
+                                             // This will be a builtin named CallFunction_ReceiverIsAny, and being a builtin you'll find it in 
+                                             // `src/builtins/builtins-definitions.h`. The implementation will be in `src/builtins/builtins-call.cc` and
+                                             // will result in `return builtin_handle(kCallFunction_ReceiverIsAny)`. This code repsonsible for generating
+                                             // is Builtins::Generate_CallFunction and in our case that means `src/builtins/x64/builtins-x64.cc`
+
+Builtins::Generate_Call(MacroAssembler* masm, ConvertReceiverMode mode) (src/builtins/x64/builtins-x64.cc)
+0x16e27203be20: testb  $0x1, %dil            // __ JumpIfSmi(rdi, &non_callable);
+0x16e27203be24: jne    0x16e27203be36        // __ JumpIfSmi(rdi, &non_callable);
+
+0x16e27203be36: pushq  %rdi                  // __ Push(rdi);
+__ CallRuntime(Runtime::kThrowCalledNonCallable); in `src/x64/macro-assembler-x64.h` and 
+
+
+...
+0x16e27203be63: movq   0x27(%rdi), %rsi      //__ movp(rsi, FieldOperand(rdi, JSFunction::kContextOffset));
+0x16e27203be67: testb  $0x3, 0x87(%rdx)      // __ testl(FieldOperand(rdx, SharedFunctionInfo::kCompilerHintsOffset), Immediate(SharedFunctionInfo::IsNativeBit::kMask | SharedFunctionInfo::IsStrictBit::kMask));
+0x16e27203be6e: jne    0x16e27203bf14        // __ j(not_zero, &done_convert);
+                                             // rax = nr args, rdx = SharedFunctionInfo, rdi = target function, rsi = the function context
+0x16e27203bf14: movslq 0x73(%rdx), %rbx      // __ movsxlq(rbx, FieldOperand(rdx, SharedFunctionInfo::kFormalParameterCountOffset));
+0x16e27203bf18: movabsq $0x1050057f2, %r10   
+0x16e27203bf18: movabsq $0x1050057f2, %r10   // __ InvokeFunctionCode(rdi, no_reg, expected, actual, JUMP_FUNCTION);
+0x16e27203bfa4: movq   -0x60(%r13), %rdx     // LoadRoot(rdx, Heap::kUndefinedValueRootIndex);
+0x16e27203bfa8: cmpq   %rax, %rbx            // cmpp(expected.reg(), actual.reg());
+0x16e27203bfb2: movq   0x37(%rdi), %rcx      // movp(rcx, FieldOperand(function, JSFunction::kCodeOffset));
+0x16e27203bfb6: addq   $0x5f, %rcx           // addp(rcx, Immediate(Code::kHeaderSize - kHeapObjectTag));
+0x16e27203bfba: jmpq   *%rcx                 // jmp(rcx); 
+
+```
+Once again I got lost :( 
+
+I do know that if I set through I'll end up in `RUNTIME_FUNCTION(Runtime_InterpreterNewClosure` in `runtime/runtime-interpreter.cc` which has this line:
+```c++
+ return *isolate->factory()->NewFunctionFromSharedFunctionInfo(shared, context, vector_cell,static_cast<PretenureFlag>(pretenured_flag));
+```
+This call will delegate to another `NewFunctionFromSharedFunctionInfo` and:
+```c++
+Handle<JSFunction> result = NewFunction(initial_map, info, context_or_undefined, pretenure);
+```
+`NewFunction` will
+```c++
+Handle<JSFunction> function = New<JSFunction>(map, space);
+function->initialize_properties();
+function->initialize_elements();
+function->set_shared(*info);
+function->set_code(info->code());
+function->set_context(*context_or_undefined);
+function->set_prototype_or_initial_map(*the_hole_value());
+function->set_feedback_vector_cell(*undefined_cell());
+```
+`code` will be the `InterpreterEntryTrampoline` and it looks like it was already been compiled:
+```console
+(lldb) expr info->is_compiled()
+(bool) $483 = true
+```
+
+This Handle<JSFunction> is then returned `RUNTIME_FUNCTION(Runtime_InterpreterNewClosure`:
+```console
+    0x101437967 <+263>: movq   %rax, -0x8(%rbp)                               // store the value return value Handle<JSFunction> on the stack
+    0x10143796b <+267>: movq   -0x8(%rbp), %rax                               // move it into rax which is the register for return value
+    0x10143796f <+271>: addq   $0x50, %rsp                                    // clean up local stack variables
+    0x101437973 <+275>: popq   %rbp                                           // pop the previous functions base frame pointer
+    0x101437974 <+276>: retq                                                  // transfer control to the return address on the stack (placed there by call)
+    0x101437975 <+277>: nopw   %cs:(%rax,%rax)
+
+    (after retq):
+    0x16e271f847a4: cmpq   0x88(%r13), %rax
+    0x16e271f847ab: je     0x16e271f847f8
+
+    0x16e271f847b1: movq   -0x58(%r13), %r14
+    0x16e271f847b5: movabsq $0x105808ba0, %r10
+    0x16e271f847bf: cmpq   (%r10), %r14
+    0x16e271f847c2: je     0x16e271f847c5
+
+    0x16e271f847c5: movq   0x8(%rbp), %rcx
+    0x16e271f847c9: movq   (%rbp), %rbp
+    0x16e271f847cd: leaq   0x8(%r15), %rsp
+    0x16e271f847d1: pushq  %rcx
+    0x16e271f847d2: movabsq $0x105808b90, %r10
+    0x16e271f847dc: movq   (%r10), %rsi
+    0x16e271f847df: movq   $0x0, (%r10)
+    0x16e271f847e6: movabsq $0x105808c00, %r10        ; imm = 0x105808C00
+    0x16e271f847f0: movq   $0x0, (%r10)
+    0x16e271f847f7: retq
+
+    0x16e271fd6cfd: movq   %rax, %rdx
+    0x16e271fd6d00: movq   %rax, -0x28(%rbp)
+    0x16e271fd6d04: movq   %rsp, %rax
+    0x16e271fd6d07: cmpq   -0x38(%rbp), %rax
+    0x16e271fd6d0b: je     0x16e271fd6d42
+
+    0x16e271fd6d42: movq   -0x20(%rbp), %r12
+    0x16e271fd6d46: addq   $0x4, %r12
+    0x16e271fd6d4a: movq   -0x18(%rbp), %rdx
+    0x16e271fd6d4e: movq   -0x18(%rdx), %r14
+    0x16e271fd6d52: movzbl (%r12,%r14), %eax
+    0x16e271fd6d57: movabsq $0x100000000, %r10        ; imm = 0x100000000
+    0x16e271fd6d61: cmpq   %rax, %r10
+    0x16e271fd6d64: jae    0x16e271fd6d76
+
+    0x16e271fd6d76: movq   -0x10(%rbp), %r15
+    0x16e271fd6d7a: movq   (%r15,%rax,8), %rbx
+    0x16e271fd6d7e: movq   (%rbp), %rbp
+    0x16e271fd6d82: movq   0x38(%rsp), %rax
+
+    0x16e271fd6d87: addq   $0x68, %rsp
+    0x16e271fd6d8b: jmpq   *%rbx
+
+    0x16e271fbdde0: movsbq 0x1(%r14,%r12), %rbx
+    0x16e271fbdde6: movq   %rbp, %rdx
+    0x16e271fbdde9: movq   %rax, (%rdx,%rbx,8)
+    0x16e271fbdded: addq   $0x2, %r12
+    0x16e271fbddf1: movzbl (%r12,%r14), %ebx
+    0x16e271fbddf6: movabsq $0x100000000, %r10        ; imm = 0x100000000
+    0x16e271fbde00: cmpq   %rbx, %r10
+    0x16e271fbde03: jae    0x16e271fbde15
+
+    0x16e271fbde15: movq   (%r15,%rbx,8), %rbx
+    0x16e271fbde19: jmpq   *%rbx
+ 
+    0x16e271fdca60: movq   %rbp, %rbx
+    0x16e271fdca63: movl   $0x0, -0x20(%rbx)
+    0x16e271fdca6a: movl   %r12d, -0x1c(%rbx)
+    0x16e271fdca6e: movl   %r12d, %edx
+    0x16e271fdca71: movabsq $0x100000000, %r10        ; imm = 0x100000000
+    0x16e271fdca7b: cmpq   %rdx, %r10
+    0x16e271fdca7e: jae    0x16e271fdca90
+
+    0x16e271fdca90: subl   $0x39, %edx
+    0x16e271fdca93: movabsq $0x100000000, %r10        ; imm = 0x100000000
+    0x16e271fdca9d: cmpq   %rdx, %r10
+    0x16e271fdcaa0: jae    0x16e271fdcab2
+    
+    0x16e271fdcab2: cmpl   $0x0, %edx
+    0x16e271fdcab5: jl     0x16e271fdcb0b
+    0x16e271fdcab7: movl   0x33(%r14), %ecx
+    0x16e271fdcabb: movabsq $0x100000000, %r10        ; imm = 0x100000000
+    0x16e271fdcac5: cmpq   %rcx, %r10
+    0x16e271fdcac8: jae    0x16e271fdcada
+
+    0x16e271fdcada: subl   $0x1, %ecx
+    0x16e271fdcadd: movabsq $0x100000000, %r10        ; imm = 0x100000000
+    0x16e271fdcae7: cmpq   %rcx, %r10
+    0x16e271fdcaea: jae    0x16e271fdcafc
+
+    0x16e271fdcafc: subl   %edx, %ecx
+    0x16e271fdcafe: cmpl   $0x0, %ecx
+    0x16e271fdcb01: jl     0x16e271fdcb1c
+
+    0x16e271fdcb03: movq   -0x18(%rbx), %rbx
+    0x16e271fdcb07: movl   %ecx, 0x33(%rbx)
+    0x16e271fdcb0a: retq
+
+    0x16e272044654: movq   -0x18(%rbp), %r14
+    0x16e272044658: movq   -0x20(%rbp), %r12
+    0x16e27204465c: shrq   $0x20, %r12
+    0x16e272044660: movzbl (%r14,%r12), %ebx
+    0x16e272044665: cmpb   $-0x69, %bl
+    0x16e272044668: je     0x16e2720446a3
+
+    0x16e2720446a3: movq   -0x18(%rbp), %rbx
+    0x16e2720446a7: movl   0x2b(%rbx), %ebx
+    0x16e2720446aa: leave                              // will leave the function 
+
+    0x16e2720446ab: popq   %rcx
+    0x16e2720446ac: addq   %rbx, %rsp
+    0x16e2720446af: pushq  %rcx
+    0x16e2720446b0: retq
+
+    0x16e272041959: cmpq   $0x1c, -0x8(%rbp)
+    0x16e27204195e: je     0x16e272041970
+
+    0x16e272041970: movq   %rbp, %rsp
+    0x16e272041973: popq   %rbp
+    0x16e272041974: retq
+
+    0x16e271f840ff: movabsq $0x105808c08, %r10        ; imm = 0x105808C08
+    0x16e271f84109: popq   (%r10)
+    0x16e271f8410c: addq   $0x0, %rsp
+    0x16e271f84110: popq   %rbx
+    0x16e271f84111: cmpq   $0x2, %rbx
+    0x16e271f84115: jne    0x16e271f8412c
+    0x16e271f8411b: movabsq $0x105808c20, %r10        ; imm = 0x105808C20
+    0x16e271f84125: movq   $0x0, (%r10)
+    0x16e271f8412c: movabsq $0x105808c00, %r10        ; imm = 0x105808C00
+    0x16e271f84136: popq   (%r10)
+    0x16e271f84139: popq   %rbx                       // pop callee saved registers
+    0x16e271f8413a: popq   %r15
+    0x16e271f8413c: popq   %r14
+    0x16e271f8413c: popq   %r14
+    0x16e271f8413e: popq   %r13
+    0x16e271f84140: popq   %r12
+    0x16e271f84142: addq   $0x10, %rsp
+    0x16e271f84146: popq   %rbp
+    0x16e271f84147: retq
+
+    value = CALL_GENERATED_CODE(isolate, stub_entry, orig_func, func, recv, argc, argv);
+```
+`value` is the function of type JSFunction:
+```console
+(lldb) job JSFunction::cast(value)->code()
+(lldb) job JSFunction::cast(value)->abstract_code()
+(lldb) job JSFunction::cast(value)->feedback_vector()
+```
+Just to recall, we called this function:
+```c++
+Local<Value> f_value = ExecuteString(env, MainSource(env), script_name);
+```
+To compile boostrap_node.js and the returned value if a Function that has been compiled. This is 
+later called:
+```c++
+auto ret = f->Call(env->context(), Null(env->isolate()), 1, &arg);
+```
+This will once again land us in `Invoke` and:
+```c++
+value = CALL_GENERATED_CODE(isolate, stub_entry, orig_func, func, recv, argc, argv);
+```
+This is a function call so we will first entry the JSEntryStub, then the InterpreterTrampoline
+which will delegate to `Generate_Call`
+```console
+    0x3db5b98c1954: callq  0x3db5b98bc400
+
+    0x3db5b98bc400: testb  $0x1, %dil         // __ JumpIfSmi(rdi, &non_callable);
+    0x3db5b98bc404: je     0x3db5b98bc450     // __ JumpIfSmi(rdi, &non_callable);
+    0x3db5b98bc40a: movq   -0x1(%rdi), %rcx   // __ CmpObjectType(rdi, JS_FUNCTION_TYPE, rcx);
+    0x3db5b98bc40e: cmpb   $-0x1, 0xb(%rcx)   // CmpInstanceType(map, type) called by CmpObjectType
+    0x3db5b98bc412: je     0x3db5b98bbe20     // __ j(equal, masm->isolate()->builtins()->CallFunction(mode), RelocInfo::CODE_TARGET);
+                                              // So the next instruction should match that from CallFunction.
+
+    0x3db5b98bbe20: testb  $0x1, %dil         // 
+
+```
+
+
+### CompileLazy
+`Builtins::Generate_CompileLazy(MacroAssembler* masm)` in `src/builtins/x64/builtins-x64.cc`
+
+### Assembler:j(Condition cc, Handle<Code> target, RelocInfo::Mode rmode) 
+Can be found in `src/x64/assembler-x64.cc` (line 1367):
+```c++
+void Assembler::j(Condition cc, Handle<Code> target, RelocInfo::Mode rmode) {
+  EnsureSpace ensure_space(this);
+  DCHECK(is_uint4(cc));
+  // 0000 1111 1000 tttn #32-bit disp.
+  emit(0x0F);
+  emit(0x80 | cc);
+  emit_code_target(target, rmode);
+}
+``
+Take this expression as an example:
+```c++
+__ j(equal, masm->isolate()->builtins()->CallFunction(mode), RelocInfo::CODE_TARGET);
+```
+`Condition` is an enum found in `src/x64/assembler-x64.h`:
+```c++
+enum Condition {
+  // any value < 0 is considered no_condition
+  no_condition  = -1,
+
+  overflow      =  0,
+  no_overflow   =  1,
+  below         =  2,
+  above_equal   =  3,
+  equal         =  4,
+  not_equal     =  5,
+  below_equal   =  6,
+  above         =  7,
+  negative      =  8,
+  positive      =  9,
+  parity_even   = 10,
+  parity_odd    = 11,
+  less          = 12,
+  greater_equal = 13,
+  less_equal    = 14,
+  greater       = 15,
+
+  // Fake conditions that are handled by the
+  // opcodes using them.
+  always        = 16,
+  never         = 17,
+  // aliases
+  carry         = below,
+  not_carry     = above_equal,
+  zero          = equal,
+  not_zero      = not_equal,
+  sign          = negative,
+  not_sign      = positive,
+  last_condition = greater
+};
+```
+The jump instruction generated for this would look like:
+```console
+(lldb) dis -f -b
+->  0x16e27203c412: 0f 84 08 fa ff ff  je     0x16e27203be20
+
+  emit(0x0F);
+  emit(0x80 | cc);
+  emit_code_target(target, rmode);
+```
+So we can see that `0f` matches the `emit(0x0F)` call.
+And `84` matches `emit(0x80 | 4)` which is 84 in hex. (4 is Condition::equal)
+I was wondering about `(0x80 | cc)` and what that does. Well this will determin the type of jmp
+opcode to emit. A near jmp opcode consists of two bytes, the first being with `0F` and the second
+varies depending on the type of jmp. So lets take Condition::not_equal which is 5:
+```console
+(lldb) expr -f hex -- `0x80 | 5`
+(int) $304 = 0x00000085
+```
+
+The last line, `emit_code_target(target, rmode)` which can be found in `src/x64/assembler-x64-inl.h`.
+```c++
+int current = static_cast<int>(code_targets_.size());
+
+```
+```console
+expr isolate->builtins()->Call(static_cast<ConvertReceiverMode>(ConvertReceiverMode::kAny))->address()
+(v8::internal::Address) $306 = 0x0000302f3413c3a0
+```
+
+
+### x64 jump instructions
+Instruction Description                         Flags   short jump opcode   near jump opcodes 
+* JO        Jump if overflow                    ZF = 1  70                  0F 80
+* JE/JZ     Jump if equal/Jump if zero          ZF = 1  74                  0F 84
+* JNE/JNZ   Jump if not equal/Jump if no zero   ZF = 1  75                  0F 85
+
+#### Types of Jumps
+A short `jmp` is encoded as two bytes 74 and the number of bytes +/- relative to the instruction pointer. The operand can
+only be a 8-bit operand. So this can jump -126 to +129 bytes.
+
+A near `jmp` allows for jumps in the current segment and uses 0F 84 and the operand is a 16-bit operand 
+
+
+So a function is translated into bytecode by the ByteCodeGenerator which will visit the AST and emit bytecodes for 
+each AST node. The bytecodes are set on the SharedFunctionInfo object and the code entry address is set to the
+InterpreterEntryTrampoline builtin stub. InterpreterEntryTrampoline will set up the stack frame and then dispatch
+to the interpreter's bytecode handler for the functions first bytecode. I think this is what the last call is 
+doing above. So what is the first bytecode in our case?
+
+```console
+(lldb) up 2
+(lldb) job v8::internal::JSFunction::cast(func)->abstract_code()
+0x37b34d8adfe1: [BytecodeArray] in OldSpaceParameter count 1
+Frame size 8
+    0 E> 0x37b34d8ae01a @    0 : 93                StackCheck
+  299 S> 0x37b34d8ae01b @    1 : 6f 00 00 00       CreateClosure [0], [0], #0
+         0x37b34d8ae01f @    5 : 1e fb             Star r0
+21946 S> 0x37b34d8ae021 @    7 : 97                Return
+Constant pool (size = 1)
+0x37b34d8adfc9: [FixedArray] in OldSpace
+ - map = 0x37b31cc022f1 <Map(HOLEY_ELEMENTS)>
+ - length: 1
+           0: 0x37b34d8adf19 <SharedFunctionInfo>
+Handler Table (size = 16)
+```
+So at this point we have the JSEntryStub which will take information from the isolate->isolate->thread_local_top_
+and make it available to the rest of the code that will be called. This is something that has to be done each
+time a function is entered. Now, the first InterpreterEntryTrampoline is called and hopefully we'll be able
+to verify that this goes through the func->abstract_code() and compiles it. 
+
+
+
+```c++
+(lldb) job *isolate->builtins()->CallFunction(static_cast<ConvertReceiverMode>(ConvertReceiverMode::kAny))        0x3db5b98bbdc1: [Code]
+kind = BUILTIN
+name = CallFunction_ReceiverIsAny
+compiler = unknown
+Instructions (size = 510)
+0x3db5b98bbe20     0  40f6c701       testb rdi,0x1                                      // __ AssertFunction
+0x3db5b98bbe24     4  7510           jnz 0x3db5b98bbe36  (CallFunction_ReceiverIsAny)
+0x3db5b98bbe26     6  48ba0000000036000000 REX.W movq rdx,0x3600000000
+0x3db5b98bbe30    10  e88b9b0200     call 0x3db5b98e59c0  (Abort)    ;; code: BUILTIN
+0x3db5b98bbe35    15  cc             int3l
+0x3db5b98bbe36    16  57             push rdi
+0x3db5b98bbe37    17  488b7fff       REX.W movq rdi,[rdi-0x1]
+0x3db5b98bbe3b    1b  807f0bff       cmpb [rdi+0xb],0xff
+0x3db5b98bbe3f    1f  5f             pop rdi
+0x3db5b98bbe40    20  7410           jz 0x3db5b98bbe52  (CallFunction_ReceiverIsAny)
+0x3db5b98bbe42    22  48ba000000003b000000 REX.W movq rdx,0x3b00000000
+0x3db5b98bbe4c    2c  e86f9b0200     call 0x3db5b98e59c0  (Abort)    ;; code: BUILTIN
+0x3db5b98bbe51    31  cc             int3l                                             // end __ AssertFunction
+
+0x3db5b98bbe52    32  488b571f       REX.W movq rdx,[rdi+0x1f]
+```
+
+
+### Codestubs
+Are declared in `src/code-stubs.h`. Lets take a look at two `CEntry` and `JSEntry`:
+```c++
+#define CODE_STUB_LIST_ALL_PLATFORMS(V)       \
+  /* --- PlatformCodeStubs --- */             \
+  ...
+  V(CEntry)                                   \
+  ...
+  V(JSEntry)                                  \
+```
+CodeStub extends ZoneObject. It has an enum named major with all the code stubs:
+```c++
+enum Major {
+  NoCache = 0,
+  ...
+  CEntry,
+  ...,
+  JSEntry,
+};
+```
+`Handle<Code> GetCode()` will return the Code for this code stub and generate it if needed.
+If the code is not in the cache then the following will be called to generate the code:
+```c++
+Handle<Code> new_object = GenerateCode();
+```
+
+### Zone
+Is very well documented:
+```c++
+// The Zone supports very fast allocation of small chunks of
+// memory. The chunks cannot be deallocated individually, but instead
+// the Zone supports deallocating all chunks in one fast
+// operation. The Zone is used to hold temporary data structures like
+// the abstract syntax tree, which is deallocated after compilation.
+```
+
+### ZoneObject 
+Is an object that exist in a zone and is indented to be extended (like CodeStub does).
+
+
+### Script::Compile
+Will delegate to ScriptCompiler::Compile, and then to ScriptCompiler::CompileUnboundInternal, and then to ScriptCompiler::CompileUnboundInternal.
+```c++
+i::MaybeHandle<i::SharedFunctionInfo> maybe_function_info = i::Compiler::GetSharedFunctionInfoForScript(
+-> 2332            str, name_obj, line_offset, column_offset, source->resource_options,
+   2333            source_map_url, isolate->native_context(), NULL, &script_data,
+   2334            options, i::NOT_NATIVES_CODE, host_defined_options);
+```
+```c++
+  ParseInfo parse_info(script);
+  Zone compile_zone(isolate->allocator(), ZONE_NAME);
+  ...
+  maybe_result = CompileToplevel(&parse_info, isolate);
+```
+
+### CompileToplevel
+```c++
+  if (parse_info->literal() == nullptr && !parsing::ParseProgram(parse_info, isolate)) {
+  ...
+  std::unique_ptr<CompilationJob> outer_function_job(GenerateUnoptimizedCode(parse_info, isolate, &inner_function_jobs));
+...
+
+### GenerateUnoptimizedCode
+`src/compiler.cc`
+```c++
+  Compiler::EagerInnerFunctionLiterals inner_literals;
+  if (!Compiler::Analyze(parse_info, &inner_literals)) {
+    return std::unique_ptr<CompilationJob>();
+  }
+  std::unique_ptr<CompilationJob> outer_function_job(
+      PrepareAndExecuteUnoptimizedCompileJob(parse_info, parse_info->literal(), isolate));
+```
+
+### PrepareAndExecuteUnoptimizedCompileJob
+`src/compiler.cc` 
+```console
+(lldb) br s -f compiler.cc -l 385
+```
+```c++
+std::unique_ptr<CompilationJob> job(interpreter::Interpreter::NewCompilationJob(parse_info, literal, isolate));
+  if (job->PrepareJob() == CompilationJob::SUCCEEDED && job->ExecuteJob() == CompilationJob::SUCCEEDED) {
+    return job;
+  }
+```
+Lets take a look at `parse_info`:
+```console
+(lldb) job parse_info->script_->source()
+"'use strict';\x0a\x0a(function frogger(process) {\x0a  process._rawDebug('entry function');\x0a\x0a  function startup() {\x0a  process._rawDebug('startup function');\x0a  return true;\x0a  }\x0a\x0a  startup();\x0a});\x0a"
+```
+Notice that this is the complete contents of bootstrap_node.js:
+```console
+(lldb) job parse_info->script_->name()
+"bootstrap_node.js"
+```
+`PrepareJob` will print the AST if configured with `--print-ast`:
+```console
+[generating bytecode for function: ]
+--- AST ---
+FUNC at 0
+. KIND 0
+. SUSPEND COUNT 0
+. NAME ""
+. INFERRED NAME ""
+. EXPRESSION STATEMENT at 284
+. . LITERAL "use strict"
+. EXPRESSION STATEMENT at 299
+. . ASSIGN at -1
+. . . VAR PROXY local[0] (0x10702f338) (mode = TEMPORARY) ".result"
+. . . FUNC LITERAL at 300
+. . . . NAME
+. . . . INFERRED NAME
+. . . . PARAMS
+. . . . . VAR (0x10701cd48) (mode = VAR) "process"
+. RETURN at -1
+. . VAR PROXY local[0] (0x10702f338) (mode = TEMPORARY) ".result"
+```
+`VAR PROXY` indicates that this scope resolution will connect these nodes declaring VAR nodes.
+This is all `PrepareJob` does.
+
+`ExecuteJob()` will call:
+```c++
+return UpdateState(ExecuteJobImpl(), State::kReadyToFinalize);
+```
+The call to `ExecuteJobImpl` will end up in interpreter.cc:191 in our case. In this function we find the following:
+```c++
+  generator()->GenerateBytecode(stack_limit());
+```
+Now we are getting closer to figuring out how the bytecode is generated. This will land us in bytecode-generator.cc:894.
+
+`GenerateBytecode`:
+```c++
+  InitializeAstVisitor(stack_limit);
+  ContextScope incoming_context(this, closure_scope());
+  RegisterAllocationScope register_scope(this);
+  AllocateTopLevelRegisters();
+...
+  GenerateBytecodeBody();
+
+```
+
+GenerateBytecodeBody:
+```c++
+  ...
+  VisitDeclarations(closure_scope()->declarations());  // no declarations in our case
+  VisitModuleNamespaceImports();
+  ...
+  builder()->StackCheck(info()->literal()->start_position());
+  VisitStatements(info()->literal()->body());
+  ...
+```
+This will later call `OutputStackCheck();`
+```console
+(lldb) p *node
+(v8::internal::interpreter::BytecodeNode) $73 = {
+  bytecode_ = kStackCheck
+  operands_ = ([0] = 0, [1] = 0, [2] = 0, [3] = 0, [4] = 0)
+  operand_count_ = 0
+  operand_scale_ = kSingle
+  source_info_ = (position_type_ = kExpression, source_position_ = 0)
+}
+```
+bytecode-array-writer.cc:60 will do the actual writing of the node:
+```c++
+  UpdateSourcePositionTable(node);
+  EmitBytecode(node);
+```
+TODO: take a closer look at the source position table.
+`EmitBytecode` can be found in bytecode-array-writer.cc:192:
+```c++
+Bytecode bytecode = node->bytecode();
+OperandScale operand_scale = node->operand_scale();
+```
+In this case bytecode is kStackCheck. Now, kStackCheck is an index into builtins_ array of the isolate:
+```console
+(lldb) job *isolate->builtins()->builtin_handle(Builtins::Name::kStackCheck)
+0x2a9270441da1: [Code]
+kind = BUILTIN
+name = StackCheck
+compiler = unknown
+Instructions (size = 17)
+0x2a9270441e00     0  33c0           xorl rax,rax
+0x2a9270441e02     2  48bb70de420101000000 REX.W movq rbx,0x10142de70    ;; external reference (Runtime::StackGuard)
+0x2a9270441e0c     c  e92f29f4ff     jmp 0x2a9270384740      ;; code: STUB, CEntryStub, minor: 8
+
+
+RelocInfo (size = 3)
+0x2a9270441e04  external reference (Runtime::StackGuard)  (0x10142de70)
+0x2a9270441e0d  code target (STUB)  (0x2a9270384740)
+```
+If you look closely the first instruction is just setting rax to zero using xor.
+Next, we are pushing the pointer to the function, in this case Runtime::StackGuard into rbx.
+We then jump to CEntryStub. 
+
+What is `StackGuard`?  
+Well, it is defined in a macro in src/runtime/runtime.h:
+```c++
+...
+F(StackGuard, 0, 1)
+...
+#define FOR_EACH_INTRINSIC(F)         \
+  FOR_EACH_INTRINSIC_RETURN_PAIR(F)   \
+  FOR_EACH_INTRINSIC_RETURN_OBJECT(F)
+
+
+#define F(name, nargs, ressize)                                 \
+  Object* Runtime_##name(int args_length, Object** args_object, \
+                         Isolate* isolate);
+FOR_EACH_INTRINSIC_RETURN_OBJECT(F)
+#undef F
+```
+`StackGuard` is included in `FOR_EACH_INTRINSIC_INTERNAL` which is included by `FOR_EACH_INTRINSIC_RETURN_OBJECT`.
+So that should expand to:
+```c++
+Object* Runtime_StackGuard(int args_lentgh, Object** args_object, Isolate* isolate);
+```
+We can verify this using:
+```console
+(lldb) expr v8::internal::Runtime::FunctionForId(static_cast<v8::internal::Runtime::FunctionId>(v8::internal::Runtime::FunctionId::kStackGuard))
+(const Function *) $1058 = 0x00000001029f0340
+(lldb) expr v8::internal::Runtime::FunctionForId(static_cast<v8::internal::Runtime::FunctionId>(v8::internal::Runtime::FunctionId::kStackGuard))->name
+(const char *const) $1059 = 0x0000000101c8be27 "StackGuard"
+(lldb) expr v8::internal::Runtime::FunctionForId(static_cast<v8::internal::Runtime::FunctionId>(v8::internal::Runtime::FunctionId::kStackGuard))->nargs
+(int8_t) $1060 = '\0'
+(lldb) expr v8::internal::Runtime::FunctionForId(static_cast<v8::internal::Runtime::FunctionId>(v8::internal::Runtime::FunctionId::kStackGuard))->intrinsic_type
+(const IntrinsicType) $1061 = RUNTIME
+(lldb) expr v8::internal::Runtime::FunctionForId(static_cast<v8::internal::Runtime::FunctionId>(v8::internal::Runtime::FunctionId::kStackGuard))->entry
+(v8::internal::Address) $1063 = 0x000000010142de70 "UH\x89�H��P�}�H�u�H�U�H�}���\x14\x04��\x01H\x83�
+```
+If `nargs` is `-1` then the funnction takes a variable number of arguments.
+We can also disassemble the address using:
+```console
+(lldb) dis -s 0x000000010142de70
+node`v8::internal::Runtime_StackGuard:
+    0x10142de70 <+0>:  pushq  %rbp
+    0x10142de71 <+1>:  movq   %rsp, %rbp
+    0x10142de74 <+4>:  subq   $0x50, %rsp
+    0x10142de78 <+8>:  movl   %edi, -0xc(%rbp)
+    0x10142de7b <+11>: movq   %rsi, -0x18(%rbp)
+    0x10142de7f <+15>: movq   %rdx, -0x20(%rbp)
+    0x10142de83 <+19>: movq   -0x20(%rbp), %rdi
+    0x10142de87 <+23>: callq  0x10046f360               ; v8::internal::Isolate::context at isolate.h:596
+    0x10142de8c <+28>: movb   $0x1, %cl
+```
+Now that we know this we can disassemble the complete function using:
+```console
+(lldb) dis -n v8::internal::Runtime_StackGuard
+```
+As well as any other runtime function we might be interested in later.
+
+
+
+Next, the body will be visited (BytecodeGenerator::VisitStatements():
+```c++
+void BytecodeGenerator::VisitStatements(ZoneList<Statement*>* statements) {
+  for (int i = 0; i < statements->length(); i++) {
+    // Allocate an outer register allocations scope for the statement.
+    RegisterAllocationScope allocation_scope(this);
+    Statement* stmt = statements->at(i);
+    Visit(stmt);
+    if (stmt->IsJump()) break;
+  }
+}
+```
+This this case we have three statements:
+```console
+(lldb) p statements->length()
+(int) $99 = 3
+
+(lldb) p stmt->Print()
+EXPRESSION STATEMENT at 284
+. LITERAL "use strict"
+```
+So the is one statement for 'use strict';
+
+The next statement is:
+```console
+(lldb) p stmt->Print()
+EXPRESSION STATEMENT at 299
+. ASSIGN at -1
+. . VAR PROXY local[0] (0x104892d38) (mode = TEMPORARY) ".result"
+. . FUNC LITERAL at 300
+. . . NAME
+. . . INFERRED NAME
+. . . PARAMS
+. . . . VAR (0x104880748) (mode = VAR) "process"
+```
+This matches the function literal:
+```javascript
+(function(process) {
+});
+```
+This will call `BytecodeGenerator::VisitFunctionLiteral` (src/interpreter/bytecode-generator.cc):
+```c++
+void BytecodeGenerator::VisitFunctionLiteral(FunctionLiteral* expr) {
+  DCHECK_EQ(expr->scope()->outer_scope(), current_scope());
+  uint8_t flags = CreateClosureFlags::Encode(
+      expr->pretenure(), closure_scope()->is_function_scope());
+  size_t entry = builder()->AllocateDeferredConstantPoolEntry();
+  int slot_index = feedback_index(expr->LiteralFeedbackSlot());
+  builder()->CreateClosure(entry, slot_index, flags);
+  function_literals_.push_back(std::make_pair(expr, entry));
+}
+```
+Now, my main interest is `builder()->CreateClosure` which will delegate to `BytecodeArrayBuilder::CreateClosure`:
+```c++
+  OutputCreateClosure(shared_function_info_entry, slot, flags);
+```
+This will output a BytecodeNode that looks like this:
+```console
+(v8::internal::interpreter::BytecodeNode) $875 = {
+  bytecode_ = kCreateClosure
+  operands_ = ([0] = 32767, [1] = 228, [2] = 0, [3] = 0, [4] = 0)
+  operand_count_ = 3
+  operand_scale_ = kSingle
+  source_info_ = (position_type_ = kStatement, source_position_ = 299)
+}
+```
+
+
+The third and last statement is:
+```console
+(lldb) p stmt->Print()
+RETURN at -1
+. VAR PROXY local[0] (0x104892d38) (mode = TEMPORARY) ".result"
+```
+I'm guessing that this is the return of the function literal.
+
+After this the job will be returned and we have completed the outer function job. This will land us back in `GenerateUnoptimizedCode`:
+(compiler.cc:415
+```c++
+for (auto it : inner_literals) {
+    FunctionLiteral* inner_literal = it->value();
+    std::unique_ptr<CompilationJob> inner_job(
+        PrepareAndExecuteUnoptimizedCompileJob(parse_info, inner_literal,
+                                               isolate));
+    if (!inner_job) return std::unique_ptr<CompilationJob>();
+    inner_function_jobs->emplace_front(std::move(inner_job));
+  } `
+```
+The first inner_literal is:
+```console
+(lldb) p inner_literal->Print()
+FUNC LITERAL at 300
+. NAME
+. INFERRED NAME
+. PARAMS
+. . VAR (0x10701cd48) (mode = VAR) "process"
+```
+This matches `function(process) {}` in bootstrap_node.js. The AST will look like this:
+```console
+[generating bytecode for function: ]
+--- AST ---
+FUNC at 0
+. KIND 0
+. SUSPEND COUNT 0
+. NAME ""
+. INFERRED NAME ""
+. EXPRESSION STATEMENT at 284
+. . LITERAL "use strict"
+. EXPRESSION STATEMENT at 299
+. . ASSIGN at -1
+. . . VAR PROXY local[0] (0x10702f338) (mode = TEMPORARY) ".result"
+. . . FUNC LITERAL at 300
+. . . . NAME
+. . . . INFERRED NAME
+. . . . PARAMS
+. . . . . VAR (0x10701cd48) (mode = VAR) "process"
+. RETURN at -1
+. . VAR PROXY local[0] (0x10702f338) (mode = TEMPORARY) ".result"
+```
+
+This function will require a context (in BytecodeGenerator::GenerateBytecode):
+```c++
+if (closure_scope()->NeedsContext()) {
+  BuildNewLocalActivationContext();
+  ContextScope local_function_context(this, closure_scope());
+  BuildLocalActivationContextInitialization();
+  GenerateBytecodeBody();
+}
+```
+
+`BytecodeGenerator::BuildNewLocalActivationContext`:
+```c++
+  builder()->CreateFunctionContext(slot_count);
+```
+This will delegate to `OutputCreateFunctionContext(slots)`
+```console
+(lldb) p *node
+(v8::internal::interpreter::BytecodeNode) $933 = {
+  bytecode_ = kCreateFunctionContext
+  operands_ = ([0] = 21, [1] = 0, [2] = 0, [3] = 0, [4] = 0)
+  operand_count_ = 1
+  operand_scale_ = kSingle
+  source_info_ = (position_type_ = kNone, source_position_ = -1)
+}
+```
+`BytecodeGenerator::BuildLocalActivationContextInitialization`:
+
+
+The OutputCreateFunctionContext(slots) will add bytecodes for:
+```console
+(lldb) p *node
+(v8::internal::interpreter::BytecodeNode) $173 = {
+  bytecode_ = kCreateFunctionContext
+  operands_ = ([0] = 21, [1] = 0, [2] = 0, [3] = 0, [4] = 0)
+  operand_count_ = 1
+  operand_scale_ = kSingle
+  source_info_ = (position_type_ = kNone, source_position_ = -1)
+```
+`BuildLocalActivationContextInitalization()` will set up the parameters:
+```console
+(lldb) p num_parameters
+(int) $186 = 1
+
+(lldb) expr *variable->name_
+(const v8::internal::AstRawString) $187 = {
+   = {
+    next_ = 0x0000000104857060
+    string_ = 0x0000000104857060
+  }
+  literal_bytes_ = (start_ = "process", length_ = 7)
+  hash_field_ = 2818393206
+  is_one_byte_ = true
+  has_string_ = true
+}
+```
+So we can see that this is the process parameter.
+```console
+builder()->LoadAccumulatorWithRegister(parameter).StoreContextSlot(
+           execution_context()->reg(), variable->index(), 0);
+```
+
+VisitVariableDeclaration:
+(lldb) p *variable->name_
+(const v8::internal::AstRawString) $247 = {
+   = {
+    next_ = 0x0000000104857068
+    string_ = 0x0000000104857068
+  }
+  literal_bytes_ = (start_ = "internalBinding", length_ = 15)
+  hash_field_ = 2406209186
+  is_one_byte_ = true
+  has_string_ = true
+}
+Next vars are:
+```
+#exceptionHandlerState
+#startup
+#setupProcessObject
+...
+```
+
+builder()->StackCheck(info()->literal()->start_position());
+VisitStatements(info()->literal()->body());
+
+
+(lldb) expr stmt->Print()
+BLOCK NOCOMPLETIONS at -1
+. EXPRESSION STATEMENT at 326
+. . INIT at 326
+. . . VAR PROXY context[5] (0x1048808a0) (mode = LET) "internalBinding"
+. . . LITERAL undefined
+
+After all the AST nodes have been visisted and compiled into bytecode we will be back in GenerateUnoptimizedCode
+where we were compiling all the inner statments of the outer code. The outer_function_job is then returned to `CompileToLevel`:
+(src/compiler.cc:793)
+```c++
+  parse_info->ast_value_factory()->Internalize(isolate);
+
+  EnsureSharedFunctionInfosArrayOnScript(parse_info, isolate);
+
+  Handle<SharedFunctionInfo> shared_info =
+      isolate->factory()->NewSharedFunctionInfoForLiteral(parse_info->literal(),
+                                                          parse_info->script());
+```
+
+`Handle<SharedFunctionInfo> Factory::NewSharedFunctionInfoForLiteral`:
+(factory.cc)
+```c++
+  Handle<Code> code = BUILTIN_CODE(isolate(), CompileLazy);
+  Handle<ScopeInfo> scope_info(ScopeInfo::Empty(isolate()));
+  Handle<SharedFunctionInfo> result = NewSharedFunctionInfo(literal->name(), literal->kind(), code, scope_info);
+```
+So notice that the code for this function literal will be `CompileLazy`
+
+
+
+`CompileLazy`
+Can be found in `src/builtins/builtins-definitions.h`:
+```c++
+ASM(CompileLazy)
+```
+And the code that generates this builtin can be found in `src/builtins/x64/builtins-x64.cc`. The builtins are documented above but
+just remember that they are generated at compile time and then serialized into the snapshot and deserialized upon startup.
+
+opcode mapping:    
+```console
+// Register closure = rdi;
+// Register feedback_vector = rbx;
+
+0xa7cbb3c50e1: [Code]
+kind = BUILTIN
+name = CompileLazy
+compiler = unknown
+Instructions (size = 983)
+0xa7cbb3c5140     0  488b5f2f       REX.W movq rbx,[rdi+0x2f]               // __ movp(feedback_vector, FieldOperand(closure, JSFunction::kFeedbackVectorOffset));
+0xa7cbb3c5144     4  488b5b07       REX.W movq rbx,[rbx+0x7]                // __ movp(feedback_vector, FieldOperand(feedback_vector, Cell::kValueOffset));
+0xa7cbb3c5148     8  493b5da0       REX.W cmpq rbx,[r13-0x60]               // __ JumpIfRoot(feedback_vector, Heap::kUndefinedValueRootIndex, &gotta_call_runtime); (src/x86/macro-assembler.h) CompareRoot(with, index);
+0xa7cbb3c514c     c  0f844c030000   jz 0xa7cbb3c549e  (CompileLazy)         // __ JumpIfRoot(feedback_vector, Heap::kUndefinedValueRootIndex, &gotto_call_runtime); j(equal, if_equal, if_equal_distance) 
+                                                                            // MaybeTailCallOptimizedCodeSlot(masm, feedback_vector, rcx, r14, r15);
+                                                                            // static void MaybeTailCallOptimizedCodeSlot(MacroAssembler* masm, Register feedback_vector, Register scratch1, Register scratch2, Register scratch3)
+                                                                            // Register closure = rdi;
+                                                                            // Register optimized_code_entry = scratch1; // rcx
+0xa7cbb3c5152    12  488b4b0f       REX.W movq rcx,[rbx+0xf]                // __ movp(optimized_code_entry, FieldOperand(feedback_vector, FeedbackVector::kOptimizedCodeOffset));
+0xa7cbb3c5156    16  f6c101         testb rcx,0x1                           // __ JumpIfNotSmi(optimized_code_entry, &optimized_code_slot_is_cell): CheckSMI
+0xa7cbb3c5159    19  0f8591010000   jnz 0xa7cbb3c52f0  (CompileLazy         // __ JumpIfNotSmi(optimized_code_entry, &optimized_code_slot_is_cell): j(NegateCondition(smi), on_not_smi, near_jump);
+                                                                            // TailCallRuntimeIfMarkerEquals:730
+0xa7cbb3c515f    1f  f6c101         testb rcx,0x1                           // __ SmiCompare(smi_entry, Smi::FromEnum(marker));
+0xa7cbb3c5162    22  7410           jz 0xa7cbb3c5174  (CompileLazy)         // __ j(not_equal, &no_match, Label::kNear);
+0xa7cbb3c5164    24  48ba000000003d000000 REX.W movq rdx,0x3d00000000       // 
+
+
+0xa7cbb3c5192    52  49ba0000000001000000 REX.W movq r10,0x100000000        // __ movp(entry, FieldOperand(closure, JSFunction::kSharedFunctionInfoOffset)); entry = 
+                                           
+
+`NewSharedFunctionInfo` will delegate to 
+
+  Handle<SharedFunctionInfo> shared = NewSharedFunctionInfo(name, code, IsConstructable(kind), kind);
+
+Is is that the inner functions will have a code of CompileLazy and the outer InterpreterEntryTrampoline?
+I we assume that InterpreterEntryTrampoline
+
+
+```console
+SharedFunctionInfo: 0x188c4f2adf69 <SharedFunctionInfo>
+ Optimized Code: 0
+ Invocation Count: 0
+ Profiler Ticks: 0
+ Slot #0 kCreateClosure
+  [0]: 0x188c4f2b0a81 <Cell value= 0x188cc2d822e1 <undefined>>
+```
+There is no optimized code for this yet.
+This function has not been called before.
+```
+
+
+### void BytecodeGenerator::GenerateBytecode(uintptr_t stack_limit)
+For an interpreted function interpreter/bytecode-generator.h ExecuteJobImpl will be called by
+`src/interpreter/bytecode-generator.cc` is what actual generated the bytecode.
+
+
+Ast for the outer most function in bootstrap_node.js:
+```console
+FUNC at 0
+. KIND 0
+. SUSPEND COUNT 0
+. NAME ""
+. INFERRED NAME ""
+. EXPRESSION STATEMENT at 284
+. . LITERAL "use strict"
+. EXPRESSION STATEMENT at 299
+. . ASSIGN at -1
+. . . VAR PROXY local[0] (0x104892d38) (mode = TEMPORARY) ".result"
+. . . FUNC LITERAL at 300
+. . . . NAME
+. . . . INFERRED NAME
+. . . . PARAMS
+. . . . . VAR (0x104880748) (mode = VAR) "process"
+. RETURN at -1
+. . VAR PROXY local[0] (0x104892d38) (mode = TEMPORARY) ".result"
+```
+
+
+
+```console
+(lldb) job v8::internal::JSFunction::cast(func)->abstract_code()                                                  0x1ca547f2e031: [BytecodeArray] in OldSpaceParameter count 1
+Frame size 8
+    0 E> 0x1ca547f2e06a @    0 : 93                StackCheck
+  299 S> 0x1ca547f2e06b @    1 : 6f 00 00 00       CreateClosure [0], [0], #0
+         0x1ca547f2e06f @    5 : 1e fb             Star r0
+21946 S> 0x1ca547f2e071 @    7 : 97                Return
+Constant pool (size = 1)
+0x1ca547f2e019: [FixedArray] in OldSpace
+ - map = 0x1ca516b822f1 <Map(HOLEY_ELEMENTS)>
+ - length: 1
+           0: 0x1ca547f2df69 <SharedFunctionInfo>
+```
+Above we see the generated bytecode for func. This was generated by parsing the javascipt code into the AST. 
+
+
+```console
+(lldb) job v8::internal::JSFunction::cast(func)->code()
+0x3a9296944281: [Code]
+kind = BUILTIN
+name = InterpreterEntryTrampoline
+compiler = unknown
+Instructions (size = 1004)
+0x3a92969442e0     0  488b5f2f       REX.W movq rbx,[rdi+0x2f]
+0x3a92969442e4     4  488b5b07       REX.W movq rbx,[rbx+0x7]
+0x3a92969442e8     8  488b4b0f       REX.W movq rcx,[rbx+0xf]
+0x3a92969442ec     c  f6c101         testb rcx,0x1
+0x3a92969442ef     f  0f8591010000   jnz 0x3a9296944486  (InterpreterEntryTrampoline)
+0x3a92969442f5    15  f6c101         testb rcx,0x1
+0x3a92969442f8    18  7410           jz 0x3a929694430a  (InterpreterEntryTrampoline)
+0x3a92969442fa    1a  48ba000000003d000000 REX.W movq rdx,0x3d00000000
+0x3a9296944304    24  e8b7160200     call 0x3a92969659c0  (Abort)    ;; code: BUILTIN
+0x3a9296944309    29  cc             int3l
+0x3a929694430a    2a  4885c9         REX.W testq rcx,rcx
+0x3a929694430d    2d  0f8486020000   jz 0x3a9296944599  (InterpreterEntryTrampoline)
+0x3a9296944313    33  f6c101         testb rcx,0x1
+0x3a9296944316    36  7410           jz 0x3a9296944328  (InterpreterEntryTrampoline)
+0x3a9296944318    38  48ba000000003d000000 REX.W movq rdx,0x3d00000000
+0x3a9296944322    42  e899160200     call 0x3a92969659c0  (Abort)    ;; code: BUILTIN
+0x3a9296944327    47  cc             int3l
+0x3a9296944328    48  49ba0000000001000000 REX.W movq r10,0x100000000
+0x3a9296944332    52  493bca         REX.W cmpq rcx,r10
+0x3a9296944335    55  7579           jnz 0x3a92969443b0  (InterpreterEntryTrampoline)
+0x3a9296944337    57  55             push rbp
+0x3a9296944338    58  4889e5         REX.W movq rbp,rsp
+0x3a929694433b    5b  6a1c           push 0x1c
+0x3a929694433d    5d  49ba81429496923a0000 REX.W movq r10,0x3a9296944281  (InterpreterEntryTrampoline)    ;; object: 0x3a9296944281 <Code BUILTIN>
+0x3a9296944347    67  4152           push r10
+0x3a9296944349    69  49bae122b8d7a51c0000 REX.W movq r10,0x1ca5d7b822e1    ;; object: 0x1ca5d7b822e1 <undefined>
+0x3a9296944353    73  4c391424       REX.W cmpq [rsp],r10
+0x3a9296944357    77  7510           jnz 0x3a9296944369  (InterpreterEntryTrampoline)
+0x3a9296944359    79  48ba0000000009000000 REX.W movq rdx,0x900000000
+0x3a9296944363    83  e858160200     call 0x3a92969659c0  (Abort)    ;; code: BUILTIN
+0x3a9296944368    88  cc             int3l
+0x3a9296944369    89  48c1e020       REX.W shlq rax, 32
+0x3a929694436d    8d  50             push rax
+0x3a929694436e    8e  57             push rdi
+0x3a929694436f    8f  52             push rdx
+0x3a9296944370    90  57             push rdi
+0x3a9296944371    91  b801000000     movl rax,0x1
+0x3a9296944376    96  48bb90453e0101000000 REX.W movq rbx,0x1013e4590    ;; external reference (Runtime::CompileOptimized_NotConcurrent)
+0x3a9296944380    a0  e8bb03f4ff     call 0x3a9296884740     ;; code: STUB, CEntryStub, minor: 8
+0x3a9296944385    a5  488bd8         REX.W movq rbx,rax
+0x3a9296944388    a8  5a             pop rdx
+0x3a9296944389    a9  5f             pop rdi
+0x3a929694438a    aa  58             pop rax
+0x3a929694438b    ab  48c1e820       REX.W shrq rax, 32
+0x3a929694438f    af  48837df81c     REX.W cmpq [rbp-0x8],0x1c
+0x3a9296944394    b4  7410           jz 0x3a92969443a6  (InterpreterEntryTrampoline)
+0x3a9296944396    b6  48ba000000004f000000 REX.W movq rdx,0x4f00000000
+0x3a92969443a0    c0  e81b160200     call 0x3a92969659c0  (Abort)    ;; code: BUILTIN
+0x3a92969443a5    c5  cc             int3l
+0x3a92969443a6    c6  488be5         REX.W movq rsp,rbp
+0x3a92969443a9    c9  5d             pop rbp
+0x3a92969443aa    ca  488d5b5f       REX.W leaq rbx,[rbx+0x5f]
+0x3a92969443ae    ce  ffe3           jmp rbx
+0x3a92969443b0    d0  f6c101         testb rcx,0x1
+0x3a92969443b3    d3  7410           jz 0x3a92969443c5  (InterpreterEntryTrampoline)
+0x3a92969443b5    d5  48ba000000003d000000 REX.W movq rdx,0x3d00000000
+0x3a92969443bf    df  e8fc150200     call 0x3a92969659c0  (Abort)    ;; code: BUILTIN
+0x3a92969443c4    e4  cc             int3l
+0x3a92969443c5    e5  49ba0000000002000000 REX.W movq r10,0x200000000
+0x3a92969443cf    ef  493bca         REX.W cmpq rcx,r10
+0x3a92969443d2    f2  7579           jnz 0x3a929694444d  (InterpreterEntryTrampoline)
+0x3a92969443d4    f4  55             push rbp
+0x3a92969443d5    f5  4889e5         REX.W movq rbp,rsp
+0x3a92969443d8    f8  6a1c           push 0x1c
+0x3a92969443da    fa  49ba81429496923a0000 REX.W movq r10,0x3a9296944281  (InterpreterEntryTrampoline)    ;; object: 0x3a9296944281 <Code BUILTIN>
+0x3a92969443e4   104  4152           push r10
+0x3a92969443e6   106  49bae122b8d7a51c0000 REX.W movq r10,0x1ca5d7b822e1    ;; object: 0x1ca5d7b822e1 <undefined>
+0x3a92969443f0   110  4c391424       REX.W cmpq [rsp],r10
+0x3a92969443f4   114  7510           jnz 0x3a9296944406  (InterpreterEntryTrampoline)
+0x3a92969443f6   116  48ba0000000009000000 REX.W movq rdx,0x900000000
+0x3a9296944400   120  e8bb150200     call 0x3a92969659c0  (Abort)    ;; code: BUILTIN
+0x3a9296944405   125  cc             int3l
+0x3a9296944406   126  48c1e020       REX.W shlq rax, 32
+0x3a929694440a   12a  50             push rax
+0x3a929694440b   12b  57             push rdi
+0x3a929694440c   12c  52             push rdx
+0x3a929694440d   12d  57             push rdi
+0x3a929694440e   12e  b801000000     movl rax,0x1
+0x3a9296944413   133  48bb00403e0101000000 REX.W movq rbx,0x1013e4000    ;; external reference (Runtime::CompileOptimized_Concurrent)
+0x3a929694441d   13d  e81e03f4ff     call 0x3a9296884740     ;; code: STUB, CEntryStub, minor: 8
+0x3a9296944422   142  488bd8         REX.W movq rbx,rax
+0x3a9296944425   145  5a             pop rdx
+0x3a9296944426   146  5f             pop rdi
+0x3a9296944427   147  58             pop rax
+0x3a9296944428   148  48c1e820       REX.W shrq rax, 32
+0x3a929694442c   14c  48837df81c     REX.W cmpq [rbp-0x8],0x1c
+0x3a9296944431   151  7410           jz 0x3a9296944443  (InterpreterEntryTrampoline)
+0x3a9296944433   153  48ba000000004f000000 REX.W movq rdx,0x4f00000000
+0x3a929694443d   15d  e87e150200     call 0x3a92969659c0  (Abort)    ;; code: BUILTIN
+0x3a9296944442   162  cc             int3l
+0x3a9296944443   163  488be5         REX.W movq rsp,rbp
+0x3a9296944446   166  5d             pop rbp
+0x3a9296944447   167  488d5b5f       REX.W leaq rbx,[rbx+0x5f]
+0x3a929694444b   16b  ffe3           jmp rbx
+0x3a929694444d   16d  f6c101         testb rcx,0x1
+0x3a9296944450   170  7410           jz 0x3a9296944462  (InterpreterEntryTrampoline)
+0x3a9296944452   172  48ba000000003d000000 REX.W movq rdx,0x3d00000000
+0x3a929694445c   17c  e85f150200     call 0x3a92969659c0  (Abort)    ;; code: BUILTIN
+0x3a9296944461   181  cc             int3l
+0x3a9296944462   182  49ba0000000003000000 REX.W movq r10,0x300000000
+0x3a929694446c   18c  493bca         REX.W cmpq rcx,r10
+0x3a929694446f   18f  7410           jz 0x3a9296944481  (InterpreterEntryTrampoline)
+0x3a9296944471   191  48ba0000000017000000 REX.W movq rdx,0x1700000000
+0x3a929694447b   19b  e840150200     call 0x3a92969659c0  (Abort)    ;; code: BUILTIN
+0x3a9296944480   1a0  cc             int3l
+0x3a9296944481   1a1  e913010000     jmp 0x3a9296944599  (InterpreterEntryTrampoline)
+0x3a9296944486   1a6  488b4907       REX.W movq rcx,[rcx+0x7]
+0x3a929694448a   1aa  f6c101         testb rcx,0x1
+0x3a929694448d   1ad  0f8406010000   jz 0x3a9296944599  (InterpreterEntryTrampoline)
+0x3a9296944493   1b3  f7413f00000001 testl [rcx+0x3f],0x1000000
+0x3a929694449a   1ba  0f8580000000   jnz 0x3a9296944520  (InterpreterEntryTrampoline)
+0x3a92969444a0   1c0  48894f37       REX.W movq [rdi+0x37],rcx
+0x3a92969444a4   1c4  4c8bf1         REX.W movq r14,rcx
+0x3a92969444a7   1c7  4c8d7f37       REX.W leaq r15,[rdi+0x37]
+0x3a92969444ab   1cb  41f6c707       testb r15,0x7
+0x3a92969444af   1cf  7401           jz 0x3a92969444b2  (InterpreterEntryTrampoline)
+0x3a92969444b1   1d1  cc             int3l
+0x3a92969444b2   1d2  40f6c701       testb rdi,0x1
+0x3a92969444b6   1d6  7510           jnz 0x3a92969444c8  (InterpreterEntryTrampoline)
+0x3a92969444b8   1d8  48ba0000000038000000 REX.W movq rdx,0x3800000000
+0x3a92969444c2   1e2  e8f9140200     call 0x3a92969659c0  (Abort)    ;; code: BUILTIN
+0x3a92969444c7   1e7  cc             int3l
+0x3a92969444c8   1e8  4d3b37         REX.W cmpq r14,[r15]
+0x3a92969444cb   1eb  7401           jz 0x3a92969444ce  (InterpreterEntryTrampoline)
+0x3a92969444cd   1ed  cc             int3l
+0x3a92969444ce   1ee  4981e60000f8ff REX.W andq r14,0xfffffffffff80000
+0x3a92969444d5   1f5  41f6460802     testb [r14+0x8],0x2
+0x3a92969444da   1fa  7416           jz 0x3a92969444f2  (InterpreterEntryTrampoline)
+0x3a92969444dc   1fc  49c7c60000f8ff REX.W movq r14,0xfff80000
+0x3a92969444e3   203  4c23f7         REX.W andq r14,rdi
+0x3a92969444e6   206  41f6460804     testb [r14+0x8],0x4
+0x3a92969444eb   20b  7405           jz 0x3a92969444f2  (InterpreterEntryTrampoline)
+0x3a92969444ed   20d  e88e1ff6ff     call 0x3a92968a6480     ;; code: STUB, RecordWriteStub, minor: 8167
+0x3a92969444f2   212  49bfefbeadbeedbeadde REX.W movq r15,0xdeadbeedbeadbeef
+0x3a92969444fc   21c  49beefbeadbeedbeadde REX.W movq r14,0xdeadbeedbeadbeef
+0x3a9296944506   226  49beefbeadbeedbeadde REX.W movq r14,0xdeadbeedbeadbeef
+0x3a9296944510   230  49bfefbeadbeedbeadde REX.W movq r15,0xdeadbeedbeadbeef
+0x3a929694451a   23a  4883c15f       REX.W addq rcx,0x5f
+0x3a929694451e   23e  ffe1           jmp rcx
+0x3a9296944520   240  55             push rbp
+0x3a9296944521   241  4889e5         REX.W movq rbp,rsp
+0x3a9296944524   244  6a1c           push 0x1c
+0x3a9296944526   246  49ba81429496923a0000 REX.W movq r10,0x3a9296944281  (InterpreterEntryTrampoline)    ;; object: 0x3a9296944281 <Code BUILTIN>
+0x3a9296944530   250  4152           push r10
+0x3a9296944532   252  49bae122b8d7a51c0000 REX.W movq r10,0x1ca5d7b822e1    ;; object: 0x1ca5d7b822e1 <undefined>
+0x3a929694453c   25c  4c391424       REX.W cmpq [rsp],r10
+0x3a9296944540   260  7510           jnz 0x3a9296944552  (InterpreterEntryTrampoline)
+0x3a9296944542   262  48ba0000000009000000 REX.W movq rdx,0x900000000
+0x3a929694454c   26c  e86f140200     call 0x3a92969659c0  (Abort)    ;; code: BUILTIN
+0x3a9296944551   271  cc             int3l
+0x3a9296944552   272  48c1e020       REX.W shlq rax, 32
+0x3a9296944556   276  50             push rax
+0x3a9296944557   277  57             push rdi
+0x3a9296944558   278  52             push rdx
+0x3a9296944559   279  57             push rdi
+0x3a929694455a   27a  b801000000     movl rax,0x1
+0x3a929694455f   27f  48bb204b3e0101000000 REX.W movq rbx,0x1013e4b20    ;; external reference (Runtime::EvictOptimizedCodeSlot)
+0x3a9296944569   289  e8d201f4ff     call 0x3a9296884740     ;; code: STUB, CEntryStub, minor: 8
+0x3a929694456e   28e  488bd8         REX.W movq rbx,rax
+0x3a9296944571   291  5a             pop rdx
+0x3a9296944572   292  5f             pop rdi
+0x3a9296944573   293  58             pop rax
+0x3a9296944574   294  48c1e820       REX.W shrq rax, 32
+0x3a9296944578   298  48837df81c     REX.W cmpq [rbp-0x8],0x1c
+0x3a929694457d   29d  7410           jz 0x3a929694458f  (InterpreterEntryTrampoline)
+0x3a929694457f   29f  48ba000000004f000000 REX.W movq rdx,0x4f00000000
+0x3a9296944589   2a9  e832140200     call 0x3a92969659c0  (Abort)    ;; code: BUILTIN
+0x3a929694458e   2ae  cc             int3l
+0x3a929694458f   2af  488be5         REX.W movq rsp,rbp
+0x3a9296944592   2b2  5d             pop rbp
+0x3a9296944593   2b3  488d5b5f       REX.W leaq rbx,[rbx+0x5f]
+0x3a9296944597   2b7  ffe3           jmp rbx
+
+0x3a9296944599   2b9  55             push rbp
+0x3a929694459a   2ba  4889e5         REX.W movq rbp,rsp
+0x3a929694459d   2bd  56             push rsi
+0x3a929694459e   2be  57             push rdi
+0x3a929694459f   2bf  488b471f       REX.W movq rax,[rdi+0x1f]
+0x3a92969445a3   2c3  4c8b7037       REX.W movq r14,[rax+0x37]
+0x3a92969445a7   2c7  f6404701       testb [rax+0x47],0x1
+0x3a92969445ab   2cb  0f8500010000   jnz 0x3a92969446b1  (InterpreterEntryTrampoline)
+0x3a92969445b1   2d1  ff431b         incl [rbx+0x1b]                                   // __ incl(FieldOperand(feedback_vector, FeedbackVector::kInvocationCountOffset));
+
+0x3a92969445b4   2d4  41f6c601       testb r14,0x1                                     // AssertNotSmi: CheckSmi(object);
+0x3a92969445b8   2d8  7510           jnz 0x3a92969445ca  (InterpreterEntryTrampoline)  // AssertNotSmi: Check -> j(cc, &L, Label::kNear);
+0x3a92969445ba   2da  48ba0000000038000000 REX.W movq rdx,0x3800000000                 // AssertNotSmi: Check -> Abort(reason) -> Move(rdx, Smi::FromInt(static_cast<int>(reason)));
+0x3a92969445c4   2e4  e8f7130200     call 0x3a92969659c0  (Abort)    ;; code: BUILTIN  // AssertNotSmi: Check -> Abort(reason) -> Call(BUILTIN_CODE(isolate(), Abort), RelocInfo::CODE_TARGET);
+0x3a92969445c9   2e9  cc             int3l                                             // AssertNotSmi: Check -> Abort(reason) -> int3(); "instruction trap 3" is intended for calling the debug exception handler
+
+0x3a92969445ca   2ea  498b46ff       REX.W movq rax,[r14-0x1]                          // __ CmpObjectType(kInterpreterBytecodeArrayRegister, BYTECODE_ARRAY_TYPE, rax); movp(map, FieldOperand(heap_object, HeapObject::kMapOffset));
+0x3a92969445ce   2ee  80780b89       cmpb [rax+0xb],0x89                               // __ CmpObjectType(kInterpreterBytecodeArrayRegister, BYTECODE_ARRAY_TYPE, rax) -> CmpInstanceType cmpb(FieldOperand(map, Map::kInstanceTypeOffset), Immediate(static_cast<int8_t>(type)));
+0x3a92969445d2   2f2  7410           jz 0x3a92969445e4  (InterpreterEntryTrampoline)   // __ Assert(equal, kFunctionDataShouldBeBytecodeArrayOnInterpreterEntry); -> Check(cc, reason); -> j(cc, &L, Label::kNear);
+0x3a92969445d4   2f4  48ba000000001e000000 REX.W movq rdx,0x1e00000000                 // __ Assert(equal, kFunctionDataShouldBeBytecodeArrayOnInterpreterEntry); -> Check(cc, reason); -> Abort -> Move(rdx, Smi::FromInt(static_cast<int>(reason)));
+0x3a92969445de   2fe  e8dd130200     call 0x3a92969659c0  (Abort)    ;; code: BUILTIN  // __ Assert(equal, kFunctionDataShouldBeBytecodeArrayOnInterpreterEntry); -> Check(cc, reason); -> Abort -> Call(BUILTIN_CODE(isolate(), Abort), RelocInfo::CODE_TARGET);
+0x3a92969445e3   303  cc             int3l                                             // __ Assert(equal, kFunctionDataShouldBeBytecodeArrayOnInterpreterEntry); -> Check(cc, reason); -> Abort -> int3 "instruction trap 3" is intended for calling the debug exception handler
+
+0x3a92969445e4   304  41c6463800     movb [r14+0x38],0x0                               // __ movb(FieldOperand(kInterpreterBytecodeArrayRegister, BytecodeArray::kBytecodeAgeOffset), Immediate(BytecodeArray::kNoAgeBytecodeAge));
+0x3a92969445e9   309  49c7c439000000 REX.W movq r12,0x39                               // __ movp(kInterpreterBytecodeOffsetRegister, Immediate(BytecodeArray::kHeaderSize - kHeapObjectTag));
+0x3a92969445f0   310  4156           push r14                                          // __ Push(kInterpreterBytecodeArrayRegister);
+0x3a92969445f2   312  4489e1         movl rcx,r12                                      // __ Integer32ToSmi(rcx, kInterpreterBytecodeOffsetRegister); -> movl(dst, src);
+0x3a92969445f5   315  48c1e120       REX.W shlq rcx, 32                                // __ Integer32ToSmi(rcx, kInterpreterBytecodeOffsetRegister); -> shlp(dst, Immediate(kSmiShift));
+0x3a92969445f9   319  51             push rcx                                          // __ Push(rcx);
+0x3a92969445fa   31a  418b4e27       movl rcx,[r14+0x27]                               // __ movl(rcx, FieldOperand(kInterpreterBytecodeArrayRegister, BytecodeArray::kFrameSizeOffset));
+
+0x3a92969445fe   31e  4889e0         REX.W movq rax,rsp                                // __ movp(rax, rsp);
+0x3a9296944601   321  482bc1         REX.W subq rax,rcx                                // __ subp(rax, rcx);
+0x3a9296944604   324  493b85080d0000 REX.W cmpq rax,[r13+0xd08]                        // __ CompareRoot(rax, Heap::kRealStackLimitRootIndex);
+0x3a929694460b   32b  7311           jnc 0x3a929694461e  (InterpreterEntryTrampoline)  // __ j(above_equal, &ok, Label::kNear);
+0x3a929694460d   32d  33c0           xorl rax,rax                                      // __ CallRuntime(Runtime::kThrowStackOverflow); -> Set(rax, num_arguments);
+0x3a929694460f   32f  48bb306c420101000000 REX.W movq rbx,0x101426c30                  // __ CallRuntime(Runtime::kThrowStackOverflow); -> Set(rax, num_arguments) -> LoadAddress(rbx, ExternalReference(f, isolate()));
+0x3a9296944619   339  e82201f4ff     call 0x3a9296884740     ;; code: STUB, CEntryStub // __ CallRuntime(Runtime::kThrowStackOverflow); -> Set(rax, num_arguments) -> LoadAddress(rbx, ExternalReference(f, isolate())) -> CEntryStub ces(isolate(), f->result_size, save_doubles); CallStub(&ces);
+
+0x3a929694461e   33e  498b45a0       REX.W movq rax,[r13-0x60]                         // __ LoadRoot(rax, Heap::kUndefinedValueRootIndex);
+0x3a9296944622   342  e901000000     jmp 0x3a9296944628  (InterpreterEntryTrampoline)  // __ j(always, &loop_check);
+0x3a9296944627   347  50             push rax                                          // __ Push(rax);
+0x3a9296944628   348  4883e908       REX.W subq rcx,0x8                                // __ subp(rcx, Immediate(kPointerSize));
+0x3a929694462c   34c  7df9           jge 0x3a9296944627  (InterpreterEntryTrampoline)  // __ j(greater_equal, &loop_header, Label::kNear);
+0x3a929694462e   34e  4963462f       REX.W movsxlq rax,[r14+0x2f]                      // __ movsxlq(rax, FieldOperand(kInterpreterBytecodeArrayRegister, BytecodeArray::kIncomingNewTargetOrGeneratorRegisterOffset));
+0x3a9296944632   352  85c0           testl rax,rax                                     // __ testl(rax, rax);
+0x3a9296944634   354  7405           jz 0x3a929694463b  (InterpreterEntryTrampoline)   // __ j(zero, &no_incoming_new_target_or_generator_register, Label::kNear);
+0x3a9296944636   356  488954c500     REX.W movq [rbp+rax*8+0x0],rdx                    // __ movp(Operand(rbp, rax, times_pointer_size, 0), rdx);
+0x3a929694463b   35b  498b45a0       REX.W movq rax,[r13-0x60]                         // __ LoadRoot(kInterpreterAccumulatorRegister, Heap::kUndefinedValueRootIndex);
+0x3a929694463f   35f  49bf1062040601000000 REX.W movq r15,0x106046210                  // __ Move(kInterpreterDispatchTableRegister, ExternalReference::interpreter_dispatch_table_address(masm->isolate()));
+0x3a9296944649   369  430fb61c26     movzxbl rbx,[r14+r12*1]                           // __ movzxbp(rbx, Operand(kInterpreterBytecodeArrayRegister, kInterpreterBytecodeOffsetRegister, times_1, 0));
+0x3a929694464e   36e  498b1cdf       REX.W movq rbx,[r15+rbx*8]                        // __ movp(rbx, Operand(kInterpreterDispatchTableRegister, rbx, times_pointer_size, 0));
+0x3a9296944652   372  ffd3           call rbx                                          // __ call(rbx); this dispatched to the bytecode handler. What is the bytecode entry handler in this case? Is it CreateClosure?
+                                                                                       // Yes, this call will eventually end up in Runtime_InterpreterNewClosure
+0x3a9296944654   374  4c8b75e8       REX.W movq r14,[rbp-0x18]
+0x3a9296944658   378  4c8b65e0       REX.W movq r12,[rbp-0x20]
+0x3a929694465c   37c  49c1ec20       REX.W shrq r12, 32
+0x3a9296944660   380  430fb61c26     movzxbl rbx,[r14+r12*1]
+0x3a9296944665   385  80fb97         cmpb bl,0x97
+0x3a9296944668   388  7439           jz 0x3a92969446a3  (InterpreterEntryTrampoline)
+0x3a929694466a   38a  48b9a022db0101000000 REX.W movq rcx,0x101db22a0    ;; external reference (Bytecodes::bytecode_size_table_address)
+0x3a9296944674   394  80fb01         cmpb bl,0x1
+0x3a9296944677   397  7724           ja 0x3a929694469d  (InterpreterEntryTrampoline)
+0x3a9296944679   399  7411           jz 0x3a929694468c  (InterpreterEntryTrampoline)
+0x3a929694467b   39b  41ffc4         incl r12
+0x3a929694467e   39e  430fb61c26     movzxbl rbx,[r14+r12*1]
+0x3a9296944683   3a3  4881c1ac020000 REX.W addq rcx,0x2ac
+0x3a929694468a   3aa  eb11           jmp 0x3a929694469d  (InterpreterEntryTrampoline)
+0x3a929694468c   3ac  41ffc4         incl r12
+0x3a929694468f   3af  430fb61c26     movzxbl rbx,[r14+r12*1]
+0x3a9296944694   3b4  4881c158050000 REX.W addq rcx,0x558
+0x3a929694469b   3bb  eb00           jmp 0x3a929694469d  (InterpreterEntryTrampoline)
+0x3a929694469d   3bd  44032499       addl r12,[rcx+rbx*4]
+0x3a92969446a1   3c1  eb9c           jmp 0x3a929694463f  (InterpreterEntryTrampoline)
+0x3a92969446a3   3c3  488b5de8       REX.W movq rbx,[rbp-0x18]
+0x3a92969446a7   3c7  8b5b2b         movl rbx,[rbx+0x2b]
+0x3a92969446aa   3ca  c9             leavel
+0x3a92969446ab   3cb  59             pop rcx
+0x3a92969446ac   3cc  4803e3         REX.W addq rsp,rbx
+0x3a92969446af   3cf  51             push rcx
+0x3a92969446b0   3d0  c3             retl
+0x3a92969446b1   3d1  488b4847       REX.W movq rcx,[rax+0x47]
+0x3a92969446b5   3d5  448b512b       movl r10,[rcx+0x2b]
+0x3a92969446b9   3d9  41f6c201       testb r10,0x1
+0x3a92969446bd   3dd  0f84eefeffff   jz 0x3a92969445b1  (InterpreterEntryTrampoline)
+0x3a92969446c3   3e3  4c8b7117       REX.W movq r14,[rcx+0x17]
+0x3a92969446c7   3e7  e9e5feffff     jmp 0x3a92969445b1  (InterpreterEntryTrampoline)
+
+
+RelocInfo (size = 39)
+0x3a9296944305  code target (BUILTIN)  (0x3a92969659c0)
+0x3a9296944323  code target (BUILTIN)  (0x3a92969659c0)
+0x3a929694433f  embedded object  (0x3a9296944281 <Code BUILTIN>)
+0x3a929694434b  embedded object  (0x1ca5d7b822e1 <undefined>)
+0x3a9296944364  code target (BUILTIN)  (0x3a92969659c0)
+0x3a9296944378  external reference (Runtime::CompileOptimized_NotConcurrent)  (0x1013e4590)
+0x3a9296944381  code target (STUB)  (0x3a9296884740)
+0x3a92969443a1  code target (BUILTIN)  (0x3a92969659c0)
+0x3a92969443c0  code target (BUILTIN)  (0x3a92969659c0)
+0x3a92969443dc  embedded object  (0x3a9296944281 <Code BUILTIN>)
+0x3a92969443e8  embedded object  (0x1ca5d7b822e1 <undefined>)
+0x3a9296944401  code target (BUILTIN)  (0x3a92969659c0)
+0x3a9296944415  external reference (Runtime::CompileOptimized_Concurrent)  (0x1013e4000)
+0x3a929694441e  code target (STUB)  (0x3a9296884740)
+0x3a929694443e  code target (BUILTIN)  (0x3a92969659c0)
+0x3a929694445d  code target (BUILTIN)  (0x3a92969659c0)
+0x3a929694447c  code target (BUILTIN)  (0x3a92969659c0)
+0x3a92969444c3  code target (BUILTIN)  (0x3a92969659c0)
+0x3a92969444ee  code target (STUB)  (0x3a92968a6480)
+0x3a9296944528  embedded object  (0x3a9296944281 <Code BUILTIN>)
+0x3a9296944534  embedded object  (0x1ca5d7b822e1 <undefined>)
+0x3a929694454d  code target (BUILTIN)  (0x3a92969659c0)
+0x3a9296944561  external reference (Runtime::EvictOptimizedCodeSlot)  (0x1013e4b20)
+0x3a929694456a  code target (STUB)  (0x3a9296884740)
+0x3a929694458a  code target (BUILTIN)  (0x3a92969659c0)
+0x3a92969445c5  code target (BUILTIN)  (0x3a92969659c0)
+0x3a92969445df  code target (BUILTIN)  (0x3a92969659c0)
+0x3a9296944611  external reference (Runtime::ThrowStackOverflow)  (0x101426c30)
+0x3a929694461a  code target (STUB)  (0x3a9296884740)
+0x3a9296944641  external reference (Interpreter::dispatch_table_address)  (0x106046210)
+0x3a929694466c  external reference (Bytecodes::bytecode_size_table_address)  (0x101db22a0)
+```
+Notice that the name `InterpreterEntryTrampoline`.
+
+
+### Heap objects
+How are js_entry_code() set? 
+For this we have to look in src/heap/heap.h:
+```c++
+V(Code, js_entry_code, JsEntryCode)
+```
+and in `src/factory-inl.h` we have:
+```c++
+#define ROOT_ACCESSOR(type, name, camel_name)                         \
+  Handle<type> Factory::name() {                                      \
+    return Handle<type>(bit_cast<type**>(                             \
+        &isolate()->heap()->roots_[Heap::k##camel_name##RootIndex])); \
+  }
+ROOT_LIST(ROOT_ACCESSOR)
+#undef ROOT_ACCESSOR
+```
+So this will expand to:
+```c++
+Handle<Code> Factory::js_entry_code() {
+  return Handle<Code>(bit_cast<type**>(&isolate()->heap()->roots_[Heap::kJsEntryCodeRootIndex])); \
+```
+We can verify what is returned is we have access to an isolate using:
+```console
+(lldb) expr isolate->heap()->roots_[v8::internal::Heap::RootListIndex::kJsEntryCodeRootIndex]
+(v8::internal::Object *) $1069 = 0x0000165740a04001
+```
+And we can print the code using:
+```console
+(lldb) job isolate->heap()->roots_[v8::internal::Heap::RootListIndex::kJsEntryCodeRootIndex]
+```
+This is sort of interesting that we can access any or the root objects using the above method. For example, if
+we look in heap.h and the `STRONG_ROOT_LIST` we should be able to inspect any. For example, we could look at the
+`TrueValue`:
+```c++
+(lldb) job isolate->heap()->roots_[v8::internal::Heap::RootListIndex::kTrueValueRootIndex]
+#true
+```
+
+$ size -x -l -m out/Debug/node
+Segment __PAGEZERO: 0x100000000 (vmaddr 0x0 fileoff 0)
+Segment __TEXT: 0x299f000 (vmaddr 0x100000000 fileoff 0)
+Section __text: 0x1c1feca (addr 0x100000d00 offset 3328)
+Section __stubs: 0x14ee (addr 0x101c20bca offset 29494218)
+Section __stub_helper: 0xe84 (addr 0x101c220b8 offset 29499576)
+Section __const: 0x821f20 (addr 0x101c23000 offset 29503488)
+Section __cstring: 0x147a18 (addr 0x102444f20 offset 38031136)
+Section __ustring: 0x942 (addr 0x10258c938 offset 39373112)
+Section __dof_node: 0x89e (addr 0x10258d27a offset 39375482)
+Section __unwind_info: 0x6ef8 (addr 0x10258db18 offset 39377688)
+Section __eh_frame: 0x409f10 (addr 0x102594a10 offset 39406096)
+total 0x299db5c
+Segment __DATA: 0xbf000 (vmaddr 0x10299f000 fileoff 43642880)
+Section __program_vars: 0x28 (addr 0x10299f000 offset 43642880)
+Section __nl_symbol_ptr: 0x10 (addr 0x10299f028 offset 43642920)
+Section __got: 0x4350 (addr 0x10299f038 offset 43642936)
+Section __la_symbol_ptr: 0x1be8 (addr 0x1029a3388 offset 43660168)
+Section __mod_init_func: 0x50 (addr 0x1029a4f70 offset 43667312)
+Section __mod_term_func: 0x10 (addr 0x1029a4fc0 offset 43667392)
+Section __const: 0x70fb0 (addr 0x1029a4fd0 offset 43667408)
+Section __data: 0x34700 (addr 0x102a15f80 offset 44130176)
+Section __thread_vars: 0x18 (addr 0x102a4a680 offset 44344960)
+Section __thread_bss: 0x4 (addr 0x102a4a698 offset 0)
+Section __common: 0x14d8 (addr 0x102a4a6a0 offset 0)
+Section __bss: 0x12447 (addr 0x102a4bb80 offset 0)
+total 0xbefbb
+Segment __LINKEDIT: 0x1bc7000 (vmaddr 0x102a5e000 fileoff 44347392)
+total 0x104625000: pushq  (%r10)
