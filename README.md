@@ -39,6 +39,7 @@ The rest of this page contains notes gathred while setting through the code base
 12. [lldb](#lldb)
 13. [Promises](#promises)
 14. [Libuv Thread pool](#libuv-thread-pool)
+15. [bootstrap_node.js compilation and execution walkthrough](bootstrap-node.js-compilation-and-execution-walkthrough)
 
 ### Background
 Node.js is roughly [Google V8](https://github.com/v8/v8), [libuv](https://github.com/libuv/libuv) and Node.js core which glues
@@ -6931,8 +6932,10 @@ Recall that Oddball describes objects null, undefined, true, and false.
 
 `bit_cast` can be found in src/base/macros.h.
 
-### bootstrap.js part 2
-The goal of this section is to understand what happens when bootstrap_node.js is compiled and run. 
+### bootstrap_node.js compilation and execution walkthrough
+The goal of this section is to understand what happens when bootstrap_node.js is compiled and run mainly focusing on
+the V8 side of things.
+
 ```console
     $ lldb -- out/Debug/node
     (lldb) br s -f node.cc -l 1500
@@ -6982,6 +6985,8 @@ MaybeLocal<UnboundScript> ScriptCompiler::CompileUnboundInternal(
   ...
   std::unique_ptr<CompilationJob> outer_function_job(GenerateUnoptimizedCode(parse_info, isolate, &inner_function_jobs));
 ...
+```
+
 First, `parsing::ParseProgram` will parse the JavaScript and produce the abstract syntax tree.
 `ParseProgram`:
 ```c++
@@ -7878,7 +7883,7 @@ lldb) expr isolate->heap()->roots_[Heap::RootListIndex::kUndefinedValueRootIndex
     0x302f3413bfb6: addq   $0x5f, %rcx                           // addp(rcx, Immediate(Code::kHeaderSize - kHeapObjectTag)); the instruction start follows the Code object header
 (lldb) job JSFunction::cast(func)->code()
 0x302f34144281: [Code]
-kind = BUILTIN
+yind = BUILTIN
 name = InterpreterEntryTrampoline
 compiler = unknown
 Instructions (size = 1004)
