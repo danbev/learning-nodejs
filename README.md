@@ -39,7 +39,7 @@ The rest of this page contains notes gathred while setting through the code base
 12. [lldb](#lldb)
 13. [Promises](#promises)
 14. [Libuv Thread pool](#libuv-thread-pool)
-15. [bootstrap_node.js compilation and execution walkthrough](bootstrap_nodejs-compilation-and-execution-walkthrough)
+15. [bootstrap_node.js compilation and execution walkthrough](#bootstrap_nodejs-compilation-and-execution-walkthrough)
 
 ### Background
 Node.js is roughly [Google V8](https://github.com/v8/v8), [libuv](https://github.com/libuv/libuv) and Node.js core which glues
