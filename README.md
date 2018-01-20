@@ -7158,7 +7158,7 @@ We can verify this using:
 (v8::internal::Address) $1063 = 0x000000010142de70 "UH\x89�H��P�}�H�u�H�U�H�}���\x14\x04��\x01H\x83�
 ```
 If `nargs` is `-1` then the funnction takes a variable number of arguments.
-We can also disassemble the address using:
+We can also disassemble the `entry` address using:
 ```console
 (lldb) dis -s 0x000000010142de70
 node`v8::internal::Runtime_StackGuard:
@@ -7179,9 +7179,9 @@ Now that we know this we can disassemble the complete function using:
 As well as any other runtime function we might be interested in later. How are these stored?  
 They are stored in a global named `kIntrinsicFunctions`:
 ```console
-(lldb) expr kIntrinsicFunctions[238]
+(lldb) expr kIntrinsicFunctions[Builtins::Name::kStackCheck]
 (const v8::internal::Runtime::Function) $227 = (function_id = kStackGuard, intrinsic_type = RUNTIME, name = "StackGuard", entry = "UH\xffffff89\xffffffe5H\xffffff83\xffffffecP\xffffff89}\xfffffff4H\xffffff89u\xffffffe8H\xffffff89U\xffffffe0H\xffffff8b}\xffffffe0\xffffffe8td\x04\xffffffff\xffffffb1\x01H\xffffff83\xfffffff8", nargs = '\0', result_size = '\x01')
-(lldb) expr kIntrinsicFunctions[238].entry
+(lldb) expr kIntrinsicFunctions[Builtins::Name::kStackCheck].entry
 (v8::internal::Address) $229 = 0x0000000101440100 "UH\x89�H��P�}�H�u�H�U�H�}��td\x04��\x01H\x83�
 ```
 When is this array populated?  
