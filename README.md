@@ -6947,7 +6947,7 @@ Our first break point will stop on the following line in `node::ExecuteString`:
 ```c++
 Local<Value> f_value = ExecuteString(env, MainSource(env), script_name);
 ```
-MainSource is a function in node_javascript.h which which is used by the node_js2c. This was documented earlier so I won't go
+MainSource is a function in `node_javascript.h` which which is used by the `node_js2c`. This was documented earlier so I won't go
 into details about it now. You can see the content using:
 ```console
 (lldb) jlh MainSource(env)
@@ -7122,8 +7122,8 @@ If you look closely the first instruction is just setting rax to zero using xor.
 Next, we are pushing the pointer to the function, in this case Runtime::StackGuard into rbx.
 We then jump to CEntryStub. 
 
-What is `StackGuard`?  
-Well, it is defined in a macro in src/runtime/runtime.h:
+What is `Runtime::StackGuard`?  
+Well, it is defined in a macro in `src/runtime/runtime.h`:
 ```c++
 ...
 F(StackGuard, 0, 1)
@@ -7144,7 +7144,25 @@ So that should expand to:
 ```c++
 Object* Runtime_StackGuard(int args_lentgh, Object** args_object, Isolate* isolate);
 ```
-We can verify this using:
+If we take a look at `src/runtime/runtime.h` we can find:
+```c++
+static const Runtime::Function kIntrinsicFunctions[] = {
+  FOR_EACH_INTRINSIC(F)
+  FOR_EACH_INTRINSIC(I)
+};
+```
+Now, kIntrinsicFunctions is a global which can be inspected using:
+```console
+(lldb) target variable kIntrinsicFunctions
+```
+
+And the indexes into this array are in the enum `Runtime::FunctionId`:
+```console
+(lldb) expr kIntrinsicFunctions[v8::internal::Runtime::FunctionId::kStackGuard]
+(const Function) $371 = (function_id = kStackGuard, intrinsic_type = RUNTIME, name = "StackGuard", entry = "UH\xffffff89\xffffffe5H\xffffff83\xffffffecP\xffffff89}\xfffffff4H\xffffff89u\xffffffe8H\xffffff89U\xffffffe0H\xffffff8b}\xffffffe0\xffffffe8\xffffffb4d\x04\xffffffff\xffffffb1\x01H\xffffff83\xfffffff8", nargs = '\0', result_size = '\x01')
+```
+
+There is also a function named `Runtime::FunctionForId which can be used:
 ```console
 (lldb) expr v8::internal::Runtime::FunctionForId(static_cast<v8::internal::Runtime::FunctionId>(v8::internal::Runtime::FunctionId::kStackGuard))
 (const Function *) $1058 = 0x00000001029f0340
