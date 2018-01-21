@@ -7188,14 +7188,14 @@ When is this array populated?
 Being a global it is part of the data section in the object file and will be loaded into memory upon start up.
 
 Just to recap, first the address of Runtime_StackGuard will be moved into register rbx, and then we will jump to the
-entry specified by `kIntrinsicFunctions[238].entry`
+entry specified by `kIntrinsicFunctions[Builtins::Name::kStackCheck].entry`
 ```console
 0x2a9270441e02     2  48bb70de420101000000 REX.W movq rbx,0x10142de70    ;; external reference (Runtime::StackGuard)
 0x2a9270441e0c     c  e92f29f4ff     jmp 0x2a9270384740      ;; code: STUB, CEntryStub, minor: 8
 ```
 
 ```console
-(lldb) expr kIntrinsicFunctions[238].entry
+(lldb) expr kIntrinsicFunctions[Builtins::Name::kStackCheck].entry
 (v8::internal::Address) $235 = 0x0000000101440100
 (lldb) dis -s  0x0000000101440100
 node`v8::internal::Runtime_StackGuard:
