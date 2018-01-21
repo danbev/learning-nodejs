@@ -7119,8 +7119,8 @@ RelocInfo (size = 3)
 0x169cbdb41e0d  code target (STUB)  (0x169cbda84740)
 ```
 If you look closely the first instruction is just setting rax to zero using xor.
-Next, we are pushing the pointer to the function, in this case Runtime::StackGuard into rbx.
-We then jump to CEntryStub. 
+Next, we are pushing the pointer to the function, in this case `Runtime::StackGuard` into rbx.
+We then jump to `CEntryStub`. 
 
 What is `Runtime::StackGuard`?  
 Well, it is defined in a macro in `src/runtime/runtime.h`:
@@ -7151,10 +7151,6 @@ static const Runtime::Function kIntrinsicFunctions[] = {
   FOR_EACH_INTRINSIC(I)
 };
 ```
-Now, kIntrinsicFunctions is a global which can be inspected using:
-```console
-(lldb) target variable kIntrinsicFunctions
-```
 
 And the indexes into this array are in the enum `Runtime::FunctionId`:
 ```console
@@ -7162,7 +7158,7 @@ And the indexes into this array are in the enum `Runtime::FunctionId`:
 (const Function) $371 = (function_id = kStackGuard, intrinsic_type = RUNTIME, name = "StackGuard", entry = "UH\xffffff89\xffffffe5H\xffffff83\xffffffecP\xffffff89}\xfffffff4H\xffffff89u\xffffffe8H\xffffff89U\xffffffe0H\xffffff8b}\xffffffe0\xffffffe8\xffffffb4d\x04\xffffffff\xffffffb1\x01H\xffffff83\xfffffff8", nargs = '\0', result_size = '\x01')
 ```
 
-There is also a function named `Runtime::FunctionForId which can be used:
+There is also a function named `Runtime::FunctionForId` which can be used:
 ```console
 (lldb) expr v8::internal::Runtime::FunctionForId(static_cast<v8::internal::Runtime::FunctionId>(v8::internal::Runtime::FunctionId::kStackGuard))
 (const Function *) $1058 = 0x00000001029f0340
@@ -7197,7 +7193,8 @@ Now that we know this we can disassemble the complete function using:
 As well as any other runtime function we might be interested in later. How are these stored?  
 They are stored in a global named `kIntrinsicFunctions`:
 ```console
-(lldb) expr kIntrinsicFunctions[Builtins::Name::kStackCheck]
+(lldb) target variable kIntrinsicFunctions
+(lldb) expr kIntrinsicFunctions[v8::internal::Runtime::FunctionId::kStackGuard]
 (const v8::internal::Runtime::Function) $227 = (function_id = kStackGuard, intrinsic_type = RUNTIME, name = "StackGuard", entry = "UH\xffffff89\xffffffe5H\xffffff83\xffffffecP\xffffff89}\xfffffff4H\xffffff89u\xffffffe8H\xffffff89U\xffffffe0H\xffffff8b}\xffffffe0\xffffffe8td\x04\xffffffff\xffffffb1\x01H\xffffff83\xfffffff8", nargs = '\0', result_size = '\x01')
 (lldb) expr kIntrinsicFunctions[Builtins::Name::kStackCheck].entry
 (v8::internal::Address) $229 = 0x0000000101440100 "UH\x89�H��P�}�H�u�H�U�H�}��td\x04��\x01H\x83�
@@ -7205,27 +7202,40 @@ They are stored in a global named `kIntrinsicFunctions`:
 When is this array populated?  
 Being a global it is part of the data section in the object file and will be loaded into memory upon start up.
 
-Just to recap, first the address of Runtime_StackGuard will be moved into register rbx, and then we will jump to the
+Just to recap, first the address of `Runtime_StackGuard` will be moved into register `rbx`, and then we will jump to the
 entry specified by `kIntrinsicFunctions[Builtins::Name::kStackCheck].entry`
 ```console
-0x2a9270441e02     2  48bb70de420101000000 REX.W movq rbx,0x10142de70    ;; external reference (Runtime::StackGuard)
-0x2a9270441e0c     c  e92f29f4ff     jmp 0x2a9270384740      ;; code: STUB, CEntryStub, minor: 8
-```
+(lldb) job *isolate->builtins()->builtin_handle(Builtins::Name::kStackCheck)
+0x302f34141da1: [Code]
+kind = BUILTIN
+name = StackCheck
+compiler = unknown
+Instructions (size = 17)
+0x302f34141e00     0  33c0           xorl rax,rax
+0x302f34141e02     2  48bbc000440101000000 REX.W movq rbx,0x1014400c0    ;; external reference (Runtime::StackGuard)
+0x302f34141e0c     c  e92f29f4ff     jmp 0x302f34084740      ;; code: STUB, CEntryStub, minor: 8
 
+
+RelocInfo (size = 3)
+0x302f34141e04  external reference (Runtime::StackGuard)  (0x1014400c0)
+0x302f34141e0d  code target (STUB)  (0x302f34084740)
+
+(lldb) expr kIntrinsicFunctions[v8::internal::Runtime::FunctionId::kStackGuard].entry
+(v8::internal::Address) $380 = 0x00000001014400c0 "UH\x89�H��P�}�H�u�H�U�H�}��d\x04��\x01H\x83�
+```
+We can see that the `0x1014400c0` match. And we can disassemble this address using:
 ```console
-(lldb) expr kIntrinsicFunctions[Builtins::Name::kStackCheck].entry
-(v8::internal::Address) $235 = 0x0000000101440100
-(lldb) dis -s  0x0000000101440100
+(lldb) dis -s 0x1014400c0
 node`v8::internal::Runtime_StackGuard:
-    0x101440100 <+0>:  pushq  %rbp
-    0x101440101 <+1>:  movq   %rsp, %rbp
-    0x101440104 <+4>:  subq   $0x50, %rsp
-    0x101440108 <+8>:  movl   %edi, -0xc(%rbp)
-    0x10144010b <+11>: movq   %rsi, -0x18(%rbp)
-    0x10144010f <+15>: movq   %rdx, -0x20(%rbp)
-    0x101440113 <+19>: movq   -0x20(%rbp), %rdi
-    0x101440117 <+23>: callq  0x100486590               ; v8::internal::Isolate::context at isolate.h:596
-    0x10144011c <+28>: movb   $0x1, %cl
+    0x1014400c0 <+0>:  pushq  %rbp
+    0x1014400c1 <+1>:  movq   %rsp, %rbp
+    0x1014400c4 <+4>:  subq   $0x50, %rsp
+    0x1014400c8 <+8>:  movl   %edi, -0xc(%rbp)
+    0x1014400cb <+11>: movq   %rsi, -0x18(%rbp)
+    0x1014400cf <+15>: movq   %rdx, -0x20(%rbp)
+    0x1014400d3 <+19>: movq   -0x20(%rbp), %rdi
+    0x1014400d7 <+23>: callq  0x100486590               ; v8::internal::Isolate::context at isolate.h:596
+    0x1014400dc <+28>: movb   $0x1, %cl
 ```
  
 `CEntryStub` is declared in `deps/v8/src/code-stubs.h`:
