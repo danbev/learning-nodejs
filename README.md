@@ -7202,8 +7202,7 @@ They are stored in a global named `kIntrinsicFunctions`:
 When is this array populated?  
 Being a global it is part of the data section in the object file and will be loaded into memory upon start up.
 
-Just to recap, first the address of `Runtime_StackGuard` will be moved into register `rbx`, and then we will jump to the
-entry specified by `kIntrinsicFunctions[Builtins::Name::kStackCheck].entry`
+Just to recap, first the address of `Runtime_StackGuard` will be moved into register `rbx`, and then we will jump `CEntryStub`.
 ```console
 (lldb) job *isolate->builtins()->builtin_handle(Builtins::Name::kStackCheck)
 0x302f34141da1: [Code]
@@ -7237,7 +7236,10 @@ node`v8::internal::Runtime_StackGuard:
     0x1014400d7 <+23>: callq  0x100486590               ; v8::internal::Isolate::context at isolate.h:596
     0x1014400dc <+28>: movb   $0x1, %cl
 ```
- 
+What about `CEntryStub` that is being jumped to?  
+```console
+0x302f34141e0c     c  e92f29f4ff     jmp 0x302f34084740      ;; code: STUB, CEntryStub, minor: 8
+```
 `CEntryStub` is declared in `deps/v8/src/code-stubs.h`:
 ```c++
 class CodeStub : public ZoneObject {
@@ -7250,10 +7252,102 @@ class PlatformCodeStub : public CodeStub {
 class CEntryStub : public PlatformCodeStub {
   ...
 };
-
-
 ```
-But how is the CEntryStub used?
+
+Where is the CEntryStub stored?
+
+```console
+jmp 0x302f34084740      ;; code: STUB, CEntryStub, minor: 8
+
+(lldb) expr CodeStub::Major::CEntry
+(int) $404 = 4
+(lldb) expr CodeStub::MajorKeyFromKey(4)
+(v8::internal::CodeStub::Major) $405 = CEntry
+(lldb) expr isolate->heap()->code_stubs()->FindEntry(isolate, 4)
+(int) $422 = 451
+(lldb) job Code::cast(isolate->heap()->code_stubs()->ValueAt(451))
+0x302f34284001: [Code]
+kind = STUB
+major_key = CEntryStub
+compiler = unknown
+Instructions (size = 327)
+0x302f34284060     0  55             push rbp
+0x302f34284061     1  4889e5         REX.W movq rbp,rsp
+0x302f34284064     4  6a06           push 0x6
+0x302f34284066     6  6a00           push 0x0
+0x302f34284068     8  49ba014028342f300000 REX.W movq r10,0x302f34284001
+0x302f34284072    12  4152           push r10
+0x302f34284074    14  4c8bf0         REX.W movq r14,rax
+0x302f34284077    17  49ba001a000601000000 REX.W movq r10,0x106001a00
+0x302f34284081    21  49892a         REX.W movq [r10],rbp
+0x302f34284084    24  49ba9019000601000000 REX.W movq r10,0x106001990
+0x302f3428408e    2e  498932         REX.W movq [r10],rsi
+0x302f34284091    31  49ba101a000601000000 REX.W movq r10,0x106001a10
+0x302f3428409b    3b  49891a         REX.W movq [r10],rbx
+0x302f3428409e    3e  4e8d7cf508     REX.W leaq r15,[rbp+r14*8+0x8]
+0x302f342840a3    43  4883e4f0       REX.W andq rsp,0xf0
+0x302f342840a7    47  488965f0       REX.W movq [rbp-0x10],rsp
+0x302f342840ab    4b  40f6c40f       testb rsp,0xf
+0x302f342840af    4f  7401           jz 0x302f342840b2  <+0x52>
+0x302f342840b1    51  cc             int3l
+0x302f342840b2    52  498bfe         REX.W movq rdi,r14
+0x302f342840b5    55  498bf7         REX.W movq rsi,r15
+0x302f342840b8    58  48ba0000000601000000 REX.W movq rdx,0x106000000
+0x302f342840c2    62  ffd3           call rbx
+0x302f342840c4    64  493b8588000000 REX.W cmpq rax,[r13+0x88]
+0x302f342840cb    6b  0f8447000000   jz 0x302f34284118  <+0xb8>
+0x302f342840d1    71  4d8b75a8       REX.W movq r14,[r13-0x58]
+0x302f342840d5    75  49baa019000601000000 REX.W movq r10,0x1060019a0
+0x302f342840df    7f  4d3b32         REX.W cmpq r14,[r10]
+0x302f342840e2    82  7401           jz 0x302f342840e5  <+0x85>
+0x302f342840e4    84  cc             int3l
+0x302f342840e5    85  488b4d08       REX.W movq rcx,[rbp+0x8]
+0x302f342840e9    89  488b6d00       REX.W movq rbp,[rbp+0x0]
+0x302f342840ed    8d  498d6708       REX.W leaq rsp,[r15+0x8]
+0x302f342840f1    91  51             push rcx
+0x302f342840f2    92  49ba9019000601000000 REX.W movq r10,0x106001990
+0x302f342840fc    9c  498b32         REX.W movq rsi,[r10]
+0x302f342840ff    9f  49c70200000000 REX.W movq [r10],0x0
+0x302f34284106    a6  49ba001a000601000000 REX.W movq r10,0x106001a00
+0x302f34284110    b0  49c70200000000 REX.W movq [r10],0x0
+0x302f34284117    b7  c3             retl
+0x302f34284118    b8  48c7c700000000 REX.W movq rdi,0x0
+0x302f3428411f    bf  48c7c600000000 REX.W movq rsi,0x0
+0x302f34284126    c6  48ba0000000601000000 REX.W movq rdx,0x106000000
+0x302f34284130    d0  4989e2         REX.W movq r10,rsp
+0x302f34284133    d3  4883ec08       REX.W subq rsp,0x8
+0x302f34284137    d7  4883e4f0       REX.W andq rsp,0xf0
+0x302f3428413b    db  4c891424       REX.W movq [rsp],r10
+0x302f3428413f    df  48b8b0aa430101000000 REX.W movq rax,0x10143aab0
+0x302f34284149    e9  40f6c40f       testb rsp,0xf
+0x302f3428414d    ed  7401           jz 0x302f34284150  <+0xf0>
+0x302f3428414f    ef  cc             int3l
+0x302f34284150    f0  ffd0           call rax
+0x302f34284152    f2  488b2424       REX.W movq rsp,[rsp]
+0x302f34284156    f6  49bab019000601000000 REX.W movq r10,0x1060019b0
+0x302f34284160   100  498b32         REX.W movq rsi,[r10]
+0x302f34284163   103  49bad019000601000000 REX.W movq r10,0x1060019d0
+0x302f3428416d   10d  498b22         REX.W movq rsp,[r10]
+0x302f34284170   110  49bac819000601000000 REX.W movq r10,0x1060019c8
+0x302f3428417a   11a  498b2a         REX.W movq rbp,[r10]
+0x302f3428417d   11d  4885f6         REX.W testq rsi,rsi
+0x302f34284180   120  7404           jz 0x302f34284186  <+0x126>
+0x302f34284182   122  488975f8       REX.W movq [rbp-0x8],rsi
+0x302f34284186   126  49bab819000601000000 REX.W movq r10,0x1060019b8
+0x302f34284190   130  498b3a         REX.W movq rdi,[r10]
+0x302f34284193   133  49bac019000601000000 REX.W movq r10,0x1060019c0
+0x302f3428419d   13d  498b12         REX.W movq rdx,[r10]
+0x302f342841a0   140  488d7c175f     REX.W leaq rdi,[rdi+rdx*1+0x5f]
+0x302f342841a5   145  ffe7           jmp rdi
+
+
+RelocInfo (size = -1377915637)
+
+(lldb) expr Code::cast(isolate->heap()->code_stubs()->ValueAt(451))->entry()
+(byte *) $427 = 0x0000302f34284060
+```
+These are not the same stubs, the opcodes match but not the entry addresses
+
 
 ```c++
 IGNITION_HANDLER(StackCheck, InterpreterAssembler) {
@@ -7344,6 +7438,16 @@ void StartupDeserializer::DeserializeInto(Isolate* isolate) {
 DeserializeEagerBuiltins will populate the builtins_ array which is part of Builtins which is a member of Isolate.
 There seems to be codestubs that have to be generated, they cannot be serialized into the snapshot. 
 
+`CodeStub::GenerateFPStubs(this)`, it is here that CEntryStub is generated:
+```c++
+void CodeStub::GenerateFPStubs(Isolate* isolate) {
+  // Generate if not already in cache.
+  SaveFPRegsMode mode = kSaveFPRegs;
+  CEntryStub(isolate, 1, mode).GetCode();
+  StoreBufferOverflowStub(isolate, mode).GetCode();
+}
+```
+
 We can check that check the various data structures before and after using:
 ```console
 (lldb) expr builtins_
@@ -7358,7 +7462,6 @@ For `isolate_addresses_` which are pointers we can inspect them like this:
 (lldb) memory read -f x -c 1 -s 8 0x0000000104808820
 0x104808820: 0x0000000000000000
 ```
-
 
 ```console
 (lldb) expr CodeStub::Major::CEntry
