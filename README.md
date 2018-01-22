@@ -7016,9 +7016,11 @@ std::unique_ptr<CompilationJob> job(interpreter::Interpreter::NewCompilationJob(
 Lets take a look at `parse_info`:
 ```console
 (lldb) job parse_info->script_->source()
-"'use strict';\x0a\x0a(function frogger(process) {\x0a  process._rawDebug('entry function');\x0a\x0a  function startup() {\x0a  process._rawDebug('startup function');\x0a  return true;\x0a  }\x0a\x0a  startup();\x0a});\x0a"
+(lldb) job parse_info->script_->source()
+"// Hello, and welcome to hacking node.js!\x0a//\x0a// This file is invoked by node::LoadEnvironment in src/node.cc
+...
 ```
-Notice that this is the complete contents of bootstrap_node.js:
+Notice that this is the complete contents (not showing the complete contents through) of bootstrap_node.js:
 ```console
 (lldb) job parse_info->script_->name()
 "bootstrap_node.js"
