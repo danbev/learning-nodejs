@@ -6937,7 +6937,7 @@ The goal of this section is to understand what happens when bootstrap_node.js is
 the V8 side of things.
 
 ```console
-    $ lldb -- out/Debug/node
+    $ lldb -- out/Debug/node --print-ast
     (lldb) br s -f node.cc -l 1500
     (lldb) br s -f node.cc -l 3399
     (lldb) r
@@ -7009,7 +7009,8 @@ Next `GenerateUnoptimizedCode` will be called (`deps/v8/src/compiler.cc`):
 ```
 ```c++
 std::unique_ptr<CompilationJob> job(interpreter::Interpreter::NewCompilationJob(parse_info, literal, isolate));
-  if (job->PrepareJob() == CompilationJob::SUCCEEDED && job->ExecuteJob() == CompilationJob::SUCCEEDED) {
+  if (job->PrepareJob() == CompilationJob::SUCCEEDED && 
+      job->ExecuteJob() == CompilationJob::SUCCEEDED) {
     return job;
   }
 ```
@@ -7025,7 +7026,7 @@ Notice that this is the complete contents (not showing the complete contents thr
 (lldb) job parse_info->script_->name()
 "bootstrap_node.js"
 ```
-`PrepareJob` will print the AST if configured with `--print-ast`:
+Next `PrepareJob` will print the AST if configured with `--print-ast`:
 ```console
 [generating bytecode for function: ]
 --- AST ---
@@ -7047,7 +7048,7 @@ FUNC at 0
 . RETURN at -1
 . . VAR PROXY local[0] (0x10702f338) (mode = TEMPORARY) ".result"
 ```
-`VAR PROXY` indicates that this scope resolution will connect these nodes declaring VAR nodes.
+`VAR PROXY` indicates that scope resolution will connect these nodes declaring VAR nodes.
 This is all `PrepareJob` does.
 
 `ExecuteJob()` will call:
