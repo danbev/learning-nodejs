@@ -6977,14 +6977,38 @@ MaybeLocal<UnboundScript> ScriptCompiler::CompileUnboundInternal(
   ...
   maybe_result = CompileToplevel(&parse_info, isolate);
 ```
-
-### CompileToplevel
+Lets take a look at parse_info:
+```console
+(lldb) job *parse_info.script()
+0x169ddd9abfb1: [Script] in OldSpace
+ - source: 0x169df8f0d3d1 <Very long string[21923]>
+ - name: 0x169df8f0d3a1 <String[17]: bootstrap_node.js>
+ - line_offset: 0
+ - column_offset: 0
+ - type: 2
+ - id: 14
+ - context data: 0x169dd88022e1 <undefined>
+ - wrapper: 0x169dd88022e1 <undefined>
+ - compilation type: 0
+ - line ends: 0x169dd88022e1 <undefined>
+ - eval from shared: 0x169dd88022e1 <undefined>
+ - eval from position: 0
+ - shared function infos: 0x169dd8802251 <FixedArray[0]>
+```
+This will be passed to `CompileToplevel`:
 ```c++
   if (parse_info->literal() == nullptr && 
       !parsing::ParseProgram(parse_info, isolate)) {
   ...
-  std::unique_ptr<CompilationJob> outer_function_job(GenerateUnoptimizedCode(parse_info, isolate, &inner_function_jobs));
-...
+  std::forward_list<std::unique_ptr<CompilationJob>> inner_function_jobs;
+  std::unique_ptr<CompilationJob> outer_function_job(
+      GenerateUnoptimizedCode(parse_info, isolate, &inner_function_jobs));
+  ...
+```
+In this case 
+```console
+(lldb) expr parse_info->literal() == nullptr
+(bool) $80 = true
 ```
 
 First, `parsing::ParseProgram` will parse the JavaScript and produce the abstract syntax tree.
@@ -6993,40 +7017,25 @@ First, `parsing::ParseProgram` will parse the JavaScript and produce the abstrac
 result = parser.ParseProgram(isolate, info);
 info->set_literal(result);
 ```
-Next `GenerateUnoptimizedCode` will be called (`deps/v8/src/compiler.cc`):
-```c++
-  Compiler::EagerInnerFunctionLiterals inner_literals;
-  if (!Compiler::Analyze(parse_info, &inner_literals)) {
-    return std::unique_ptr<CompilationJob>();
-  }
-  std::unique_ptr<CompilationJob> outer_function_job(
-      PrepareAndExecuteUnoptimizedCompileJob(parse_info, parse_info->literal(), isolate));
+We can inspect parse_info after this function returns:
+```console
+(lldb) expr parse_info->literal()->Print()
+FUNC LITERAL at 0
+. NAME <nil>
+. INFERRED NAME 1
+```
+Now, this does not look like much but this is only the function literal:
+```console
+(function(process) {
+});
 ```
 
-`PrepareAndExecuteUnoptimizedCompileJob` `deps/v8/src/compiler.cc` 
+We can print the AST generated using:
 ```console
-(lldb) br s -f compiler.cc -l 385
+(lldb) expr AstPrinter(isolate()).PrintProgram(parse_info()->literal())
+(const char *) $56 = 0x0000000105016e20 "FUNC at 0\n. KIND 0\n. SUSPEND COUNT 0\n. NAME ""\n. INFERRED NAME ""\n. EXPRESSION STATEMENT at 284\n. . LITERAL "use strict"\n. EXPRESSION STATEMENT at 299\n. . ASSIGN at -1\n. . . VAR PROXY local[0] (0x10682f138) (mode = TEMPORARY) ".result"\n. . . FUNC LITERAL at 300\n. . . . NAME \n. . . . INFERRED NAME \n. . . . PARAMS\n. . . . . VAR (0x10681cd48) (mode = VAR) "process"\n. RETURN at -1\n. . VAR PROXY local[0] (0x10682f138) (mode = TEMPORARY) ".result"\n"
 ```
-```c++
-std::unique_ptr<CompilationJob> job(interpreter::Interpreter::NewCompilationJob(parse_info, literal, isolate));
-  if (job->PrepareJob() == CompilationJob::SUCCEEDED && 
-      job->ExecuteJob() == CompilationJob::SUCCEEDED) {
-    return job;
-  }
-```
-Lets take a look at `parse_info`:
-```console
-(lldb) job parse_info->script_->source()
-(lldb) job parse_info->script_->source()
-"// Hello, and welcome to hacking node.js!\x0a//\x0a// This file is invoked by node::LoadEnvironment in src/node.cc
-...
-```
-Notice that this is the complete contents (not showing the complete contents through) of bootstrap_node.js:
-```console
-(lldb) job parse_info->script_->name()
-"bootstrap_node.js"
-```
-Next `PrepareJob` will print the AST if configured with `--print-ast`:
+I've not figured out a good way to make this print nicely in lldb so using this is the more readable output:
 ```console
 [generating bytecode for function: ]
 --- AST ---
@@ -7039,85 +7048,165 @@ FUNC at 0
 . . LITERAL "use strict"
 . EXPRESSION STATEMENT at 299
 . . ASSIGN at -1
-. . . VAR PROXY local[0] (0x10702f338) (mode = TEMPORARY) ".result"
+. . . VAR PROXY local[0] (0x10683f938) (mode = TEMPORARY) ".result"
 . . . FUNC LITERAL at 300
 . . . . NAME
 . . . . INFERRED NAME
 . . . . PARAMS
-. . . . . VAR (0x10701cd48) (mode = VAR) "process"
+. . . . . VAR (0x10682d548) (mode = VAR) "process"
 . RETURN at -1
-. . VAR PROXY local[0] (0x10702f338) (mode = TEMPORARY) ".result"
+. . VAR PROXY local[0] (0x10683f938) (mode = TEMPORARY) ".result"
 ```
-`VAR PROXY` indicates that scope resolution will connect these nodes declaring VAR nodes.
-This is all `PrepareJob` does.
+Notice that we have `use strict` starting a character `284`. This due to the comment that preceeds it.
+We can see that the function literal starts at `300` and that if we would have given it a name it would
+have shown up as `NAME somename`. We can also see that it takes a parameter named `process`
 
-`ExecuteJob()` will call:
+Next `GenerateUnoptimizedCode` will be called (`deps/v8/src/compiler.cc`):
+```c++
+  Compiler::EagerInnerFunctionLiterals inner_literals;
+  if (!Compiler::Analyze(parse_info, &inner_literals)) {
+    return std::unique_ptr<CompilationJob>();
+  }
+  std::unique_ptr<CompilationJob> outer_function_job(
+      PrepareAndExecuteUnoptimizedCompileJob(parse_info, parse_info->literal(), isolate));
+```
+`PrepareAndExecuteUnoptimizedCompileJob`:
+```c++
+  if (job->PrepareJob() == CompilationJob::SUCCEEDED &&
+      job->ExecuteJob() == CompilationJob::SUCCEEDED) {
+```
+`PrepareJob()` will print the ast as shown above. Lets take a closer look at `ExecuteJob`:
 ```c++
 return UpdateState(ExecuteJobImpl(), State::kReadyToFinalize);
 ```
-The call to `ExecuteJobImpl` will end up in interpreter.cc:191 in our case. In this function we find the following:
+`InterpreterCompilationJob::ExecuteJobImpl`:
 ```c++
-  generator()->GenerateBytecode(stack_limit());
+generator()->GenerateBytecode(stack_limit());
 ```
-Now we are getting closer to figuring out how the bytecode is generated. This will land us in bytecode-generator.cc:894.
+This will land in `BytecodeGenerator::GenerateBytecode` `bytecode-generator.cc:906`
+```c++
+GenerateBytecodeBody();
+```
+This function will visit all of the nodes in the AST and generate the bytecodes for them.
 
-`GenerateBytecode`:
+Later in `FinalizeUnoptimizedCode`:
 ```c++
-  InitializeAstVisitor(stack_limit);
-  ContextScope incoming_context(this, closure_scope());
-  RegisterAllocationScope register_scope(this);
-  AllocateTopLevelRegisters();
-...
-  GenerateBytecodeBody();
+outer_function_job->compilation_info()->set_shared_info(shared_info);
 ```
-
-`GenerateBytecodeBody`:
-```c++
-  ...
-  VisitDeclarations(closure_scope()->declarations());  // no declarations in our case
-  VisitModuleNamespaceImports();
-  ...
-  builder()->StackCheck(info()->literal()->start_position());
-  VisitStatements(info()->literal()->body());
-  ...
-```
-This will later call `OutputStackCheck();`
 ```console
-(lldb) p *node
-(v8::internal::interpreter::BytecodeNode) $73 = {
-  bytecode_ = kStackCheck
-  operands_ = ([0] = 0, [1] = 0, [2] = 0, [3] = 0, [4] = 0)
-  operand_count_ = 0
-  operand_scale_ = kSingle
-  source_info_ = (position_type_ = kExpression, source_position_ = 0)
-}
-```
-bytecode-array-writer.cc:60 will do the actual writing of the node:
-```c++
-  UpdateSourcePositionTable(node);
-  EmitBytecode(node);
-```
-TODO: take a closer look at the source position table.
-`EmitBytecode` can be found in bytecode-array-writer.cc:192:
-```c++
-Bytecode bytecode = node->bytecode();
-OperandScale operand_scale = node->operand_scale();
-```
-
-In this case bytecode is kStackCheck. Now, kStackCheck is an index into builtins_ array of the isolate:
-```console
-(lldb) job *isolate->builtins()->builtin_handle(Builtins::Name::kStackCheck)
-0x169cbdb41da1: [Code]
+(lldb) expr shared_info->code()->Print()
+0x1a00905c50e1: [Code]
 kind = BUILTIN
-name = StackCheck
+name = CompileLazy
 compiler = unknown
-Instructions (size = 17)
-0x169cbdb41e00     0  33c0           xorl rax,rax
-0x169cbdb41e02     2  48bb0001440101000000 REX.W movq rbx,0x101440100    ;; external reference (Runtime::StackGuard)
-0x169cbdb41e0c     c  e92f29f4ff     jmp 0x169cbda84740      ;; code: STUB, CEntryStub, minor: 8
+Instructions (size = 983)
+0x1a00905c5140     0  488b5f2f       REX.W movq rbx,[rdi+0x2f]
+0x1a00905c5144     4  488b5b07       REX.W movq rbx,[rbx+0x7]
+0x1a00905c5148     8  493b5da0       REX.W cmpq rbx,[r13-0x60]
+0x1a00905c514c     c  0f844c030000   jz 0x1a00905c549e  (CompileLazy)
+...
+```
+
+Later in a call to `InterpreterCompilationJob::FinalizeJobImpl` will delegate to `BytecodeGenerator::FinalizeBytecode`
+where the the BytecodeArray is generated:
+```c++
+Handle<BytecodeArray> bytecode_array = builder()->ToBytecodeArray(isolate);
+```
+The bytecodes can be inspected using:
+```console
+```console
+(lldb) expr bytecodes->Print()
+0x39d9bd7ade49: [BytecodeArray] in OldSpaceParameter count 1
+Frame size 8
+    0 E> 0x39d9bd7ade82 @    0 : 93                StackCheck
+   15 S> 0x39d9bd7ade83 @    1 : 6f 00 00 00       CreateClosure [0], [0], #0
+         0x39d9bd7ade87 @    5 : 1e fb             Star r0
+21644 S> 0x39d9bd7ade89 @    7 : 97                Return
+Constant pool (size = 1)
+0x39d9bd7ade31: [FixedArray] in OldSpace
+ - map = 0x39d9d04022f1 <Map(HOLEY_ELEMENTS)>
+ - length: 1
+           0: 0x39d9bd7add81 <SharedFunctionInfo bajja>
+Handler Table (size = 16)
+```
+This bytecode array will be set on the compilation_info instance:
+```c++
+compilation_info()->SetBytecodeArray(bytecodes);
+```
+And the code will be set to `InterpreterEntryTrampoline`:
+```c++
+compilation_info()->SetCode(
+    BUILTIN_CODE(compilation_info()->isolate(), InterpreterEntryTrampoline));
+return SUCCEEDED;
+```
+This will return us into `FinalizeUnoptimizedCompilationJob`:
+```c++
+if (status == CompilationJob::SUCCEEDED) {
+  InstallUnoptimizedCode(compilation_info);
+  CodeEventListener::LogEventsAndTags log_tag;
+```
+`InstallUnoptimizedCode` will set up the `FeedbackMetadata`:
+```c++
+   Handle<FeedbackMetadata> feedback_metadata = FeedbackMetadata::New(
+        compilation_info->isolate(),
+        compilation_info->literal()->feedback_vector_spec());
+    compilation_info->shared_info()->set_feedback_metadata(*feedback_metadata);
+```
+We can inspect `feedback_metadata` using:
+```console
+(lldb) expr feedback_metadata->Print()
+0x39d9bd7adea9: [FeedbackMetadata] in OldSpace
+ - length: 2
+ - slot_count: 1
+ Slot #0 kCreateClosure
+```
+Back in `InstallUnoptimizedCode`:
+```c++
+shared->set_code(*compilation_info->code())
+shared->set_bytecode_array(*compilation_info->bytecode_array());
+```
+This is setting the SharedFunctionInfo instance code to `InterpreterEntryTrampoline` and the bytecode array
+is also set that we saw before.
+After this control will be returned to `FinalizeUnoptimizedCompilationJob` and we go through all the inner_function_jobs
+and set the SharedFunctionInfo for them.
+```c++
+for (auto&& inner_job : *inner_function_jobs) {
+    Handle<SharedFunctionInfo> inner_shared_info =
+        Compiler::GetSharedFunctionInfo(
+            inner_job->compilation_info()->literal(), parse_info->script(),
+            isolate);
+    if (inner_shared_info->is_compiled()) continue;
+    inner_job->compilation_info()->set_shared_info(inner_shared_info);
+    if (FinalizeUnoptimizedCompilationJob(inner_job.get()) !=
+        CompilationJob::SUCCEEDED) {
+      return false;
+    }
+  }
+```
+We can inspect `inner_shared_info` using:
+```console
+(lldb) expr inner_shared_info->Print()
+...
+(lldb) expr inner_shared_info->code()->Print()
+0x1a00905c50e1: [Code]
+kind = BUILTIN
+name = CompileLazy
+...
+```
+
+After this the shared_info will be returned from `CompileToplevel`.
 
 
-RelocInfo (size = 3)
+Every isolate has a interpreter as a member. An interpreter has a dispatch_table_ array of Address's (byte*):
+```console
+(lldb) expr isolate->interpreter()->dispatch_table_
+(Address [768]) $292 = {
+```
+
+TODO: take a closer look at the dispatch_table...
+
+
+`PrepareAndExecuteUnoptimizedCompileJob` `deps/v8/src/compiler.cc` 
 0x169cbdb41e04  external reference (Runtime::StackGuard)  (0x101440100)
 0x169cbdb41e0d  code target (STUB)  (0x169cbda84740)
 ```
@@ -7471,241 +7560,6 @@ For `isolate_addresses_` which are pointers we can inspect them like this:
 (int) $120 = 4
 ```
 
-Next, the body will be visited (BytecodeGenerator::VisitStatements():
-```c++
-void BytecodeGenerator::VisitStatements(ZoneList<Statement*>* statements) {
-  for (int i = 0; i < statements->length(); i++) {
-    // Allocate an outer register allocations scope for the statement.
-    RegisterAllocationScope allocation_scope(this);
-    Statement* stmt = statements->at(i);
-    Visit(stmt);
-    if (stmt->IsJump()) break;
-  }
-}
-```
-This this case we have three statements:
-```console
-(lldb) p statements->length()
-(int) $99 = 3
-
-(lldb) p stmt->Print()
-EXPRESSION STATEMENT at 284
-. LITERAL "use strict"
-```
-So the is one statement for 'use strict';
-
-The next statement is:
-```console
-(lldb) p stmt->Print()
-EXPRESSION STATEMENT at 299
-. ASSIGN at -1
-. . VAR PROXY local[0] (0x104892d38) (mode = TEMPORARY) ".result"
-. . FUNC LITERAL at 300
-. . . NAME
-. . . INFERRED NAME
-. . . PARAMS
-. . . . VAR (0x104880748) (mode = VAR) "process"
-```
-This matches the function literal:
-```javascript
-(function(process) {
-});
-```
-This will call `BytecodeGenerator::VisitFunctionLiteral` (src/interpreter/bytecode-generator.cc):
-```c++
-void BytecodeGenerator::VisitFunctionLiteral(FunctionLiteral* expr) {
-  DCHECK_EQ(expr->scope()->outer_scope(), current_scope());
-  uint8_t flags = CreateClosureFlags::Encode(
-      expr->pretenure(), closure_scope()->is_function_scope());
-  size_t entry = builder()->AllocateDeferredConstantPoolEntry();
-  int slot_index = feedback_index(expr->LiteralFeedbackSlot());
-  builder()->CreateClosure(entry, slot_index, flags);
-  function_literals_.push_back(std::make_pair(expr, entry));
-}
-```
-Now, my main interest is `builder()->CreateClosure` which will delegate to `BytecodeArrayBuilder::CreateClosure`:
-```c++
-  OutputCreateClosure(shared_function_info_entry, slot, flags);
-```
-This will output a BytecodeNode that looks like this:
-```console
-(v8::internal::interpreter::BytecodeNode) $875 = {
-  bytecode_ = kCreateClosure
-  operands_ = ([0] = 32767, [1] = 228, [2] = 0, [3] = 0, [4] = 0)
-  operand_count_ = 3
-  operand_scale_ = kSingle
-  source_info_ = (position_type_ = kStatement, source_position_ = 299)
-}
-```
-
-
-The third and last statement is:
-```console
-(lldb) p stmt->Print()
-RETURN at -1
-. VAR PROXY local[0] (0x104892d38) (mode = TEMPORARY) ".result"
-```
-I'm guessing that this is the return of the function literal.
-
-After this the job will be returned and we have completed the outer function job. This will land us back in `GenerateUnoptimizedCode`:
-(compiler.cc:415
-```c++
-for (auto it : inner_literals) {
-    FunctionLiteral* inner_literal = it->value();
-    std::unique_ptr<CompilationJob> inner_job(
-        PrepareAndExecuteUnoptimizedCompileJob(parse_info, inner_literal,
-                                               isolate));
-    if (!inner_job) return std::unique_ptr<CompilationJob>();
-    inner_function_jobs->emplace_front(std::move(inner_job));
-  } `
-```
-The first inner_literal is:
-```console
-(lldb) p inner_literal->Print()
-FUNC LITERAL at 300
-. NAME
-. INFERRED NAME
-. PARAMS
-. . VAR (0x10701cd48) (mode = VAR) "process"
-```
-This matches `function(process) {}` in bootstrap_node.js. The AST will look like this:
-```console
-[generating bytecode for function: ]
---- AST ---
-FUNC at 0
-. KIND 0
-. SUSPEND COUNT 0
-. NAME ""
-. INFERRED NAME ""
-. EXPRESSION STATEMENT at 284
-. . LITERAL "use strict"
-. EXPRESSION STATEMENT at 299
-. . ASSIGN at -1
-. . . VAR PROXY local[0] (0x10702f338) (mode = TEMPORARY) ".result"
-. . . FUNC LITERAL at 300
-. . . . NAME
-. . . . INFERRED NAME
-. . . . PARAMS
-. . . . . VAR (0x10701cd48) (mode = VAR) "process"
-. RETURN at -1
-. . VAR PROXY local[0] (0x10702f338) (mode = TEMPORARY) ".result"
-```
-
-This function will require a context (in BytecodeGenerator::GenerateBytecode):
-```c++
-if (closure_scope()->NeedsContext()) {
-  BuildNewLocalActivationContext();
-  ContextScope local_function_context(this, closure_scope());
-  BuildLocalActivationContextInitialization();
-  GenerateBytecodeBody();
-}
-```
-
-`BytecodeGenerator::BuildNewLocalActivationContext`:
-```c++
-  builder()->CreateFunctionContext(slot_count);
-```
-This will delegate to `OutputCreateFunctionContext(slots)`
-```console
-(lldb) p *node
-(v8::internal::interpreter::BytecodeNode) $933 = {
-  bytecode_ = kCreateFunctionContext
-  operands_ = ([0] = 21, [1] = 0, [2] = 0, [3] = 0, [4] = 0)
-  operand_count_ = 1
-  operand_scale_ = kSingle
-  source_info_ = (position_type_ = kNone, source_position_ = -1)
-}
-```
-`BytecodeGenerator::BuildLocalActivationContextInitialization`:
-
-
-The OutputCreateFunctionContext(slots) will add bytecodes for:
-```console
-(lldb) p *node
-(v8::internal::interpreter::BytecodeNode) $173 = {
-  bytecode_ = kCreateFunctionContext
-  operands_ = ([0] = 21, [1] = 0, [2] = 0, [3] = 0, [4] = 0)
-  operand_count_ = 1
-  operand_scale_ = kSingle
-  source_info_ = (position_type_ = kNone, source_position_ = -1)
-```
-`BuildLocalActivationContextInitalization()` will set up the parameters:
-```console
-(lldb) p num_parameters
-(int) $186 = 1
-
-(lldb) expr *variable->name_
-(const v8::internal::AstRawString) $187 = {
-   = {
-    next_ = 0x0000000104857060
-    string_ = 0x0000000104857060
-  }
-  literal_bytes_ = (start_ = "process", length_ = 7)
-  hash_field_ = 2818393206
-  is_one_byte_ = true
-  has_string_ = true
-}
-```
-So we can see that this is the process parameter.
-```console
-builder()->LoadAccumulatorWithRegister(parameter).StoreContextSlot(
-           execution_context()->reg(), variable->index(), 0);
-```
-
-VisitVariableDeclaration:
-(lldb) p *variable->name_
-(const v8::internal::AstRawString) $247 = {
-   = {
-    next_ = 0x0000000104857068
-    string_ = 0x0000000104857068
-  }
-  literal_bytes_ = (start_ = "internalBinding", length_ = 15)
-  hash_field_ = 2406209186
-  is_one_byte_ = true
-  has_string_ = true
-}
-Next vars are:
-```
-#exceptionHandlerState
-#startup
-#setupProcessObject
-...
-```
-
-Lets take a look now at the SharedFunctionInfo generated for bootstrap_node.js:
-(done before returning from `CompileToplevel`)
-```
-(lldb) job shared_info->bytecode_array()
-0x338355dadf71: [BytecodeArray] in OldSpaceParameter count 1
-Frame size 8
-    0 E> 0x338355dadfaa @    0 : 93                StackCheck
-  299 S> 0x338355dadfab @    1 : 6f 00 00 00       CreateClosure [0], [0], #0
-         0x338355dadfaf @    5 : 1e fb             Star r0
-21946 S> 0x338355dadfb1 @    7 : 97                Return
-Constant pool (size = 1)
-0x338355dadf59: [FixedArray] in OldSpace
- - map = 0x3383f20822f1 <Map(HOLEY_ELEMENTS)>
- - length: 1
-           0: 0x338355dadea9 <SharedFunctionInfo>
-Handler Table (size = 16)
-```
-We can see that there is a `CreateClosure` which is indexing into the `Constant pool`. If we look at the entry we can see that entry 0 is 
-of type SharedFunctionInfo. It would be nice to see what it looks like.
-
-```console
-(lldb) job shared_info->code()
-0x2149e2c44281: [Code]
-kind = BUILTIN
-name = InterpreterEntryTrampoline
-compiler = unknown
-Instructions (size = 1004)
-0x2149e2c442e0     0  488b5f2f       REX.W movq rbx,[rdi+0x2f]
-0x2149e2c442e4     4  488b5b07       REX.W movq rbx,[rbx+0x7]
-0x2149e2c442e8     8  488b4b0f       REX.W movq rcx,[rbx+0xf]
-...
-```
-
-So, at this stage we have compiled bootstrap_node.js and it is time to run it. Bare in mind that 
 
 ```c++
 Local<Value> result = script.ToLocalChecked()->Run();
@@ -10577,105 +10431,6 @@ Instructions (size = 1004)
 0x3a9296944443   163  488be5         REX.W movq rsp,rbp
 0x3a9296944446   166  5d             pop rbp
 0x3a9296944447   167  488d5b5f       REX.W leaq rbx,[rbx+0x5f]
-0x3a929694444b   16b  ffe3           jmp rbx
-0x3a929694444d   16d  f6c101         testb rcx,0x1
-0x3a9296944450   170  7410           jz 0x3a9296944462  (InterpreterEntryTrampoline)
-0x3a9296944452   172  48ba000000003d000000 REX.W movq rdx,0x3d00000000
-0x3a929694445c   17c  e85f150200     call 0x3a92969659c0  (Abort)    ;; code: BUILTIN
-0x3a9296944461   181  cc             int3l
-0x3a9296944462   182  49ba0000000003000000 REX.W movq r10,0x300000000
-0x3a929694446c   18c  493bca         REX.W cmpq rcx,r10
-0x3a929694446f   18f  7410           jz 0x3a9296944481  (InterpreterEntryTrampoline)
-0x3a9296944471   191  48ba0000000017000000 REX.W movq rdx,0x1700000000
-0x3a929694447b   19b  e840150200     call 0x3a92969659c0  (Abort)    ;; code: BUILTIN
-0x3a9296944480   1a0  cc             int3l
-0x3a9296944481   1a1  e913010000     jmp 0x3a9296944599  (InterpreterEntryTrampoline)
-0x3a9296944486   1a6  488b4907       REX.W movq rcx,[rcx+0x7]
-0x3a929694448a   1aa  f6c101         testb rcx,0x1
-0x3a929694448d   1ad  0f8406010000   jz 0x3a9296944599  (InterpreterEntryTrampoline)
-0x3a9296944493   1b3  f7413f00000001 testl [rcx+0x3f],0x1000000
-0x3a929694449a   1ba  0f8580000000   jnz 0x3a9296944520  (InterpreterEntryTrampoline)
-0x3a92969444a0   1c0  48894f37       REX.W movq [rdi+0x37],rcx
-0x3a92969444a4   1c4  4c8bf1         REX.W movq r14,rcx
-0x3a92969444a7   1c7  4c8d7f37       REX.W leaq r15,[rdi+0x37]
-0x3a92969444ab   1cb  41f6c707       testb r15,0x7
-0x3a92969444af   1cf  7401           jz 0x3a92969444b2  (InterpreterEntryTrampoline)
-0x3a92969444b1   1d1  cc             int3l
-0x3a92969444b2   1d2  40f6c701       testb rdi,0x1
-0x3a92969444b6   1d6  7510           jnz 0x3a92969444c8  (InterpreterEntryTrampoline)
-0x3a92969444b8   1d8  48ba0000000038000000 REX.W movq rdx,0x3800000000
-0x3a92969444c2   1e2  e8f9140200     call 0x3a92969659c0  (Abort)    ;; code: BUILTIN
-0x3a92969444c7   1e7  cc             int3l
-0x3a92969444c8   1e8  4d3b37         REX.W cmpq r14,[r15]
-0x3a92969444cb   1eb  7401           jz 0x3a92969444ce  (InterpreterEntryTrampoline)
-0x3a92969444cd   1ed  cc             int3l
-0x3a92969444ce   1ee  4981e60000f8ff REX.W andq r14,0xfffffffffff80000
-0x3a92969444d5   1f5  41f6460802     testb [r14+0x8],0x2
-0x3a92969444da   1fa  7416           jz 0x3a92969444f2  (InterpreterEntryTrampoline)
-0x3a92969444dc   1fc  49c7c60000f8ff REX.W movq r14,0xfff80000
-0x3a92969444e3   203  4c23f7         REX.W andq r14,rdi
-0x3a92969444e6   206  41f6460804     testb [r14+0x8],0x4
-0x3a92969444eb   20b  7405           jz 0x3a92969444f2  (InterpreterEntryTrampoline)
-0x3a92969444ed   20d  e88e1ff6ff     call 0x3a92968a6480     ;; code: STUB, RecordWriteStub, minor: 8167
-0x3a92969444f2   212  49bfefbeadbeedbeadde REX.W movq r15,0xdeadbeedbeadbeef
-0x3a92969444fc   21c  49beefbeadbeedbeadde REX.W movq r14,0xdeadbeedbeadbeef
-0x3a9296944506   226  49beefbeadbeedbeadde REX.W movq r14,0xdeadbeedbeadbeef
-0x3a9296944510   230  49bfefbeadbeedbeadde REX.W movq r15,0xdeadbeedbeadbeef
-0x3a929694451a   23a  4883c15f       REX.W addq rcx,0x5f
-0x3a929694451e   23e  ffe1           jmp rcx
-0x3a9296944520   240  55             push rbp
-0x3a9296944521   241  4889e5         REX.W movq rbp,rsp
-0x3a9296944524   244  6a1c           push 0x1c
-0x3a9296944526   246  49ba81429496923a0000 REX.W movq r10,0x3a9296944281  (InterpreterEntryTrampoline)    ;; object: 0x3a9296944281 <Code BUILTIN>
-0x3a9296944530   250  4152           push r10
-0x3a9296944532   252  49bae122b8d7a51c0000 REX.W movq r10,0x1ca5d7b822e1    ;; object: 0x1ca5d7b822e1 <undefined>
-0x3a929694453c   25c  4c391424       REX.W cmpq [rsp],r10
-0x3a9296944540   260  7510           jnz 0x3a9296944552  (InterpreterEntryTrampoline)
-0x3a9296944542   262  48ba0000000009000000 REX.W movq rdx,0x900000000
-0x3a929694454c   26c  e86f140200     call 0x3a92969659c0  (Abort)    ;; code: BUILTIN
-0x3a9296944551   271  cc             int3l
-0x3a9296944552   272  48c1e020       REX.W shlq rax, 32
-0x3a9296944556   276  50             push rax
-0x3a9296944557   277  57             push rdi
-0x3a9296944558   278  52             push rdx
-0x3a9296944559   279  57             push rdi
-0x3a929694455a   27a  b801000000     movl rax,0x1
-0x3a929694455f   27f  48bb204b3e0101000000 REX.W movq rbx,0x1013e4b20    ;; external reference (Runtime::EvictOptimizedCodeSlot)
-0x3a9296944569   289  e8d201f4ff     call 0x3a9296884740     ;; code: STUB, CEntryStub, minor: 8
-0x3a929694456e   28e  488bd8         REX.W movq rbx,rax
-0x3a9296944571   291  5a             pop rdx
-0x3a9296944572   292  5f             pop rdi
-0x3a9296944573   293  58             pop rax
-0x3a9296944574   294  48c1e820       REX.W shrq rax, 32
-0x3a9296944578   298  48837df81c     REX.W cmpq [rbp-0x8],0x1c
-0x3a929694457d   29d  7410           jz 0x3a929694458f  (InterpreterEntryTrampoline)
-0x3a929694457f   29f  48ba000000004f000000 REX.W movq rdx,0x4f00000000
-0x3a9296944589   2a9  e832140200     call 0x3a92969659c0  (Abort)    ;; code: BUILTIN
-0x3a929694458e   2ae  cc             int3l
-0x3a929694458f   2af  488be5         REX.W movq rsp,rbp
-0x3a9296944592   2b2  5d             pop rbp
-0x3a9296944593   2b3  488d5b5f       REX.W leaq rbx,[rbx+0x5f]
-0x3a9296944597   2b7  ffe3           jmp rbx
-
-0x3a9296944599   2b9  55             push rbp
-0x3a929694459a   2ba  4889e5         REX.W movq rbp,rsp
-0x3a929694459d   2bd  56             push rsi
-0x3a929694459e   2be  57             push rdi
-0x3a929694459f   2bf  488b471f       REX.W movq rax,[rdi+0x1f]
-0x3a92969445a3   2c3  4c8b7037       REX.W movq r14,[rax+0x37]
-0x3a92969445a7   2c7  f6404701       testb [rax+0x47],0x1
-0x3a92969445ab   2cb  0f8500010000   jnz 0x3a92969446b1  (InterpreterEntryTrampoline)
-0x3a92969445b1   2d1  ff431b         incl [rbx+0x1b]                                   // __ incl(FieldOperand(feedback_vector, FeedbackVector::kInvocationCountOffset));
-
-0x3a92969445b4   2d4  41f6c601       testb r14,0x1                                     // AssertNotSmi: CheckSmi(object);
-0x3a92969445b8   2d8  7510           jnz 0x3a92969445ca  (InterpreterEntryTrampoline)  // AssertNotSmi: Check -> j(cc, &L, Label::kNear);
-0x3a92969445ba   2da  48ba0000000038000000 REX.W movq rdx,0x3800000000                 // AssertNotSmi: Check -> Abort(reason) -> Move(rdx, Smi::FromInt(static_cast<int>(reason)));
-0x3a92969445c4   2e4  e8f7130200     call 0x3a92969659c0  (Abort)    ;; code: BUILTIN  // AssertNotSmi: Check -> Abort(reason) -> Call(BUILTIN_CODE(isolate(), Abort), RelocInfo::CODE_TARGET);
-0x3a92969445c9   2e9  cc             int3l                                             // AssertNotSmi: Check -> Abort(reason) -> int3(); "instruction trap 3" is intended for calling the debug exception handler
-
-0x3a92969445ca   2ea  498b46ff       REX.W movq rax,[r14-0x1]                          // __ CmpObjectType(kInterpreterBytecodeArrayRegister, BYTECODE_ARRAY_TYPE, rax); movp(map, FieldOperand(heap_object, HeapObject::kMapOffset));
-0x3a92969445ce   2ee  80780b89       cmpb [rax+0xb],0x89                               // __ CmpObjectType(kInterpreterBytecodeArrayRegister, BYTECODE_ARRAY_TYPE, rax) -> CmpInstanceType cmpb(FieldOperand(map, Map::kInstanceTypeOffset), Immediate(static_cast<int8_t>(type)));
-0x3a92969445d2   2f2  7410           jz 0x3a92969445e4  (InterpreterEntryTrampoline)   // __ Assert(equal, kFunctionDataShouldBeBytecodeArrayOnInterpreterEntry); -> Check(cc, reason); -> j(cc, &L, Label::kNear);
 0x3a92969445d4   2f4  48ba000000001e000000 REX.W movq rdx,0x1e00000000                 // __ Assert(equal, kFunctionDataShouldBeBytecodeArrayOnInterpreterEntry); -> Check(cc, reason); -> Abort -> Move(rdx, Smi::FromInt(static_cast<int>(reason)));
 0x3a92969445de   2fe  e8dd130200     call 0x3a92969659c0  (Abort)    ;; code: BUILTIN  // __ Assert(equal, kFunctionDataShouldBeBytecodeArrayOnInterpreterEntry); -> Check(cc, reason); -> Abort -> Call(BUILTIN_CODE(isolate(), Abort), RelocInfo::CODE_TARGET);
 0x3a92969445e3   303  cc             int3l                                             // __ Assert(equal, kFunctionDataShouldBeBytecodeArrayOnInterpreterEntry); -> Check(cc, reason); -> Abort -> int3 "instruction trap 3" is intended for calling the debug exception handler
