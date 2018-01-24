@@ -7194,17 +7194,99 @@ name = CompileLazy
 ...
 ```
 
-After this the shared_info will be returned from `CompileToplevel`.
+After this the shared_info will be returned from `CompileToplevel`. Which will the return to `Compiler::GetSharedFunctionInfoForScript`:
+```c++
+maybe_result = CompileToplevel(&parse_info, isolate);
+...
+Handle<FeedbackVector> feedback_vector = FeedbackVector::New(isolate, result);
+vector = isolate->factory()->NewCell(feedback_vector);
+compilation_cache->PutScript(source, context, language_mode, result, vector);
+```
 
+```console
+(lldb) expr feedback_vector->Print()
+0x265e1d0b03b1: [FeedbackVector] in OldSpace
+ - length: 1
+ SharedFunctionInfo: 0x265e1d0adae9 <SharedFunctionInfo>
+ Optimized Code: 0
+ Invocation Count: 0
+ Profiler Ticks: 0
+ Slot #0 kCreateClosure
+  [0]: 0x265e1d0b03e1 <Cell value= 0x265eb5c022e1 <undefined>>
+```
 
+So we are backing out of the calls now and the next return will land us in `CompileUnboundInternal`:
+```c++
+has_pending_exception = !maybe_function_info.ToHandle(&result);
+```
+This will later return to `ScriptCompiler::Compile`:
+```c++
+auto maybe = CompileUnboundInternal(isolate, source, options);
+...
+v8::Context::Scope scope(context);
+return result->BindToCurrentContext();
+```
+```console
+(lldb) expr maybe
+(lldb) expr maybe.ToLocalChecked()->GetId()
+(int) $415 = 14
+(lldb) jlh maybe.ToLocalChecked()->GetScriptName()
+"bootstrap_node.js"
+```
+An `UnboundScript` is a compiled JavaScript but it is not yet tied to a Context.
+
+After this the compilation is finished and control will be returned to node.cc which will now run the script:
+```c++
+Local<Value> result = script.ToLocalChecked()->Run();
+```
+So we have compiled the script and now are are going to run it. Just to clarify something here, the script contains an expression
+(the surrounding ()) that defines a function. So we are not executing the `startup` function here but instead only only the
+expression that contains it.
+
+```console
+(lldb) expr JSFunction::cast(func)->code()
+(v8::internal::Code *) $477 = 0x00000e6d84c44281
+
+(lldb) expr JSFunction::cast(func)->shared()->abstract_code()->Print()
+0x265e1d0ade49: [BytecodeArray] in OldSpaceParameter count 1
+Frame size 8
+    0 E> 0x265e1d0ade82 @    0 : 93                StackCheck
+   15 S> 0x265e1d0ade83 @    1 : 6f 00 00 00       CreateClosure [0], [0], #0
+         0x265e1d0ade87 @    5 : 1e fb             Star r0
+21644 S> 0x265e1d0ade89 @    7 : 97                Return
+Constant pool (size = 1)
+0x265e1d0ade31: [FixedArray] in OldSpace
+ - map = 0x265ed93822f1 <Map(HOLEY_ELEMENTS)>
+ - length: 1
+           0: 0x265e1d0add81 <SharedFunctionInfo bajja>
+Handler Table (size = 16)
+
+Side note on the interpreters dispatch_table_ ...
 Every isolate has a interpreter as a member. An interpreter has a dispatch_table_ array of Address's (byte*):
 ```console
 (lldb) expr isolate->interpreter()->dispatch_table_
 (Address [768]) $292 = {
 ```
+Notice that these are addresses which are index by Bytecode's. For example lets take a look the address for
+`CreateClosure`:
+```console
+(lldb) expr isolate->interpreter()->GetBytecodeHandler(static_cast<Bytecode>(Bytecode::kCreateClosure),static_cast<OperandScale>(1))->Print()
 
-TODO: take a closer look at the dispatch_table...
-
+How is `dispatch_table_` populated?  
+This is done in the `Heap::IterateStrongRoots` function:
+```c++
+isolate_->interpreter()->IterateDispatchTable(v);
+```
+Which is called by `StartupDeserializer::DeserializeInto`:
+```c++
+isolate->heap()->IterateStrongRoots(this, VISIT_ONLY_STRONG_ROOT_LIST);
+isolate->heap()->IterateSmiRoots(this);
+isolate->heap()->IterateStrongRoots(this, VISIT_ONLY_STRONG);
+```
+ which is called by `Isolate::Init`:
+```c++
+if (!create_heap_objects) des->DeserializeInto(this);
+```
 
 `PrepareAndExecuteUnoptimizedCompileJob` `deps/v8/src/compiler.cc` 
 0x169cbdb41e04  external reference (Runtime::StackGuard)  (0x101440100)
