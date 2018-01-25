@@ -7243,6 +7243,365 @@ So we have compiled the script and now are are going to run it. Just to clarify 
 (the surrounding ()) that defines a function. So we are not executing the `startup` function here but instead only only the
 expression that contains it.
 
+`Run` will call `Execution::Call`, which will call `CallInternal`, which will call `Invoke`:
+```c++
+    typedef Object* (*JSEntryFunction)(Object* new_target, Object* target,
+                                     Object* receiver, int argc,
+                                     Object*** args);
+    Handle<Code> code = is_construct
+       ? isolate->factory()->js_construct_entry_code()
+       : isolate->factory()->js_entry_code();
+    ...
+  
+    // start of the function identified by code->entry() address.
+    JSEntryFunction stub_entry = FUNCTION_CAST<JSEntryFunction>(code->entry());
+
+    // Call the function through the right JS entry stub.
+    Object* orig_func = *new_target;
+    Object* func = *target;
+    Object* recv = *receiver;
+    Object*** argv = reinterpret_cast<Object***>(args);
+    if (FLAG_profile_deserialization && target->IsJSFunction()) {
+      PrintDeserializedCodeInfo(Handle<JSFunction>::cast(target));
+    }
+    RuntimeCallTimerScope timer(isolate, &RuntimeCallStats::JS_Execution);
+    value = CALL_GENERATED_CODE(isolate, stub_entry, orig_func, func, recv, argc, argv);
+  }
+```
+
+Notice that `code` will be what `isolate->factory()->js_entry_code()` returns:
+```console
+(lldb) expr isolate->factory()->js_entry_code()->Print()
+0xe6d84b84001: [Code]
+kind = STUB
+major_key = JSEntryStub
+compiler = unknown
+Instructions (size = 232)
+0xe6d84b84060     0  55             push rbp
+0xe6d84b84061     1  4889e5         REX.W movq rbp,rsp
+0xe6d84b84064     4  6a02           push 0x2
+...
+```
+I'm not showing the complete output above as this will be shown later in detail.
+
+Next, we have `CALL_GENERATED_CODE` which can be found in `src/x64/simulator-x64.h`:
+```c++
+// Since there is no simulator for the x64 architecture the only thing we can
+// do is to call the entry directly.
+// TODO(X64): Don't pass p0, since it isn't used?
+#efine CALL_GENERATED_CODE(isolate, entry, p0, p1, p2, p3, p4) \
+  (entry(p0, p1, p2, p3, p4))
+```
+So this will be an call that looks like this:
+```c++
+entry(orig_func, func, recv, argc, argv);
+```
+If we use `step instruction` (si) we can follow the setup and calling of this function:
+```console
+    0x100e381b4 <+1348>: movq   -0x118(%rbp), %rdx                  // move the value of address of code->entry() into rdx
+    0x100e381bb <+1355>: movq   -0x120(%rbp), %rdi                  // first argument which is orig_func
+->  0x100e381c2 <+1362>: movq   -0x128(%rbp), %rsi                  // second argument which is func
+    0x100e381c9 <+1369>: movq   -0x130(%rbp), %rcx                  // third argument which is recv
+    0x100e381d0 <+1376>: movl   -0x30(%rbp), %eax                   // fourth arg which is argc 
+    0x100e381d3 <+1379>: movq   -0x138(%rbp), %r8                   // fifth argument which is argv
+    0x100e381da <+1386>: movq   %rdx, -0x1c0(%rbp)                  // move code->entry from rdx into local variable 
+    0x100e381e1 <+1393>: movq   %rcx, %rdx                          // move recv into rdx
+    0x100e381e4 <+1396>: movl   %eax, %ecx                          // move argc into ecx
+    0x100e381e6 <+1398>: movq   -0x1c0(%rbp), %r9                   // move code-entry into register r9
+    0x100e381ed <+1405>: callq  *%r9                                // call address in register r9
+```
+Below we verify the contents of the above instructions:
+```console
+(lldb) memory read -f x -c 1 -s 8 `$rbp - 0x118`
+0x7fff5fbfd828: 0x0000302f34084060
+(lldb) expr code->entry()
+(byte *) $186 = 0x0000302f34084060
+
+(lldb) memory read -f x -c 1 -s 8 `$rbp - 0x120`
+0x7fff5fbfd820: 0x00001d64e5d822e1
+(lldb) expr orig_func
+(v8::internal::Object *) $209 = 0x00001d64e5d822e1
+
+(lldb) memory read -f x -c 1 -s 8 `$rbp - 0x128`
+0x7fff5fbfd818: 0x00001d6417d30669
+(lldb) expr func
+(v8::internal::Object *) $211 = 0x00001d6417d30669
+
+(lldb) memory read -f x -c 1 -s 8 `$rbp - 0x130`
+0x7fff5fbfd810: 0x00001d64f0a82239
+(lldb) expr recv
+(v8::internal::Object *) $213 = 0x00001d64f0a82239
+
+(lldb) memory read -f x -c 1 -s 4 `$rbp - 0x30`
+0x7fff5fbfd910: 0x00000000
+(lldb) expr argc
+(int) $216 = 0
+
+(lldb) memory read -f x -c 1 -s 8 `$rbp - 0x138`
+0x7fff5fbfd808: 0x0000000000000000
+(lldb) expr argv
+(v8::internal::Object ***) $219 = 0x0000000000000000
+
+(lldb) memory read -f x -c 1 -s 8 `$rbp - 0x1c0`
+0x7fff5fbfd780: 0x0000302f34084060
+```
+
+The last instruction `callq *%r9` will call into JSEntryStub:
+```console
+->  0x302f34084060: pushq  %rbp                                  // push callers base frame pointer saving it so we can restore it
+(lldb) memory read -f x -c 1 -s 8 `$rsp`                         // inspect the stack
+    0x302f34084061: movq   %rsp, %rbp                            // mov the current value of rsp to into rbp which will be the frame pointer for this function
+    0x302f34084064: pushq  $0x2                                  // this is pushing an immediate value 2 onto the stack. Where does this come from, the following:
+(lldb) expr v8::internal::StackFrame::MarkerToType(2)
+(v8::internal::StackFrame::Type) $494 = ENTRY
+v8::internal::StackFrame::Type::ENTRY))
+(int32_t) $262 = 2
+(lldb) memory read -f x -c 2 -s 8 `$rsp`                         // inspect the stack 
+    0x302f34084066: movabsq $0x106001990, %r10                   // move the context address into r10
+(lldb) up 2
+(lldb) expr isolate->isolate_addresses_[IsolateAddressId::kContextAddress]
+(v8::internal::Address) $230 = 0x0000000106001990 
+    0x302f34084070: movq   (%r10), %r10                          // the context address is a pointer, this will dereference it
+(lldb) memory read -f x -c 1 -s 8 `isolate->isolate_addresses_[IsolateAddressId::kContextAddress]`
+0x106001990: 0x00001d6417d03a59
+(lldb) register read r10
+     r10 = 0x00001d6417d03a59
+     0x302f34084073: pushq  %r10                                // push the dereferences context onto the stack
+     0x302f34084075: pushq  %r12                                // r12 must be preserved accross function calls so save it and pop it later before returning
+     0x302f34084077: pushq  %r13                                // r13 must be preserved accross function calls so save it and pop it later before returning
+     0x302f34084079: pushq  %r14                                // r14 must be preserved accross function calls so save it and pop it later before returning
+     0x302f3408407b: pushq  %r15                                // r14 must be preserved accross function calls so save it and pop it later before returning
+     0x302f3408407d: pushq  %rbx                                // rbx must be preserved accross function calls so save it and pop it later before returning
+     0x302f3408407e: movabsq $0x106000048, %r13                 // move the value of the roots_array_start into r13
+(lldb) expr isolate->heap()->roots_array_start()
+(v8::internal::Object **) $233 = 0x0000000106000048
+     0x302f34084088: addq   $0x80, %r13                         // addp(kRootRegister, Immediate(kRootRegisterBias)); kRootRegisterBias is 128
+     0x302f3408408f: movabsq $0x106001a00, %r10                 // move he CEntryFPAddress into r10
+(lldb) memory read -f x -c 1 -s 8 isolate->isolate_addresses_[IsolateAddressId::kCEntryFPAddress]
+0x106001a00: 0x0000000000000000
+    0x302f34084099: pushq  (%r10)                               // dereference CEntryAddress and push onto the stack
+(lldb) memory read -f x -c 1 -s 8 0x0000000106001a00
+0x106001a00: 0x0000000000000000
+    0x302f3408409c: movabsq 0x106001a20, %rax                   // move JSEntrySPAddress into rax
+(lldb) memory read -f x -c 1 -s 8 isolate->isolate_addresses_[IsolateAddressId::kJSEntrySPAddress]
+0x106001a20: 0x0000000000000000 
+    0x302f340840a6: testq  %rax, %rax                           // is rax zero? if so there is an outer js call
+(lldb) register read rax
+     rax = 0x0000000000000000
+    0x302f340840af: pushq  $0x2                                 // v8::internal::StackFrame::OUTERMOST_JSENTRY_FRAME))
+    0x302f340840b1: movq   %rbp, %rax                           // move this functions base pointer into rax 
+    0x302f340840b4: movabsq %rax, 0x106001a20                   // store the base pointer in isolate_addresses_[IsolateAddressId::kJSEntrySPAddress]
+(lldb) memory read -f x -c 1 -s 8 `isolate->isolate_addresses_[IsolateAddressId::kJSEntrySPAddress]`
+0x106001a20: 0x0000000000000000
+after
+(lldb) memory read -f x -c 1 -s 8 `isolate->isolate_addresses_[IsolateAddressId::kJSEntrySPAddress]`
+0x106001a20: 0x00007fff5fbfd760
+(lldb) register read rbp
+     rbp = 0x00007fff5fbfd940
+    0x302f340840be: jmp    0x302f340840c5
+    0x302f340840c5: jmp    0x302f340840e0
+    0x302f340840e0: movabsq $0x106001a08, %r10                  // move isolate_addresses_[IsolateAddressId::kHandlerAddress]` into r10
+(lldb) memory read -f x -c 1 -s 8 `isolate->isolate_addresses_[IsolateAddressId::kHandlerAddress]`
+0x106001a08: 0x0000000000000000
+    0x302f340840ea: pushq  (%r10)                               // push the dereferenced handler address
+    0x302f340840ed: movabsq $0x106001a08, %r10                  // move isolate_addresses_[IsolateAddressId::kHandlerAddress]` into r10
+    0x302f340840f7: movq   %rsp, (%r10)                         // move the value of the current stack pointer into the object pointed to be r10
+(lldb) memory read -f x -c 1 -s 8 0x106001a08
+0x106001a08: 0x00007fff5fbfd710
+(lldb) register read rsp
+     rsp = 0x00007fff5fbfd710
+    0x302f340840fa: callq  0x302f341418c0                       // call JSEntryTrampoline builtin
+(lldb) expr isolate->builtins()->builtin_handle(Builtins::Name::kJSEntryTrampoline)->entry()
+(byte *) $255 = 0x0000302f341418c0 
+      
+```
+In `deps/v8/src/builtins/x64/builtins-x64.cc` we can find `Generate_JSEntryTrampolineHelper` which is what generates the builtin. As this is done
+a compile time we can put a break point in it (you can debug mksnapshot though which is done elsewhere in this document).
+```console
+    0x302f341418c0: movq   %rdi, %r11                           // move the orig_fun into r11
+    0x302f341418c3: movq   %rsi, %rdi                           // move func into rdi
+    0x302f341418c6: xorl   %esi, %esi                           // zero out esi
+    0x302f341418c8: pushq  %rbp                                 // EnterFrame (deps/v8/src/x64/macro-assembler-x64.cc)
+    0x302f341418c9: movq   %rsp, %rbp                           // 
+    0x302f341418cc: pushq  $0x1c                                // push 0x1c (decimal 28)
+(lldb) p v8::internal::StackFrame::TypeToMarker(static_cast<v8::internal::StackFrame::Type>(v8::internal::StackFrame::Type::INTERNAL))
+(int32_t) $256 = 28
+    0x302f341418ce: movabsq $0x302f34141861, %r10               // CodeObject() what is this, seems like it is Handle<HeapObject> which will be patched later
+                                                                // I think this might be the register file?
+(lldb) memory read -f x -c 1 -s 8 0x302f34141861
+0x302f34141861: 0x6900001d64ceb827
+    0x302f341418d8: pushq  %r10                                 // push the HandleHeapObject into the stack
+    0x302f341418da: movabsq $0x1d64e5d822e1, %r10               // move undefined value into r10 
+(lldb) expr *isolate->factory()->undefined_value()
+(v8::internal::Oddball *) $264 = 0x00001d64e5d822e1
+    0x302f341418e4: cmpq   %r10, (%rsp)
+    0x302f341418e8: jne    0x302f341418fa                       // last of EnterFrame if we don't abort that is
+    0x302f341418fa: movabsq $0x106001990, %r10                  // move the ContextAdress into r10 (the scratch register for x86)
+(lldb) memory read -f x -c 1 -s 8 `isolate->isolate_addresses_[IsolateAddressId::kContextAddress]`
+0x106001990: 0x00001d6417d03a59
+    0x302f34141904: movq   (%r10), %rsi                         // deref and move into context into rsi
+    0x302f34141907: pushq  %rdi                                 // push function onto the stack
+    0x302f34141908: pushq  %rdx                                 // push recv onto the stack (this was moved above with 0x302f34141908: pushq  %rdx)
+    0x302f34141909: movq   %rcx, %rax                           // move argc into rax (this was moved above with 0x100e381e4 <+1396>: movl   %eax, %ecx)
+    0x302f3414190c: movq   %r8, %rbx                            // move argv into rbx
+    0x302f3414190f: movq   %r11, %rdx                           // move orig_func into rdx
+// Generate_CheckStackOverflow  TODO: got through this as I struggled to understand/map the generated instructions to the source code :( 
+    0x302f34141912: movq   0xd08(%r13), %r10                    // 
+    0x302f34141919: movq   %rsp, %rcx
+    0x302f3414191c: subq   %r10, %rcx
+    0x302f3414191f: movq   %rax, %r11
+    0x302f34141922: shlq   $0x3, %r11
+    0x302f34141926: cmpq   %r11, %rcx
+    0x302f34141929: jg     0x302f34141940
+// Generate_JSEntryTrampolineHelper
+    0x302f34141940: xorl   %ecx, %ecx                           // zero out ecx, for the following loop
+    0x302f34141942: jmp    0x302f3414194f                       // jump to entry label
+    0x302f3414194f: cmpq   %rax, %rcx                           // compare argc with rcx (this was moved above). 
+    0x302f34141952: jne    0x302f34141944                       // entry the loop if. This is pushing the argv values onto the stack in a loop, but we don't have any so we fall through
+    0x302f34141954: callq  0x302f3413c400                       //
+(lldb) expr isolate->builtins()->Call(static_cast<ConvertReceiverMode>(ConvertReceiverMode::kAny))->entry()
+(byte *) $279 = 0x0000302f3413c400 "@\xfffffff6\xffffffc7\x01\x0f\xffffff84F"
+// for the full object with assembly language instructions:
+(lldb) job *isolate->builtins()->Call(static_cast<ConvertReceiverMode>(ConvertReceiverMode::kAny))
+// Builtins::Generate_Call_ReceiverIsAny 'deps/v8/src/builtins/builtins-call-gen.cc':
+// void Builtins::Generate_Call_ReceiverIsAny(MacroAssembler* masm) {
+//   Generate_Call(masm, ConvertReceiverMode::kAny);
+// }
+// Builtins::Generate_Call `deps/v8/src/builtins/x64/builtins-x64.cc`
+    0x302f3413c400: testb  $0x1, %dil                           // move the immediate 1 into the low 8 bits or rdi  // __ JumpIfSmi(rdi, &non_callable); which consists of CheckSmi
+    0x302f3413c404: je     0x302f3413c450                       // if ZF = 1 then jump. This would happen if rdi was a SMI// __ JumpIfSmi(rdi, &non_callable: which after CheckSmi will jump. rdi is the target and not a smi in our case
+// recall that rdi is the function:
+(lldb) register read rdi
+     rdi = 0x00001d6417d30669
+(lldb) expr func
+(v8::internal::Object *) $280 = 0x00001d6417d30669
+// Now I think that func is/was of type JSFunction (deps/v8/src/objects.h) as it was cast to Object* by:
+// auto fun = i::Handle<i::JSFunction>::cast(Utils::OpenHandle(this));
+// class JSFunction: public JSObject {
+ public:
+  // [prototype_or_initial_map]:
+  DECL_ACCESSORS(prototype_or_initial_map, Object)
+    0x302f3413c40a: movq   -0x1(%rdi), %rcx                      // move the map into rcx. CmpObjectType(rdi, JS_FUNCTION_TYPE, rcx). HeapObject::kMapOffset which is the first field in JSFunction:
+(lldb) memory read -f x -c 1 -s 8 `$rdi - 1`
+0x1d6417d30668: 0x00001d6433c82521
+(lldb) expr JSFunction::cast(func)->prototype_or_initial_map()
+(v8::internal::Object *) $286 = 0x00001d64e5d82321
+    0x302f3413c40e: cmpb   $-0x1, 0xb(%rcx)                      // CmpObjectType(rdi, JS_FUNCTION_TYPE, rcx) calls CmpInstanceType. Check if the HeapObject is a JSFunction
+    0x302f3413c412: je     0x302f3413be20                        // __ j(equal, masm->isolate()->builtins()->CallFunction(mode), RelocInfo::CODE_TARGET);
+                                                                 // I was not sure where to find this `j` function but it is in src/x64/assembler-x64.cc (Assembler::j but note
+                                                                 // that there are multiple overloaded j functions so make sure  you are looking at the correct one. There is 
+                                                                 // as section that discusses Assembler::j in detail later in this document.
+                                                                 // so what are we jumping to? We can back up in the debugger and find out:
+                                                                 // (lldb) up 2
+                                                                 // (lldb job *isolate->builtins()->CallFunction(static_cast<ConvertReceiverMode>(ConvertReceiverMode::kAny))
+                                                                 // This will be a builtin named CallFunction_ReceiverIsAny, and being a builtin you'll find it in 
+                                                                 // `src/builtins/builtins-definitions.h`. The implementation will be in `src/builtins/builtins-call.cc` and
+                                                                 // will result in `return builtin_handle(kCallFunction_ReceiverIsAny)`. This code repsonsible for generating
+                                                                 // is Builtins::Generate_CallFunction and in our case that means `src/builtins/x64/builtins-x64.cc`
+(lldb) expr isolate->builtins()->CallFunction(static_cast<ConvertReceiverMode>(ConvertReceiverMode::kAny))->entry()
+(byte *) $317 = 0x0000302f3413be20
+// Builtins::Generate_CallFunction (deps/v8/src/builtins/x64/builtins-x64.cc)
+    0x302f3413be20: testb  $0x1, %dil                            // AssertFunction (deps/v8/src/x64/macro-assembler-x64.cc) check if rdi is of type smi (testb(object, Immediate(kSmiTagMask));)
+                                                                 // rdi is the function to call:
+(lldb) register read rdi
+     rdi = 0x00001d6417d30669
+(lldb) expr JSFunction::cast(func)
+(v8::internal::JSFunction *) $320 = 0x00001d6417d30669
+    0x302f3413be24: jne    0x302f3413be36                        // this is also generated by AssertFunciton and the call to Assembler::j If not equal this code will fall through
+    0x302f3413be36: pushq  %rdi                                  // AssertFunction still, push rdi (the function) onto the stack
+    0x302f3413be37: movq   -0x1(%rdi), %rdi                      // move the map into rdi. CmpObjectType(object, JS_FUNCTION_TYPE, object). HeapObject::kMapOffset which is the first field in JSFunction
+    0x302f3413be3b: cmpb   $-0x1, 0xb(%rdi)                      // CmpObjectType(rdi, JS_FUNCTION_TYPE, rcx) calls CmpInstanceType. Check if the HeapObject is a JSFunction
+    0x302f3413be3f: popq   %rdi                                  // pop function from stack into rdi again
+    0x302f3413be40: je     0x302f3413be52                        // jump if equal will jump to a L label and return from the Check call and then return from AssertFunction
+// Builtins::Generate_CallFunction (deps/v8/src/builtins/x64/builtins-x64.cc) 
+    0x302f3413be52: movq   0x1f(%rdi), %rdx                      // move the SharedFunctionInfo into rdx:
+(lldb) memory read -f x -c 1 -s 8 `$rdi + 0x1f`
+0x1d6417d30688: 0x00001d6417d2dc21
+(lldb) expr JSFunction::cast(func)->shared()
+(v8::internal::SharedFunctionInfo *) $325 = 0x00001d6417d2dc21
+    0x302f3413be56: testb  $-0x20, 0x87(%rdx)                    //  testl(FieldOperand(rdx, SharedFunctionInfo::kCompilerHintsOffset)
+(lldb) expr JSFunction::cast(func)->shared()->compiler_hints()
+(int) $332 = 1056770
+(lldb) memory read -f dec -c 1 -s 4 `($rdx + 0x87)`
+0x1d6417d2dca8: 1056770
+    0x302f3413be5d: jne    0x302f3413bfbc                        // __ j(not_zero, &class_constructor);
+    0x302f3413be63: movq   0x27(%rdi), %rsi                      // move the functions context info rsi:
+(lldb) memory read -f x -c 1 -s 8 `$rdi + 0x27`
+0x1d6417d30690: 0x00001d6417d03a59
+(lldb) expr JSFunction::cast(func)->context()
+(v8::internal::Context *) $345 = 0x00001d6417d03a59
+    0x302f3413be67: testb  $0x3, 0x87(%rdx)                      // check SharedFunctionInfo::IsNativeBit::kMask | SharedFunctionInfo::IsStrictBit::kMask 
+    0x302f3413be6e: jne    0x302f3413bf14                        // 
+    0x302f3413bf14: movslq 0x73(%rdx), %rbx                      // __ movsxlq(rbx, FieldOperand(rdx, SharedFunctionInfo::kFormalParameterCountOffset))
+    0x302f3413bf18: movabsq $0x105300b92, %r10                   // move hook_on_function_call_address into scratch register; part of CheckDebugHook
+(lldb) expr isolate->debug()->hook_on_function_call_address()
+(v8::internal::Address) $353 = 0x0000000105300b92
+    0x302f3413bf22: cmpb   $0x0, (%r10)                          // how is this generate? In CheckDebugHook I can only find cmpb(debug_hook_active_operand, Immediate(0)); but not he previous moveabsq
+    0x302f3413bf26: je     0x302f3413bfa4                        // will jump to the label at the end of CheckDebugHook
+// MacroAssembler::InvokeFunction
+    0x302f3413bfa4: movq   -0x60(%r13), %rdx                     // move the UndefinedValueRootIndex into rdx generated by LoadRoot(rdx, Heap::kUndefinedValueRootIndex);
+(lldb) memory read -f x -c 1 -s 8 `$r13 - 0x60`
+0x106000068: 0x00001d64e5d822e1
+lldb) expr isolate->heap()->roots_[Heap::RootListIndex::kUndefinedValueRootIndex]
+(v8::internal::Object *) $354 = 0x00001d64e5d822e1
+// InvokePrologue(expected, actual, &done, &definitely_mismatches, flag, Label::kNear)
+    0x302f3413bfa8: cmpq   %rax, %rbx                            // Set(rax, actual.immediate()); 
+    0x302f3413bfab: je     0x302f3413bfb2                        // will return from InvokePrologue
+    0x302f3413bfb2: movq   0x37(%rdi), %rcx                      // move the function code into rcx (movp(rcx, FieldOperand(function, JSFunction::kCodeOffset)))
+(lldb) memory read -f x -c 1 -s 8 `$rdi + 0x37`
+0x1d6417d306a0: 0x0000302f34144281
+(lldb) expr JSFunction::cast(func)->code()
+(v8::internal::Code *) $358 = 0x0000302f34144281
+    0x302f3413bfb6: addq   $0x5f, %rcx                           // addp(rcx, Immediate(Code::kHeaderSize - kHeapObjectTag)); the instruction start follows the Code object header
+(lldb) job JSFunction::cast(func)->code()
+0x302f34144281: [Code]
+yind = BUILTIN
+name = InterpreterEntryTrampoline
+compiler = unknown
+Instructions (size = 1004)
+0x302f341442e0     0  488b5f2f       REX.W movq rbx,[rdi+0x2f]
+(lldb) memory read -f x -c 1 -s8 `$rcx + 0x5f`
+0x302f341442e0: 0x075b8b482f5f8b48
+// notice that rcx now point to the first instruction.
+    0x302f3413bfba: jmpq   *%rcx                                // now jump to the first instruction of function :) 
+
+    0x302f341442e0: movq   0x2f(%rdi), %rbx                     // move the feedback vector into rbx
+(lldb) memory read -f x -c 1 -s 8 `$rdi + 0x2f`
+0x1d6417d30698: 0x00001d6417d306e9
+(lldb) expr JSFunction::cast(func)->feedback_vector()
+(v8::internal::FeedbackVector *) $363 = 0x00001d6417d306a9
+(lldb) job JSFunction::cast(func)->feedback_vector()
+0x1d6417d306a9: [FeedbackVector] in OldSpace
+ - length: 1
+ SharedFunctionInfo: 0x1d6417d2dc21 <SharedFunctionInfo>
+ Optimized Code: 0
+ Invocation Count: 0
+ Profiler Ticks: 0
+ Slot #0 kCreateClosure
+  [0]: 0x1d6417d306d9 <Cell value= 0x1d64e5d822e1 <undefined>>
+
+    302f341442e4: movq   0x7(%rbx), %rbx                     // move Slot[0] from the feedback vector into rbx
+(lldb) memory read -f x -c 1 -s 8 `$rbx + 0x7`
+0x1d6417d306f0: 0x00001d6417d306a9
+// MaybeTailCallOptimizedCodeSlot(masm, feedback_vector, rcx, r14, r15);
+// MaybeTailCallOptimizedCodeSlot(MacroAssembler* masm, Register feedback_vector, Register scratch1, Register scratch2, Register scratch3)
+// Register closure = rdi;
+// Register optimized_code_entry = rcx;
+    0x302f341442e8: movq   0xf(%rbx), %rcx                     // __ movp(optimized_code_entry, FieldOperand(feedback_vector, FeedbackVector::kOptimizedCodeOffset));
+(lldb) memory read -f x -c 1 -s 8 `$rbx + 0xf`
+0x1d6417d306b8: 0x0000000000000000
+(lldb) expr JSFunction::cast(func)->feedback_vector()->optimized_code()
+(v8::internal::Code *) $367 = 0x0000000000000000
+    0x302f341442ec: testb  $0x1, %cl                           // smi test against low 8 bit of rcx called from JumpIfNotSmi -> CheckSmi
+    0x302f341442ef: jne    0x302f34144486                      // JumpIfNotSmi -> Assembler::j 
+    0x302f341442f5: testb  $0x1, %cl                           // test again but this time from MacroAssembler::SmiCompare and its call to AssertSmi which calls CheckSmi
+    0x302f341442f8: je     0x302f3414430a                      // SmiCompare -> AssertSmi -> Check
+
+
+Look into static inline Code* GetCodeFromTargetAddress(Address address); which could possible be
+used to get the code of an address which could be useful when debugging and you only have the
+address that is being jumped to.
+
 ```console
 (lldb) expr JSFunction::cast(func)->code()
 (v8::internal::Code *) $477 = 0x00000e6d84c44281
@@ -7825,7 +8184,7 @@ a compile time we can put a break point in it (you can debug mksnapshot though w
 (lldb) p v8::internal::StackFrame::TypeToMarker(static_cast<v8::internal::StackFrame::Type>(v8::internal::StackFrame::Type::INTERNAL))
 (int32_t) $256 = 28
     0x302f341418ce: movabsq $0x302f34141861, %r10               // CodeObject() what is this, seems like it is Handle<HeapObject> which will be patched later
-                                                                // Remember that we are currently setting up the stack frame and perhaps this is setting up the `this` pointer
+                                                                // I think this might be the register file?
 (lldb) memory read -f x -c 1 -s 8 0x302f34141861
 0x302f34141861: 0x6900001d64ceb827
     0x302f341418d8: pushq  %r10                                 // push the HandleHeapObject into the stack
@@ -10686,3 +11045,128 @@ Section __bss: 0x12447 (addr 0x102a4bb80 offset 0)
 total 0xbefbb
 Segment __LINKEDIT: 0x1bc7000 (vmaddr 0x102a5e000 fileoff 44347392)
 total 0x104625000: pushq  (%r10)
+
+
+### Context
+And internal::Context is declared in `deps/v8/src/contexts.h` and extends FixedArray
+```console
+(lldb) br s -f node.cc -l 4439
+(lldb) expr context->length()
+(int) $522 = 281
+```
+This output was taken 
+
+Creating a new Context is done by `v8::CreateEnvironment`
+```console
+(lldb) br s -f api.cc -l 6565
+```
+```c++
+InvokeBootstrapper<ObjectType> invoke;
+   6635    result =
+-> 6636        invoke.Invoke(isolate, maybe_proxy, proxy_template, extensions,
+   6637                      context_snapshot_index, embedder_fields_deserializer);
+```
+This will later end up in `Snapshot::NewContextFromSnapshot`:
+```c++
+Vector<const byte> context_data =
+      ExtractContextData(blob, static_cast<uint32_t>(context_index));
+  SnapshotData snapshot_data(context_data);
+
+  MaybeHandle<Context> maybe_result = PartialDeserializer::DeserializeContext(
+      isolate, &snapshot_data, can_rehash, global_proxy,
+      embedder_fields_deserializer);
+```
+So we can see here that the Context is deserialized from the snapshot. What does the Context contain at this stage:
+```console
+(lldb) expr result->length()
+(int) $650 = 281
+(lldb) expr result->Print()
+```
+Lets take a look at an entry:
+```console
+(lldb) expr result->get(0)->Print()
+0xc201584331: [Function] in OldSpace
+ - map = 0xc24c002251 [FastProperties]
+ - prototype = 0xc201584371
+ - elements = 0xc2b2882251 <FixedArray[0]> [HOLEY_ELEMENTS]
+ - initial_map =
+ - shared_info = 0xc2b2887521 <SharedFunctionInfo>
+ - name = 0xc2b2882441 <String[0]: >
+ - formal_parameter_count = -1
+ - kind = [ NormalFunction ]
+ - context = 0xc201583a59 <FixedArray[281]>
+ - code = 0x2df1f9865a61 <Code BUILTIN>
+ - source code = () {}
+ - properties = 0xc2b2882251 <FixedArray[0]> {
+    #length: 0xc2cca83729 <AccessorInfo> (const accessor descriptor)
+    #name: 0xc2cca83799 <AccessorInfo> (const accessor descriptor)
+    #arguments: 0xc201587fd1 <AccessorPair> (const accessor descriptor)
+    #caller: 0xc201587fd1 <AccessorPair> (const accessor descriptor)
+    #constructor: 0xc201584c29 <JSFunction Function (sfi = 0xc2b28a6fb1)> (const data descriptor)
+    #apply: 0xc201588079 <JSFunction apply (sfi = 0xc2b28a7051)> (const data descriptor)
+    #bind: 0xc2015880b9 <JSFunction bind (sfi = 0xc2b28a70f1)> (const data descriptor)
+    #call: 0xc2015880f9 <JSFunction call (sfi = 0xc2b28a7191)> (const data descriptor)
+    #toString: 0xc201588139 <JSFunction toString (sfi = 0xc2b28a7231)> (const data descriptor)
+    0xc2b28bc669 <Symbol: Symbol.hasInstance>: 0xc201588179 <JSFunction [Symbol.hasInstance] (sfi = 0xc2b28a72d1)> (const data descriptor)
+ }
+
+ - feedback vector: not available
+```
+So we can see that this is of type `[Function]` which we can cast using:
+```
+(lldb) expr JSFunction::cast(result->get(0))->code()->Print()
+0x2df1f9865a61: [Code]
+kind = BUILTIN
+name = EmptyFunction
+```
+
+```console
+(lldb) expr result->previous()
+(v8::internal::Context *) $657 = 0x0000000000000000
+```
+
+
+```console
+(lldb) expr JSFunction::cast(result->closure())->Print()
+0xc201584331: [Function] in OldSpace
+ - map = 0xc24c002251 [FastProperties]
+ - prototype = 0xc201584371
+ - elements = 0xc2b2882251 <FixedArray[0]> [HOLEY_ELEMENTS]
+ - initial_map =
+ - shared_info = 0xc2b2887521 <SharedFunctionInfo>
+ - name = 0xc2b2882441 <String[0]: >
+ - formal_parameter_count = -1
+ - kind = [ NormalFunction ]
+ - context = 0xc201583a59 <FixedArray[281]>
+ - code = 0x2df1f9865a61 <Code BUILTIN>
+ - source code = () {}
+ - properties = 0xc2b2882251 <FixedArray[0]> {
+    #length: 0xc2cca83729 <AccessorInfo> (const accessor descriptor)
+    #name: 0xc2cca83799 <AccessorInfo> (const accessor descriptor)
+    #arguments: 0xc201587fd1 <AccessorPair> (const accessor descriptor)
+    #caller: 0xc201587fd1 <AccessorPair> (const accessor descriptor)
+    #constructor: 0xc201584c29 <JSFunction Function (sfi = 0xc2b28a6fb1)> (const data descriptor)
+    #apply: 0xc201588079 <JSFunction apply (sfi = 0xc2b28a7051)> (const data descriptor)
+    #bind: 0xc2015880b9 <JSFunction bind (sfi = 0xc2b28a70f1)> (const data descriptor)
+    #call: 0xc2015880f9 <JSFunction call (sfi = 0xc2b28a7191)> (const data descriptor)
+    #toString: 0xc201588139 <JSFunction toString (sfi = 0xc2b28a7231)> (const data descriptor)
+    0xc2b28bc669 <Symbol: Symbol.hasInstance>: 0xc201588179 <JSFunction [Symbol.hasInstance] (sfi = 0xc2b28a72d1)> (const data descriptor)
+ }
+
+ - feedback vector: not available
+```
+So this is the JSFunction associated with the deserialized context. Not sure what this is about as looking at the source code it looks like 
+an empty function. A function can also be set on the context so I'm guessing that this give access to the function of a context once set.
+
+This context also has extensions:
+```console
+(lldb) expr result->extension()->Print()
+```
+
+Now the above context was the internal context, but user programs will use context from `deps/v8/include/v8.h`:
+```console
+(lldb) expr context->Global()
+(v8::Local<v8::Object>) $29 = (val_ = 0x000000010584e7e8)
+```
+
+(lldb) expr PrintBuiltinSizes(this)
