@@ -6938,8 +6938,7 @@ the V8 side of things.
 
 ```console
     $ lldb -- out/Debug/node --print-ast
-    (lldb) br s -f node.cc -l 1500
-    (lldb) br s -f node.cc -l 3399
+    (lldb) br s -f node::LoadEnvironment
     (lldb) r
 ```
 
@@ -7298,12 +7297,12 @@ entry(orig_func, func, recv, argc, argv);
 ```
 If we use `step instruction` (si) we can follow the setup and calling of this function:
 ```console
-    0x100e381b4 <+1348>: movq   -0x118(%rbp), %rdx                  // move the value of address of code->entry() into rdx
-    0x100e381bb <+1355>: movq   -0x120(%rbp), %rdi                  // first argument which is orig_func
-->  0x100e381c2 <+1362>: movq   -0x128(%rbp), %rsi                  // second argument which is func
-    0x100e381c9 <+1369>: movq   -0x130(%rbp), %rcx                  // third argument which is recv
-    0x100e381d0 <+1376>: movl   -0x30(%rbp), %eax                   // fourth arg which is argc 
-    0x100e381d3 <+1379>: movq   -0x138(%rbp), %r8                   // fifth argument which is argv
+    0x100e381b4 <+1348>: movq   -0x118(%rbp), %rdx                  // move the value of address of local variable code->entry() into rdx
+    0x100e381bb <+1355>: movq   -0x120(%rbp), %rdi                  // first argument which is local variable orig_func
+->  0x100e381c2 <+1362>: movq   -0x128(%rbp), %rsi                  // second argument which is local variable func
+    0x100e381c9 <+1369>: movq   -0x130(%rbp), %rcx                  // third argument which is local variable recv
+    0x100e381d0 <+1376>: movl   -0x30(%rbp), %eax                   // fourth arg which is local variable argc 
+    0x100e381d3 <+1379>: movq   -0x138(%rbp), %r8                   // fifth argument which is local variable argv
     0x100e381da <+1386>: movq   %rdx, -0x1c0(%rbp)                  // move code->entry from rdx into local variable 
     0x100e381e1 <+1393>: movq   %rcx, %rdx                          // move recv into rdx
     0x100e381e4 <+1396>: movl   %eax, %ecx                          // move argc into ecx
@@ -11050,6 +11049,10 @@ total 0x104625000: pushq  (%r10)
 ### Context
 And internal::Context is declared in `deps/v8/src/contexts.h` and extends FixedArray
 ```console
+class Context: public FixedArray {
+```
+
+```console
 (lldb) br s -f node.cc -l 4439
 (lldb) expr context->length()
 (int) $522 = 281
@@ -11163,10 +11166,123 @@ This context also has extensions:
 (lldb) expr result->extension()->Print()
 ```
 
+`Contest::Scope` is a RAII class used to Enter/Exit a context. Lets take a closer look at `Enter`:
+```c++
+void Context::Enter() {
+  i::Handle<i::Context> env = Utils::OpenHandle(this);
+  i::Isolate* isolate = env->GetIsolate();
+  ENTER_V8_NO_SCRIPT_NO_EXCEPTION(isolate);
+  i::HandleScopeImplementer* impl = isolate->handle_scope_implementer();
+  impl->EnterContext(env);
+  impl->SaveContext(isolate->context());
+  isolate->set_context(*env);
+}
+```
+So the current context is saved and then the this context `env` is set as the current on the isolate.
+`EnterContext` will push the passed-in context (deps/v8/src/api.cc):
+```c++
+void HandleScopeImplementer::EnterContext(Handle<Context> context) {
+  entered_contexts_.push_back(*context);
+}
+...
+DetachableVector<Context*> entered_contexts_;
+```
+DetachableVector is a delegate/adaptor with some additonaly features on a std::vector.
+Handle<Context> context1 = NewContext(isolate);
+Handle<Context> context2 = NewContext(isolate);
+Context::Scope context_scope1(context1);        // entered_contexts_ [context1], saved_contexts_[isolateContext]
+Context::Scope context_scope2(context2);        // entered_contexts_ [context1, context2], saved_contexts[isolateContext, context1]
+
+Now, `SaveContext` is using the current context, not `this` context (`env`) and pushing that to the end of the saved_contexts_ vector.
+We can look at this as we entered context_scope2 from context_scope1:
+
+
+And `Exit` looks like:
+```c++
+void Context::Exit() {
+  i::Handle<i::Context> env = Utils::OpenHandle(this);
+  i::Isolate* isolate = env->GetIsolate();
+  ENTER_V8_NO_SCRIPT_NO_EXCEPTION(isolate);
+  i::HandleScopeImplementer* impl = isolate->handle_scope_implementer();
+  if (!Utils::ApiCheck(impl->LastEnteredContextWas(env),
+                       "v8::Context::Exit()",
+                       "Cannot exit non-entered context")) {
+    return;
+  }
+  impl->LeaveContext();
+  isolate->set_context(impl->RestoreContext());
+}
+```
+
 Now the above context was the internal context, but user programs will use context from `deps/v8/include/v8.h`:
 ```console
 (lldb) expr context->Global()
 (v8::Local<v8::Object>) $29 = (val_ = 0x000000010584e7e8)
 ```
+
+When calling a function, for example:
+```c++
+Local<Value> result = script.ToLocalChecked()->Run();
+```
+
+Every HeapObject has a GetIsolate function that returns the isolate associated with the object. This means that we can get the
+CurrentContext by using this isolate. 
+
+What is a native_context, as returned from context->native_context()?  
+Lets take a closer look at `Isolate::GetCurrentContext`:
+```c++
+v8::Local<v8::Context> Isolate::GetCurrentContext() {
+  i::Isolate* isolate = reinterpret_cast<i::Isolate*>(this);
+  i::Context* context = isolate->context();
+  if (context == NULL) return Local<Context>();
+  i::Context* native_context = context->native_context();
+  if (native_context == NULL) return Local<Context>();
+  return Utils::ToLocal(i::Handle<i::Context>(native_context));
+}
+```
+Notice that the context retrieved from the isolate is only used to retrieve the native context and return it.
+At least the first time these might be the same.
+`deps/v8/src/contexts-inl.h` has the definition for `native_context()`:
+```c++
+Context* Context::native_context() const {
+  Object* result = get(NATIVE_CONTEXT_INDEX);
+  DCHECK(IsBootstrappingOrNativeContext(this->GetIsolate(), result));
+  return reinterpret_cast<Context*>(result);
+}
+```
+So notice the get(NATIVE_CONTEXT_INDEX). Remember that the internal Context extends `FixedArray` so `get` above is get
+from `FixedArray`:
+```c++
+inline Object* get(int index) const;
+```
+So a context is bacially an array objects and the indexes are defined in `Field` enum:
+```console
+(lldb) expr context->get(Field::NATIVE_CONTEXT_INDEX)
+(v8::internal::Object *) $81 = 0x000028ece3a83a59
+
+(lldb) expr context->get(3)
+(v8::internal::Object *) $82 = 0x000028ece3a83a59
+
+(lldb) expr context->Print()
+0x28ece3a83a59: [FixedArray] in OldSpace
+ - map = 0x28ec3aa02bb1 <Map(HOLEY_ELEMENTS)>
+ - length: 281
+           0: 0x28ece3a84331 <JSFunction (sfi = 0x28ecf1b87521)>
+           1: 0
+           2: 0x28ece3aa3309 <JSObject>
+           3: 0x28ece3a83a59 <FixedArray[281]>
+
+(lldb) expr context->get(Field::NATIVE_CONTEXT_INDEX)->Print()
+0x28ece3a83a59: [FixedArray] in OldSpace
+ - map = 0x28ec3aa02bb1 <Map(HOLEY_ELEMENTS)>
+ - length: 281
+           0: 0x28ece3a84331 <JSFunction (sfi = 0x28ecf1b87521)>
+           1: 0
+           2: 0x28ece3aa3309 <JSObject>
+           3: 0x28ece3a83a59 <FixedArray[281]>
+           4: 0x28ec0e082239 <JSGlobal Object>
+```
+So from the above we can see that `context` is an array and index `Field::NATIVE_CONTEXT_INDEX` is also a FixedArray.
+
 
 (lldb) expr PrintBuiltinSizes(this)
