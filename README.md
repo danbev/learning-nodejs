@@ -11160,6 +11160,15 @@ name = EmptyFunction
 ```
 So this is the JSFunction associated with the deserialized context. Not sure what this is about as looking at the source code it looks like 
 an empty function. A function can also be set on the context so I'm guessing that this give access to the function of a context once set.
+Where is function set, well it is probably deserialized but we can see it be used in `deps/v8/src/bootstrapper.cc`:
+```c++
+{
+  Handle<JSFunction> function = SimpleCreateFunction(isolate, factory->empty_string(), Builtins::kAsyncFunctionAwaitCaught, 2, false);
+  native_context->set_async_function_await_caught(*function);
+}
+```console
+(lldb) expr isolate()->builtins()->builtin_handle(Builtins::Name::kAsyncFunctionAwaitCaught)->Print()
+```
 
 This context also has extensions:
 ```console
@@ -11284,5 +11293,7 @@ So a context is bacially an array objects and the indexes are defined in `Field`
 ```
 So from the above we can see that `context` is an array and index `Field::NATIVE_CONTEXT_INDEX` is also a FixedArray.
 
+
+### ScopeInfo
 
 (lldb) expr PrintBuiltinSizes(this)
