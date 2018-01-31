@@ -11293,6 +11293,48 @@ So a context is bacially an array objects and the indexes are defined in `Field`
 ```
 So from the above we can see that `context` is an array and index `Field::NATIVE_CONTEXT_INDEX` is also a FixedArray.
 
+So how does `v8::internal::Context` relate to `v8::Context` (`deps/v8/include/v8.h`):
+Let's take a closer look at this function:
+```c++
+```c++
+v8::Local<v8::Context> Isolate::GetCurrentContext() {
+  i::Isolate* isolate = reinterpret_cast<i::Isolate*>(this);
+  i::Context* context = isolate->context();
+  if (context == NULL) return Local<Context>();
+  i::Context* native_context = context->native_context();
+  if (native_context == NULL) return Local<Context>();
+  return Utils::ToLocal(i::Handle<i::Context>(native_context));
+}
+```
+`ToLocal` is defined using a macro in `deps/v8/src/api.h`:
+```c++
+#define MAKE_TO_LOCAL(Name, From, To)                                       \
+  Local<v8::To> Utils::Name(v8::internal::Handle<v8::internal::From> obj) { \
+    return Convert<v8::internal::From, v8::To>(obj);  \
+  }
+
+MAKE_TO_LOCAL(ToLocal, Context, Context)
+```
+So this would be expanded by the preprocessor to this:
+```c++
+  Local<v8::Context> Utils::ToLocal(v8::internal::Handle<v8::internal::Context> obj) { \
+    return Convert<v8::internal::Context, v8::Context>(obj);  \
+  }
+
+  // instantiated template impl would be something like this:
+  static inline Local<Context> Convert(v8::internal::Handle<From> obj) {
+    DCHECK(obj.is_null() ||
+           (obj->IsSmi() ||
+            !obj->IsTheHole(i::HeapObject::cast(*obj)->GetIsolate())));
+    return Local<Context>(reinterpret_cast<Context*>(obj.location()));
+  }
+```
+So, a `v8::internal::Context` can be casted to be of type `v8::Context`.
+
+```c++
+(lldb) expr context->get(Field::NATIVE_CONTEXT_INDEX)->Print()
+(lldb) expr context->Global()->Set(key, value)
+```
 
 ### ScopeInfo
 
