@@ -1397,6 +1397,12 @@ An IsolateData (and also an Environement as it proxies these members) actually h
     $ make lint
     $ make jslint
 
+Run lint os one file:
+```console
+$ ./tools/node_modules/eslint/bin/eslint.js --rulesdir=tools/eslint-rules --ext=.js,.mjs,.md test/sequential/test-benchmark-tls.js
+```
+
+
 ### Running tests
 To run the test use the following command:
 
@@ -1902,7 +1908,7 @@ The call in question is auto-deducing the paremeter types from the arguments, it
 
 
 ## ContainerOfHelper
-src/util.h declares a class named ContainerOfHelper:
+`src/util.h` declares a class named ContainerOfHelper:
 
     // The helper is for doing safe downcasts from base types to derived types.
     template <typename Inner, typename Outer>
@@ -5684,14 +5690,13 @@ To clear the cache:
 
     STACK_OF(X509)* ssl_certs = SSL_get_peer_cert_chain(w->ssl_);
 
-STACK_OF is a macro defined in deps/openssl/openssl/crypto/stack/safestack.h and will expand to:
-
+STACK_OF is a macro defined in `deps/openssl/openssl/crypto/stack/safestack.h` and will expand to:
+```c++
     struct stack_st_X509* ssl_certs = SSL_get_peer_cert_chain(w->ssl_);
-
+```
 
 A Local<Object> instance holds a pointer to an Object. If you pass this instance to a function a copy of the 
-object will be created. But both instances will point to the same object. But what ever we do to the copy there
-caller instance will still point to the same location, but if we update the value that it point to it should work ?
+object will be created. But both instances will point to the same object (the pointer is copied). 
 
 For example:
 
@@ -11047,6 +11052,9 @@ total 0x104625000: pushq  (%r10)
 
 
 ### Context
+JavaScript provides a set of builtin functions and objects. These functions and objects can be changed by user code. Each context
+is separate collection of these objects and functions.
+
 And internal::Context is declared in `deps/v8/src/contexts.h` and extends FixedArray
 ```console
 class Context: public FixedArray {
@@ -11175,7 +11183,7 @@ This context also has extensions:
 (lldb) expr result->extension()->Print()
 ```
 
-`Contest::Scope` is a RAII class used to Enter/Exit a context. Lets take a closer look at `Enter`:
+`Context::Scope` is a RAII class used to Enter/Exit a context. Lets take a closer look at `Enter`:
 ```c++
 void Context::Enter() {
   i::Handle<i::Context> env = Utils::OpenHandle(this);
@@ -11336,6 +11344,615 @@ So, a `v8::internal::Context` can be casted to be of type `v8::Context`.
 (lldb) expr context->Global()->Set(key, value)
 ```
 
+In node a context can be created using `NewContext` in `node.cc`.
+```c++
+auto context = Context::New(isolate, nullptr, object_template);
+```
+Which will call (deps/v8/src/api.cc):
+```c++
+Local<Context> v8::Context::New(
+    v8::Isolate* external_isolate, v8::ExtensionConfiguration* extensions,
+    v8::MaybeLocal<ObjectTemplate> global_template,
+    v8::MaybeLocal<Value> global_object,
+    DeserializeInternalFieldsCallback internal_fields_deserializer) {
+  return NewContext(external_isolate, 
+                    extensions, 
+                    global_template,
+                    global_object, 
+                    0, 
+                    internal_fields_deserializer);
+}
+```
+The declaration for this function can be found in `deps/v8/include/v8.h`:
+```c++
+Local<Context> NewContext(
+                          v8::Isolate* external_isolate, 
+                          v8::ExtensionConfiguration* extensions,
+                          v8::MaybeLocal<ObjectTemplate> global_template,
+                          v8::MaybeLocal<Value> global_object, 
+                          size_t context_snapshot_index,
+                          v8::DeserializeInternalFieldsCallback embedder_fields_deserializer) {
+    ...
+  i::Handle<i::Context> env = CreateEnvironment<i::Context>(
+      isolate, extensions, global_template, global_object,
+      context_snapshot_index, embedder_fields_deserializer);
+}
+```
+`CreateEnvironment`:
+```c++
+    // Create the environment.
+    InvokeBootstrapper<ObjectType> invoke;
+    result = invoke.Invoke(isolate, maybe_proxy, proxy_template, extensions,
+                      context_snapshot_index, embedder_fields_deserializer);
+
+template <>
+struct InvokeBootstrapper<i::Context> {
+  i::Handle<i::Context> Invoke(
+      i::Isolate* isolate, i::MaybeHandle<i::JSGlobalProxy> maybe_global_proxy,
+      v8::Local<v8::ObjectTemplate> global_proxy_template,
+      v8::ExtensionConfiguration* extensions, size_t context_snapshot_index,
+      v8::DeserializeInternalFieldsCallback embedder_fields_deserializer) {
+    return isolate->bootstrapper()->CreateEnvironment(
+        maybe_global_proxy, global_proxy_template, extensions,
+        context_snapshot_index, embedder_fields_deserializer);
+  }
+};
+```
+'CreateEnvironment` in `boostrapper.cc`:
+```c++
+Genesis genesis(isolate_, maybe_global_proxy, global_proxy_template,
+                    context_snapshot_index, embedder_fields_deserializer,
+                    context_type);
+
+  SaveContext saved_context(isolate);
+```
+`SaveContext::SaveContext` in `deps/v8/src/isolate.cc`: 
+```c++
+SaveContext::SaveContext(Isolate* isolate)
+    : isolate_(isolate), prev_(isolate->save_context()) {
+
+  if (isolate->context() != nullptr) {
+    context_ = Handle<Context>(isolate->context());
+  }
+  isolate->set_save_context(this);
+
+  c_entry_fp_ = isolate->c_entry_fp(isolate->thread_local_top());
+}
+```
+
+```c++
+ global_proxy = isolate->factory()->NewUninitializedJSGlobalProxy(instance_size);
+```
+
+`Factory::NewUninitializedJSGlobalProxy` in `deps/v8/src/factory.cc:
+```c++
+Handle<JSGlobalProxy> Factory::NewUninitializedJSGlobalProxy(int size) {
+  // Create an empty shell of a JSGlobalProxy that needs to be reinitialized
+  // via ReinitializeJSGlobalProxy later.
+  Handle<Map> map = NewMap(JS_GLOBAL_PROXY_TYPE, size);
+  // Maintain invariant expected from any JSGlobalProxy.
+  map->set_is_access_check_needed(true);
+  map->set_may_have_interesting_symbols(true);
+  CALL_HEAP_FUNCTION(
+      isolate(), isolate()->heap()->AllocateJSObjectFromMap(*map, NOT_TENURED),
+      JSGlobalProxy);
+}
+```
+```console
+(lldb) expr isolate()->heap()->AllocateJSObjectFromMap(*map, static_cast<PretenureFlag>(NOT_TENURED) , nullptr)
+(v8::internal::AllocationResult) $10 = (object_ = 0x00002ef850802239)
+```
+
+`CALL_HEAP_FUNCTION` macro:
+```c++
+#define RETURN_OBJECT_UNLESS_RETRY(ISOLATE, TYPE)         \
+  if (__allocation__.To(&__object__)) {                   \
+    DCHECK(__object__ != (ISOLATE)->heap()->exception()); \
+    return Handle<TYPE>(TYPE::cast(__object__), ISOLATE); \
+  }
+
+#define CALL_HEAP_FUNCTION(ISOLATE, FUNCTION_CALL, TYPE)                      
+
+    AllocationResult __allocation__ = FUNCTION_CALL;                          
+    Object* __object__ = nullptr;                                             
+    
+    if (__allocation__.To(&__object__)) { // expanded macro RETURN_OBJECT_UNLESS_RETRY(ISOLATE, TYPE)                                
+      DCHECK(__object__ != isolate->heap()->exception()); 
+      return Handle<JSGlobalProxy>(JSGlobalProxy::cast(__object__), isolate);
+    } 
+    /* Two GCs before panicking.  In newspace will almost always succeed. */  
+    for (int __i__ = 0; __i__ < 2; __i__++) {                                 
+      isolate->heap()->CollectGarbage(__allocation__.RetrySpace(), GarbageCollectionReason::kAllocationFailure);                       
+      __allocation__ = FUNCTION_CALL;                                         
+      if (__allocation__.To(&__object__)) { // expanded macro RETURN_OBJECT_UNLESS_RETRY(ISOLATE, TYPE)                                
+        DCHECK(__object__ != isolate->heap()->exception()); 
+        return Handle<JSGlobalProxy>(JSGlobalProxy::cast(__object__), isolate);
+      } 
+    }                                                                         
+    isolate->counters()->gc_last_resort_from_handles()->Increment();        
+    isolate->heap()->CollectAllAvailableGarbage(GarbageCollectionReason::kLastResort);                                
+    {                                                                        
+      AlwaysAllocateScope __scope__(isolate);                                 
+      __allocation__ = FUNCTION_CALL;                                         
+    }                                                                         
+    if (__allocation__.To(&__object__)) { // expanded macro RETURN_OBJECT_UNLESS_RETRY(ISOLATE, TYPE)                                
+      DCHECK(__object__ != isolate->heap()->exception()); 
+      return Handle<JSGlobalProxy>(JSGlobalProxy::cast(__object__), isolate);
+    } 
+    /* TODO(1181417): Fix this. */                                           
+    v8::internal::Heap::FatalProcessOutOfMemory("CALL_AND_RETRY_LAST", true); 
+    return Handle<TYPE>();                                                    
+
+```
+```console
+(lldb) expr JSGlobalProxy::cast($10.object_)
+(v8::internal::JSGlobalProxy *) $12 = 0x00002ef850802239
+```
+`JSGlobalProxy` can be found in `deps/v8/src/objects'
+
+
+Back in `deps/v8/src/bootstrapper.cc` deps/v8/src/bootstrapper.cc
+```c++
+if (!isolate->initialized_from_snapshot() ||
+      !Snapshot::NewContextFromSnapshot(isolate, global_proxy,
+                                        context_snapshot_index,
+                                        embedder_fields_deserializer)
+           .ToHandle(&native_context_)) {
+    native_context_ = Handle<Context>();
+```
+
+`deps/v8/src/snapshot/snapshot-common.cc`:
+```c++
+Vector<const byte> context_data = ExtractContextData(blob, static_cast<uint32_t>(context_index));
+SnapshotData snapshot_data(context_data);
+MaybeHandle<Context> maybe_result = PartialDeserializer::DeserializeContext(
+          isolate, &snapshot_data, can_rehash, global_proxy,
+          embedder_fields_deserializer);
+```
+```console
+(lldb) p context_index
+(size_t) $42 = 0
+```
+`PartialDeserializer::DeserializeContext`:
+
+
+Again I'm asking myself what is in the context:
+```console
+(lldb) p result->Print()
+
+(lldb) expr JSFunction::cast(result->get(0))->code()->Print()
+0x38873dd44621: [Code]
+kind = BUILTIN
+name = EmptyFunction
+compiler = unknown
+address = 0x38873dd44621
+Instructions (size = 15)
+0x38873dd44680     0  48bb50fe690001000000 REX.W movq rbx,0x10069fe50    ;; external reference (Builtin_EmptyFunction)
+0x38873dd4468a     a  e9b1abfcff     jmp 0x38873dd0f240  (AdaptorWithBuiltinExitFrame)    ;; code: BUILTIN
+
+
+locInfo (size = 3)
+0x38873dd44682  external reference (Builtin_EmptyFunction)  (0x10069fe50)
+0x38873dd4468b  code target (BUILTIN)  (0x38873dd0f240)
+
+
+(lldb) expr result->get(1)
+(v8::internal::Object *) $91 = 0x0000000000000000
+
+The third entry in the array are the [global properties](https://tc39.github.io/ecma262/#sec-value-properties-of-the-global-object):
+(lldb) expr JSGlobalObject::cast(result->get(2))
+(v8::internal::JSGlobalObject *) $93 = 0x00002ef8f1387e21
+(lldb) expr JSGlobalObject::cast(result->get(2))->Print()
+0x2ef8f1387e21: [JSGlobalObject] in OldSpace
+ - map = 0x2ef8f2c029d1 [DictionaryProperties]
+ - prototype = 0x2ef8f1387e49
+ - elements = 0x2ef8bb802251 <FixedArray[0]> [HOLEY_ELEMENTS]
+ - global proxy = 0x2ef850802259 <JSGlobal Object>
+ - properties = 0x2ef8f1387ef9 <HashTable[133]> {
+
+   #Promise: 0x2ef8f1393a71 <JSFunction Promise (sfi = 0x2ef8bb828829)> (data, dict_index: 28, attrs: [W_C])
+   #eval: 0x2ef8f1396a59 <JSFunction eval (sfi = 0x2ef8bb836bb1)> (data, dict_index: 100, attrs: [W_C])
+   #ArrayBuffer: 0x2ef8f1389551 <JSFunction ArrayBuffer (sfi = 0x2ef8bb82f4f1)> (data, dict_index: 54, attrs: [W_C])
+   #Map: 0x2ef8f1395689 <JSFunction Map (sfi = 0x2ef8bb832691)> (data, dict_index: 76, attrs: [W_C])
+   #parseInt: 0x2ef8f1390371 <JSFunction parseInt (sfi = 0x2ef8bb823c71)> (data, dict_index: 12, attrs: [W_C])
+   #Uint8ClampedArray: 0x2ef8f138b2c1 <JSFunction Uint8ClampedArray (sfi = 0x2ef8bb80d671)> (data, dict_index: 72, attrs: [W_C])
+   #unescape: 0x2ef8f138c029 <JSFunction unescape (sfi = 0x2ef8bb836af9)> (data, dict_index: 98, attrs: [W_C])
+   #RegExp: 0x2ef8f13906e1 <JSFunction RegExp (sfi = 0x2ef8bb829351)> (data, dict_index: 30, attrs: [W_C])
+   #Uint16Array: 0x2ef8f138a759 <JSFunction Uint16Array (sfi = 0x2ef8bb80c3b1)> (data, dict_index: 60, attrs: [W_C])
+   #Error: 0x2ef8f138c0c9 <JSFunction Error (sfi = 0x2ef8bb82bcc9)> (data, dict_index: 32, attrs: [W_C])
+   #undefined: 0x2ef8bb8022e1 <undefined> (data, dict_index: 18, attrs: [___])
+   #Int32Array: 0x2ef8f138abe9 <JSFunction Int32Array (sfi = 0x2ef8bb80cd11)> (data, dict_index: 66, attrs: [W_C])
+   #Uint32Array: 0x2ef8f138a9a1 <JSFunction Uint32Array (sfi = 0x2ef8bb80c9f1)> (data, dict_index: 64, attrs: [W_C])
+   #Function: 0x2ef8f1384af9 <JSFunction Function (sfi = 0x2ef8bb821a29)> (data, dict_index: 4, attrs: [W_C])
+   #ReferenceError: 0x2ef8f1395419 <JSFunction ReferenceError (sfi = 0x2ef8bb82c191)> (data, dict_index: 38, attrs: [W_C])
+   #TypeError: 0x2ef8f138c569 <JSFunction TypeError (sfi = 0x2ef8bb82c3a9)> (data, dict_index: 42, attrs: [W_C])
+   #Float32Array: 0x2ef8f138ae31 <JSFunction Float32Array (sfi = 0x2ef8bb80d031)> (data, dict_index: 68, attrs: [W_C])
+   #encodeURI: 0x2ef8f1397cf1 <JSFunction encodeURI (sfi = 0x2ef8bb8368b9)> (data, dict_index: 92, attrs: [W_C])
+   #Intl: 0x2ef8f1397bc1 <Object map = 0x2ef8f2c04d21> (data, dict_index: 52, attrs: [W_C])
+   #JSON: 0x2ef8f1388359 <Object map = 0x2ef8f2c02ac1> (data, dict_index: 46, attrs: [W_C])
+   #Uint8Array: 0x2ef8f1389869 <JSFunction Uint8Array (sfi = 0x2ef8bb80bce9)> (data, dict_index: 56, attrs: [W_C])
+   #Date: 0x2ef8f138c7b1 <JSFunction Date (sfi = 0x2ef8bb826469)> (data, dict_index: 26, attrs: [W_C])
+   #Boolean: 0x2ef8f1397549 <JSFunction Boolean (sfi = 0x2ef8bb823d29)> (data, dict_index: 20, attrs: [W_C])
+   #WeakMap: 0x2ef8f1397829 <JSFunction WeakMap (sfi = 0x2ef8bb8334e1)> (data, dict_index: 80, attrs: [W_C])
+   #Math: 0x2ef8f1392b81 <Object map = 0x2ef8f2c04001> (data, dict_index: 48, attrs: [W_C])
+   #String: 0x2ef8f1393e89 <JSFunction String (sfi = 0x2ef8bb823f11)> (data, dict_index: 22, attrs: [W_C])
+   #escape: 0x2ef8f13977c9 <JSFunction escape (sfi = 0x2ef8bb836a41)> (data, dict_index: 96, attrs: [W_C])
+   #NaN: 0x2ef8bb802311 <Number nan> (data, dict_index: 16, attrs: [___])
+   #isFinite: 0x2ef8f1395ee1 <JSFunction isFinite (sfi = 0x2ef8bb836c69)> (data, dict_index: 102, attrs: [W_C])
+   #Infinity: 0x2ef8bb802a39 <Number inf> (data, dict_index: 14, attrs: [___])
+   #URIError: 0x2ef8f1395f41 <JSFunction URIError (sfi = 0x2ef8bb82c501)> (data, dict_index: 44, attrs: [W_C])
+   #Array: 0x2ef8f1384ab9 <JSFunction Array (sfi = 0x2ef8bb8223c1)> (data, dict_index: 6, attrs: [W_C])
+   #Int8Array: 0x2ef8f138a511 <JSFunction Int8Array (sfi = 0x2ef8bb80c091)> (data, dict_index: 58, attrs: [W_C])
+   #encodeURIComponent: 0x2ef8f1395e81 <JSFunction encodeURIComponent (sfi = 0x2ef8bb836979)> (data, dict_index: 94, attrs: [W_C])
+   #Float64Array: 0x2ef8f138b079 <JSFunction Float64Array (sfi = 0x2ef8bb80d351)> (data, dict_index: 70, attrs: [W_C])
+   #RangeError: 0x2ef8f1395c39 <JSFunction RangeError (sfi = 0x2ef8bb82c039)> (data, dict_index: 36, attrs: [W_C])
+   #console: 0x2ef8f1397d51 <console map = 0x2ef8f2c04d71> (data, dict_index: 50, attrs: [W_C])
+   #SyntaxError: 0x2ef8f138c089 <JSFunction SyntaxError (sfi = 0x2ef8bb82c251)> (data, dict_index: 40, attrs: [W_C])
+   #Symbol: 0x2ef8f1394f81 <JSFunction Symbol (sfi = 0x2ef8bb826049)> (data, dict_index: 24, attrs: [W_C])
+   #parseFloat: 0x2ef8f1390339 <JSFunction parseFloat (sfi = 0x2ef8bb823bb1)> (data, dict_index: 10, attrs: [W_C])
+   #isNaN: 0x2ef8f1397b39 <JSFunction isNaN (sfi = 0x2ef8bb836d01)> (data, dict_index: 104, attrs: [W_C])
+   #Number: 0x2ef8f1390049 <JSFunction Number (sfi = 0x2ef8bb8234a1)> (data, dict_index: 8, attrs: [W_C])
+   #WeakSet: 0x2ef8f1397229 <JSFunction WeakSet (sfi = 0x2ef8bb8337f9)> (data, dict_index: 82, attrs: [W_C])
+   #decodeURIComponent: 0x2ef8f1394f21 <JSFunction decodeURIComponent (sfi = 0x2ef8bb8367f1)> (data, dict_index: 90, attrs: [W_C])
+   #decodeURI: 0x2ef8f13974e9 <JSFunction decodeURI (sfi = 0x2ef8bb836731)> (data, dict_index: 88, attrs: [W_C])
+   #Object: 0x2ef8f1384319 <JSFunction Object (sfi = 0x2ef8bb81f989)> (data, dict_index: 2, attrs: [W_C])
+   #Reflect: 0x2ef8f13985e9 <Object map = 0x2ef8f2c04e61> (data, dict_index: 86, attrs: [W_C])
+   #DataView: 0x2ef8f1396229 <JSFunction DataView (sfi = 0x2ef8bb8317d9)> (data, dict_index: 74, attrs: [W_C])
+   #Set: 0x2ef8f1396b31 <JSFunction Set (sfi = 0x2ef8bb832e81)> (data, dict_index: 78, attrs: [W_C])
+   #EvalError: 0x2ef8f13937d9 <JSFunction EvalError (sfi = 0x2ef8bb82bf79)> (data, dict_index: 34, attrs: [W_C])
+   #Int16Array: 0x2ef8f13884b9 <JSFunction Int16Array (sfi = 0x2ef8bb80c6d1)> (data, dict_index: 62, attrs: [W_C])
+   #Proxy: 0x2ef8f1397031 <JSFunction Proxy (sfi = 0x2ef8bb833a79)> (data, dict_index: 84, attrs: [W_C])
+ }
+(lldb) expr JSGlobalObject::cast(result->get(2))->global_dictionary()
+(v8::internal::GlobalDictionary *) $94 = 0x00002ef8f1387ef9
+(lldb) expr JSGlobalObject::cast(result->get(2))->global_dictionary()->ValueAt(0)
+(v8::internal::Object *) $95 = 0x00002ef8f1393a71
+(lldb) expr JSGlobalObject::cast(result->get(2))->global_dictionary()->ValueAt(0)->Print()
+0x2ef8f1393a71: [Function] in OldSpace
+ - map = 0x2ef8f2c04141 [FastProperties]
+ - prototype = 0x2ef8f13842a9
+ - elements = 0x2ef8bb802251 <FixedArray[0]> [HOLEY_ELEMENTS]
+ - function prototype = 0x2ef8f1393d01 <Object map = 0x2ef8f2c041e1>
+ - initial_map = 0x2ef8f2c04191 <Map(HOLEY_ELEMENTS)>
+ - shared_info = 0x2ef8bb828829 <SharedFunctionInfo Promise>
+ - name = 0x2ef8bb8288b1 <String[7]: Promise>
+ - formal_parameter_count = 1
+ - kind = [ NormalFunction ]
+ - context = 0x2ef8f13839c1 <FixedArray[283]>
+ - code = 0x38873dd0e841 <Code BUILTIN>
+ - properties = 0x2ef8f1393cd9 <PropertyArray[3]> {
+    #length: 0x2ef8bb838c81 <AccessorInfo> (const accessor descriptor)
+    #name: 0x2ef8bb838c11 <AccessorInfo> (const accessor descriptor)
+    #prototype: 0x2ef8bb838cf1 <AccessorInfo> (const accessor descriptor)
+    0x2ef8bb838301 <Symbol: (native_context_index_symbol)>: 233 (data field 0) properties[0]
+    0x2ef8bb8386d9 <Symbol: Symbol.species>: 0x2ef8f1393ba9 <AccessorPair> (const accessor descriptor)
+    #all: 0x2ef8f1393bf9 <JSFunction all (sfi = 0x2ef8bb8289a9)> (const data descriptor)
+    #race: 0x2ef8f1393c31 <JSFunction race (sfi = 0x2ef8bb828a61)> (const data descriptor)
+    #resolve: 0x2ef8f1393c69 <JSFunction resolve (sfi = 0x2ef8bb828b19)> (const data descriptor)
+    #reject: 0x2ef8f1393ca1 <JSFunction reject (sfi = 0x2ef8bb828bd1)> (const data descriptor)
+ }
+(lldb) expr JSGlobalObject::cast(result->get(2))->global_dictionary()
+(v8::internal::GlobalDictionary *) $94 = 0x00002ef8f1387ef9
+
+
+(lldb) expr result->get(3)->Print()
+0x2ef8f13839c1: [FixedArray] in OldSpace
+ - map = 0x2ef829d82c51 <Map(HOLEY_ELEMENTS)>
+ - length: 283
+           0: 0x2ef8f13842a9 <JSFunction (sfi = 0x2ef8bb805519)>
+I think this is the native context
+
+(lldb) expr result->get(4)->Print()
+0x2ef850802259: [JSGlobalProxy]
+ - map = 0x2ef8f2c02201 [FastProperties]
+ - prototype = 0x2ef8bb802201
+ - elements = 0x2ef8bb802251 <FixedArray[0]> [HOLEY_ELEMENTS]
+ - properties = 0x2ef8bb802251 <FixedArray[0]> {}
+
+This looks like an empty array.
+
+
+(lldb) job FixedArray::cast(result->get(5))
+0x2ef8f1398a51: [FixedArray] in OldSpace
+ - map = 0x2ef829d82341 <Map(HOLEY_ELEMENTS)>
+ - length: 3
+         0-2: 0x2ef8bb8022e1 <undefined>
+
+This is the embedder data which is a FixedArray.
+
+(lldb) job result->get(6)
+0x2ef8f2c04eb1: [Map]
+ - type: JS_OBJECT_TYPE
+ - instance size: 56
+ - inobject properties: 4
+ - elements kind: HOLEY_ELEMENTS
+ - unused property fields: 0
+ - enum length: invalid
+ - stable_map
+ - back pointer: 0x2ef8bb8022e1 <undefined>
+ - instance descriptors (own) #4: 0x2ef8f1398a79 <DescriptorArray[14]>
+ - layout descriptor: 0x0
+ - prototype: 0x2ef8f13842e1 <Object map = 0x2ef8f2c022a1>
+ - constructor: 0x2ef8f1384319 <JSFunction Object (sfi = 0x2ef8bb81f989)>
+ - dependent code: 0x2ef8bb802251 <FixedArray[0]>
+ - construction counter: 0
+
+What we are looking at above the the output for result->get(6)->map()->Print(). You can see the source for this
+in `deps/v8/src/objects-printer.cc` `Map::MapPrint`.
+
+
+### GetProperty
+```console
+expr isolate->factory()->InternalizeUtf8String("something");
+(v8::internal::Handle<v8::internal::String>) $112 = {
+  v8::internal::HandleBase = {
+    location_ = 0x0000000106002be8
+  }
+}
+```
+
+```console
+(lldb) expr v8::internal::Object::GetProperty(v8::internal::Handle<v8::internal::Object>(result->get(6))
+```
+
 ### ScopeInfo
 
 (lldb) expr PrintBuiltinSizes(this)
+
+TODO: What is ContextInfo in src/env.h?
+
+### GYP
+If you just want to see what a change in node.gyp does you can make the change and the run:
+```console
+$ make out/Makefile
+```
+Then you can inspect the generated make files in the out directory.
+
+
+### test_node_postmortem issue
+(This turned out to have nothing to to with the postmortem code but that is how I ran into this)
+In the constructor of HandleWrap (src/handle_wrap.cc) we have the following:
+```c++
+  handle_->data = this;
+  HandleScope scope(env->isolate());
+  Wrap(object, this);
+  env->handle_wrap_queue()->PushBack(this);
+```
+The error I'm looking at is that when `env->handle_wrap_queue()->PushBack(this);` is called there is an illegal access as
+in `PushBack` (src/util-inl.h):
+```c++
+template <typename T, ListNode<T> (T::*M)>
+void ListHead<T, M>::PushBack(T* element) {
+  ListNode<T>* that = &(element->*M);
+  head_.prev_->next_ = that;
+  that->prev_ = head_.prev_;
+  that->next_ = &head_;
+  head_.prev_ = that;
+}
+```
+If we inspect `head_` we find:
+```console
+(lldb) expr head_
+(node::ListNode<node::HandleWrap>) $89 = (prev_ = 0x0000000000000000, next_ = 0x0000000104900570)
+```
+And `head_.prev_->next` will dereference a null pointer leading to a `EXC_BAD_ACCESS`.
+Why is this happening?  
+When is the handle_wrap_queue created?  
+
+An Environment has the following typedef and field:
+```c++
+typedef ListHead<HandleWrap, &HandleWrap::handle_wrap_queue_> HandleWrapQueue;
+...
+HandleWrapQueue handle_wrap_queue_;
+```
+So every Environment has a `handle_wrap_queue` list which stores HandleWrap instances and the member in HandleWray that holds the 
+node datastructure (of type ListNode) is `&HandleWrap::handle_wrap_queue_`:
+```console
+(lldb) expr &HandleWrap::handle_wrap_queue_
+(node::ListNode<node::HandleWrap> node::HandleWrap::*) $0 = 30 00 00 00 00 00 00 00
+```
+So when the Environment constructor is called, a ListHead<HandleWrap, &HandleWrap::handle_wrap_queue> instance will be create, by calling 
+its constructor. ListHead can be found in src/util.h and the impl in src/util-inl.h:
+```c++
+inline ListHead() = default;
+```
+So ListHead has a default (no-args) constructor generated by the compiler, but ListHead has a member that get initialized too:
+```c++
+ListNode<T> head_;
+```
+So lets take a look at the contructor for `ListNode` which we can find in src/util-inl.h:
+```c++
+template <typename T>
+ListNode<T>::ListNode() : prev_(this), next_(this) {}
+```
+We can inspect the ListNode instance before the constructor returns:
+```console
+(lldb) expr *this
+(node::ListNode<node::HandleWrap>) $93 = (prev_ = 0x00000001070034c8, next_ = 0x00000001070034c8)
+```
+We can see that both `prev_` and `next_` have been set to this newly created ListNode (both prev_ and next_ point to itself).
+```console
+(node::ListNode<node::HandleWrap> *) $22 = 0x00000001070058c8
+(lldb) expr *this
+(node::ListNode<node::HandleWrap>) $23 = (prev_ = 0x00000001070058c8, next_ = 0x00000001070058c8)
+(lldb) expr &env->handle_wrap_queue_
+(HandleWrapQueue *) $3 = 0x00000001060060c8
+(lldb) expr env->handle_wrap_queue()
+(HandleWrapQueue *) $4 = 0x00000001060060b8
+```
+The above is from CreateEnvironment. The only difference here is that in the test case I have added:
+```c++
+env->handle_wrap_queue();
+```
+
+Notice that env->handle_wrap_queue() returns `0x00000001050038b8` and env->handle_wrap_queue_ is `0x00000001050038c8`.
+And if I remove the statement `env->handle_wrap_queue()` from the test the addresses look good again:
+```console
+(lldb) expr env->handle_wrap_queue_
+(node::Environment::HandleWrapQueue) $0 = {
+  head_ = {
+    prev_ = 0x00000001060058c8
+    next_ = 0x00000001060058c8
+  }
+}
+(lldb) expr &env->handle_wrap_queue_
+(HandleWrapQueue *) $1 = 0x00000001060058c8
+(lldb) expr env->handle_wrap_queue()
+(HandleWrapQueue *) $2 = 0x00000001060058c8
+(lldb) n
+(lldb) expr env->handle_wrap_queue()
+(HandleWrapQueue *) $3 = 0x00000001060058c8
+```
+
+* Without `env->handle_wrap_queue()`, env->handle_wrap_queue() will return the correct address, but env->handle_wrap_queue_ will still be
+incorrect. 
+* With `env->handle_wrap_queue()`, env->handle_wrap_queue() will be incorrect, and so will env-handle_wrap_queue_, infact they will be
+the same.
+Lets set a break point in the main of cctest:
+```
+Lets disassemble `handle_wrap_queue` when we dont have the `env->handle_wrap_queue()` call:
+```console
+(lldb) dis -n handle_wrap_queue
+cctest`node::Environment::handle_wrap_queue:
+cctest[0x1018d4be0] <+0>:  pushq  %rbp
+cctest[0x1018d4be1] <+1>:  movq   %rsp, %rbp
+cctest[0x1018d4be4] <+4>:  movq   %rdi, -0x8(%rbp)
+cctest[0x1018d4be8] <+8>:  movq   -0x8(%rbp), %rdi
+cctest[0x1018d4bec] <+12>: addq   $0x4c8, %rdi              ; imm = 0x4C8
+cctest[0x1018d4bf3] <+19>: movq   %rdi, %rax
+cctest[0x1018d4bf6] <+22>: popq   %rbp
+cctest[0x1018d4bf7] <+23>: retq
+```
+
+And then with the `env->handle_wrap_queue()` call:
+```console
+(lldb) dis -n handle_wrap_queue
+cctest`node::Environment::handle_wrap_queue:
+cctest[0x10189e1e0] <+0>:  pushq  %rbp
+cctest[0x10189e1e1] <+1>:  movq   %rsp, %rbp
+cctest[0x10189e1e4] <+4>:  movq   %rdi, -0x8(%rbp)
+cctest[0x10189e1e8] <+8>:  movq   -0x8(%rbp), %rdi
+cctest[0x10189e1ec] <+12>: addq   $0x4b8, %rdi              ; imm = 0x4B8
+cctest[0x10189e1f3] <+19>: movq   %rdi, %rax
+cctest[0x10189e1f6] <+22>: popq   %rbp
+cctest[0x10189e1f7] <+23>: retq
+```
+
+We can find a generated call of handle_wrap_queue() in obj.target/node_lib/node.o:
+```console
+$ otool -tvV out/Debug/obj.target/node_lib/src/node.o:
+__ZN4node11Environment17handle_wrap_queueEv:
+0000000000005950        pushq   %rbp
+0000000000005951        movq    %rsp, %rbp
+0000000000005954        movq    %rdi, -0x8(%rbp)
+0000000000005958        movq    -0x8(%rbp), %rdi
+000000000000595c        addq    $0x4c8, %rdi
+0000000000005963        movq    %rdi, %rax
+0000000000005966        popq    %rbp
+0000000000005967        retq
+```
+
+```console
+$ otool -tvV out/Debug/obj.target/cctest/test/cctest/test_node_postmortem_metadata.o:
+__ZN4node11Environment17handle_wrap_queueEv:
+0000000000000920        pushq   %rbp
+0000000000000921        movq    %rsp, %rbp
+0000000000000924        movq    %rdi, -0x8(%rbp)
+0000000000000928        movq    -0x8(%rbp), %rdi
+000000000000092c        addq    $0x4b8, %rdi
+0000000000000933        movq    %rdi, %rax
+0000000000000936        popq    %rbp
+0000000000000937        retq
+```
+
+The reason for this difference is because there was a missing macro defined which when compiling the cctest
+target. This is what caused the incorrect offset to be added and returned. 
+
+### node_postmortem_metadata
+```c++
+#define NODEDBG_SYMBOL(Name)  nodedbg_ ## Name
+
+// nodedbg_offset_CLASS__MEMBER__TYPE: Describes the offset to a class member.
+#define NODEDBG_OFFSET(Class, Member, Type) \
+    NODEDBG_SYMBOL(offset_ ## Class ## __ ## Member ## __ ## Type)
+
+// These are the constants describing Node internal structures. Every constant
+// should use the format described above.  These constants are declared as
+// global integers so that they'll be present in the generated node binary. They
+// also need to be declared outside any namespace to avoid C++ name-mangling.
+#define NODE_OFFSET_POSTMORTEM_METADATA(V)                                    \
+  V(BaseObject, persistent_handle_, v8_Persistent_v8_Object,                  \
+    BaseObject::persistent_handle_)                                           \
+  V(Environment, handle_wrap_queue_, Environment_HandleWrapQueue,             \
+    Environment::handle_wrap_queue_)                                          \
+  V(Environment, req_wrap_queue_, Environment_ReqWrapQueue,                   \
+    Environment::req_wrap_queue_)                                             \
+  V(HandleWrap, handle_wrap_queue_, ListNode_HandleWrap,                      \
+    HandleWrap::handle_wrap_queue_)                                           \
+  V(Environment_HandleWrapQueue, head_, ListNode_HandleWrap,                  \
+    Environment::HandleWrapQueue::head_)                                      \
+  V(ListNode_HandleWrap, next_, uintptr_t, ListNode<HandleWrap>::next_)       \
+  V(ReqWrap, req_wrap_queue_, ListNode_ReqWrapQueue,                          \
+    ReqWrap<uv_req_t>::req_wrap_queue_)                                       \
+  V(Environment_ReqWrapQueue, head_, ListNode_ReqWrapQueue,                   \
+    Environment::ReqWrapQueue::head_)                                         \
+  V(ListNode_ReqWrap, next_, uintptr_t, ListNode<ReqWrap<uv_req_t>>::next_)
+
+extern "C" {
+int nodedbg_const_Environment__kContextEmbedderDataIndex__int;
+uintptr_t nodedbg_offset_ExternalString__data__uintptr_t;
+
+#define V(Class, Member, Type, Accessor)                                      \
+  NODE_EXTERN uintptr_t NODEDBG_OFFSET(Class, Member, Type);
+  NODE_OFFSET_POSTMORTEM_METADATA(V)
+#undef V
+}
+```
+So lets expand one, for example `Environment_HandleWrapQueue`:
+```c++
+  V(Environment, handle_wrap_queue_, Environment_HandleWrapQueue,             \
+    Environment::handle_wrap_queue_)                                          \
+
+  NODE_EXTERN uintptr_t nodedbg_offset_Environment__handle_wrap_queue___Environment_HandleWrapQueue;
+```
+```console
+(lldb) expr nodedbg_offset_Environment__handle_wrap_queue___Environment_HandleWrapQueue
+(uintptr_t) $7 = 1224
+```
+```c++
+nodedbg_offset_Environment__handle_wrap_queue___Environment_HandleWrapQueue = OffsetOf(Environment::handle_wrap_queue_);
+```
+
+When `int GenDebugSymbols()` is called will call:
+```console
+(lldb) br s -f node_postmortem_metadata.cc -l 103
+(lldb) expr nodedbg_offset_Environment__handle_wrap_queue___Environment_HandleWrapQueue
+(uintptr_t) $19 = 1224
+```
+What does `OffsetOf(Environment::handle_wrap_queue_)` actually do?  
+
+```c++
+template <typename Inner, typename Outer>
+constexpr uintptr_t OffsetOf(Inner Outer::*field) {
+  return reinterpret_cast<uintptr_t>(&(static_cast<Outer*>(0)->*field));
+}
+```
+Note that the parameter `field` is a pointer-to-member, which gives the offset of the member within the class object as opposed to using the
+address-of operator on a data member bound to an actual class object, which yields the member's actual address in memory.
+For example:
+```console
+(lldb) expr
+Enter expressions, then terminate with an empty line to evaluate:
+  1: class Test {
+  2: int doit() { return 10; };
+  3: };
+  4: Test* t = 0;
+  5: t->doit();
+  6:
+(int) $1 = 10
+```
+
+Lets take the following call:
+```c++
+nodedbg_offset_Environment__handle_wrap_queue___Environment_HandleWrapQueue = OffsetOf(Environment::handle_wrap_queue_);
+```
