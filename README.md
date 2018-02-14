@@ -11956,3 +11956,17 @@ Lets take the following call:
 ```c++
 nodedbg_offset_Environment__handle_wrap_queue___Environment_HandleWrapQueue = OffsetOf(Environment::handle_wrap_queue_);
 ```
+
+I came accross the following pre-processor directive:
+```c++
+#define private friend int GenDebugSymbols(); private
+```
+So we are defining `private` as an identifier that will resolve `friend int GenDebugSymbols(); private`. This comes before a number
+of includes in the file. So every private section in classes on those files will be replaced. For example:
+```c++
+private:
+```
+will become:
+```c+++
+friend int GenDebugSymbols(); private:
+```
