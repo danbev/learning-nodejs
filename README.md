@@ -11970,3 +11970,87 @@ will become:
 ```c+++
 friend int GenDebugSymbols(); private:
 ```
+
+
+### Finding called functions
+I needed to figure out if a function was being called by Node. The function in question was `inet_addr`.
+```console
+$ cscope -R 
+
+Functions calling this function: inet_addr
+
+  File                 Function          Line
+0 ares__get_hostent.c  ares__get_hostent  141 addr.addrV4.s_addr = inet_addr(txtaddr);
+1 ares_gethostbyname.c fake_hostent       268 result = ((in.s_addr = inet_addr(name)) ==
+                                              INADDR_NONE ? 0 : 1);
+2 ares_init.c          ip_addr           2325 addr->s_addr = inet_addr(ipbuf);
+3 vms_term_sock.c      CreateSocketPair   323 sin.sin_addr.s_addr = inet_addr (LocalHostAddr);
+4 vms_term_sock.c      CreateSocketPair   439 sin.sin_addr.s_addr = inet_addr (LocalHostAddr) ;
+5 test.c               main                90 addr.sin_addr.s_addr = inet_addr(argv[1]);
+6 cli.cpp              main                54 sa.sin_addr.s_addr = inet_addr ("127.0.0.1");
+```
+
+Looking at `ares_get_hostent`: 
+```console
+Functions calling this function: ares__get_hostent
+
+  File                 Function    Line
+0 ares_gethostbyaddr.c file_lookup 236 while ((status = ares__get_hostent(fp, addr->family, host))
+                                       == ARES_SUCCESS)
+1 ares_gethostbyname.c file_lookup 397 while ((status = ares__get_hostent(fp, family, host)) ==
+                                       ARES_SUCCESS)
+```
+```console
+Functions calling this function: file_lookup
+
+  File                 Function                Line
+0 ares_gethostbyaddr.c next_lookup             120 status = file_lookup(&aquery->addr, &host);
+1 ares_gethostbyname.c next_lookup             155 status = file_lookup(hquery->name,
+                                                   hquery->want_family, &host);
+2 ares_gethostbyname.c ares_gethostbyname_file 326 result = file_lookup(name, family, host);
+```
+```console
+Functions calling this function: ares_gethostbyname_file
+
+  File   Function Line
+0 ares.h defined  407 CARES_EXTERN int ares_gethostbyname_file(ares_channel channel,
+```
+This function is not called by node.
+
+
+```console
+Functions calling this function: fake_hostent
+
+  File                 Function           Line
+0 ares_gethostbyname.c ares_gethostbyname 98 if (fake_hostent(name, family, callback, arg))
+```
+
+```console
+Functions calling this function: ares_gethostbyname
+
+  File   Function Line
+0 ares.h defined  401 CARES_EXTERN void ares_gethostbyname(ares_channel channel,
+```
+This function not called by node.
+
+```console
+Functions calling this function: ip_addr
+
+  File        Function        Line
+0 ares_init.c config_sortlist 2116 else if (ip_addr(ipbuf, q-str, &pat.addrV4) == 0)
+1 ares_init.c config_sortlist 2122 if (ip_addr(ipbuf, q-str, &pat.mask.addr4) != 0)
+```
+```console
+Functions calling this function: config_sortlist
+
+  File        Function            Line
+0 ares_init.c init_by_resolv_conf 1644 status = config_sortlist(&sortlist, &nsort, p);
+1 ares_init.c ares_set_sortlist   2488 status = config_sortlist(&sortlist, &nsort, sortstr);
+```
+```console
+Functions calling this function: init_by_resolv_conf
+
+  File        Function          Line
+0 ares_init.c ares_init_options 206 status = init_by_resolv_conf(channel);
+```
+
