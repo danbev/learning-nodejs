@@ -6947,15 +6947,19 @@ the V8 side of things.
     (lldb) r
 ```
 
-Our first break point will stop on the following line in `node::ExecuteString`:
+Lets step through to the following line in `node::ExecuteString`:
 ```c++
 Local<Value> f_value = ExecuteString(env, MainSource(env), script_name);
 ```
-MainSource is a function in `node_javascript.h` which which is used by the `node_js2c`. This was documented earlier so I won't go
+MainSource is a function in `node_javascript.h` which is used by `node_js2c`. This was documented earlier so I won't go
 into details about it now. You can see the content using:
 ```console
 (lldb) jlh MainSource(env)
+Which is the same thing as calling:
+(lldb) expr (*(v8::internal::Object**)*MainSource(env))->Print()
 ```
+`jlh` can be found in the V8 source tree in `tools/lldbinit`.
+
 `ExecuteString` is a function in node.cc which calls `Compile`:
 ```c++
 MaybeLocal<v8::Script> script = v8::Script::Compile(env->context(), source, &origin);
