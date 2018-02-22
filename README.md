@@ -424,18 +424,43 @@ I read that this file is actually precompiled, where/how?
 
 This file is referenced in node.gyp and is used with the target `node_js2c`. This target calls `tools/js2c.py` which is a tool for converting 
 JavaScript source code into C-Style char arrays. This target will process all the library_files specified in the variables section which 
-`lib/internal/bootstrap_node.js` is one of. The output of this `out/Debug/obj/gen/node_natives.h`, depending on the type of build being performed. 
-So `lib/internal/bootstrap_node.js` will become `internal_bootstrap_node_native` in `node_natives.h`. 
+`lib/internal/bootstrap_node.js` is one of. The output of this `out/Debug/obj/gen/node_javascript.h`, depending on the type of build being performed. 
+So `lib/internal/bootstrap_node.js` will become `internal_bootstrap_node_value` in `node_javascript.h`. 
 This is then later included in `src/node_javascript.cc`. 
 
 We can see the contents of this in lldb using:
 
-    (lldb) p internal_bootstrap_node_native
+    (lldb) p internal_bootstrap_node_value
 
 ### Loading of Node Native JavaScript
 The JavaScript source files that are located in the lib directory are not loaded in the normal way the JavaScript sources you provide yourself.
 Instead these are converted first into c arrays for faster execution. This is done by a build and more specifically a Python tool called `js2c.py`
 (JavaScript to C).
+If we take a look at node_javascript.h we find that it declares two functions:
+```c++
+void DefineJavaScript(Environment* env, v8::Local<v8::Object> target);
+v8::Local<v8::String> MainSource(Environment* env);
+```
+Main source is what is used to load `bootstrap_node.js` and `DefineJavaScript` is used in the `Binding` function in src/node.js for loading
+the `natives` modules using the `binding` call. For example, in `lib/internal/bootstrap_node.js`:
+```javascript
+NativeModule._source = process.binding('natives');
+```
+Lets set a breakpoint in `DefineJavaScript`:
+```console
+(lldb) br s -n node::DefineJavaScript
+```
+```c++
+CHECK(target->Set(env->context(),
+                  internal_bootstrap_node_key.ToStringChecked(env->isolate()),
+                  internal_bootstrap_node_value.ToStringChecked(env->isolate())).FromJust());
+```
+```console
+(lldb) jlh internal_bootstrap_node_key.ToStringChecked(env->isolate())
+"internal/bootstrap_node"
+```
+And the value of this will the contents of `boostrap_node.js`. So this will be set as the property on the export object
+(the object named target above).
 
 ### Loading of builtins
 I wanted to know how builtins, like tcp\_wrap and others are loaded.
