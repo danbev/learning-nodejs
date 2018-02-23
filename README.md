@@ -12058,3 +12058,33 @@ Functions calling this function: init_by_resolv_conf
 0 ares_init.c ares_init_options 206 status = init_by_resolv_conf(channel);
 ```
 
+
+### Module Initialization 
+An addon can have an initializer function that will be called when `node::DLOpen` is called. DLOpen is 
+available on the process object as `dlopen`. There is the following code in DLOpen (in node.cc):
+```c++
+if (auto callback = GetInitializerCallback(&dlib)) {
+  callback(exports, module, context);
+} else {
+  dlib.Close();
+}
+```
+And if we look at `GetInitializerCallback`:
+```c++
+using InitializerCallback = void (*)(Local<Object> exports,
+                                     Local<Value> module,
+                                     Local<Context> context);
+
+inline InitializerCallback GetInitializerCallback(DLib* dlib) {
+  const char* name = "node_register_module_v" STRINGIFY(NODE_MODULE_VERSION);
+  return reinterpret_cast<InitializerCallback>(dlib->GetSymbolAddress(name));
+}
+```
+we can see that are going to look for a name `node_register_module_v` and the value of `NODE_MODULE_VERSION`.
+```console
+(lldb) expr name
+(const char *) $21 = 0x00000001026012cc "node_register_module_v61"
+```
+The above comes from debugging test/addons/hello-world and the NODE_MODULE_VERSION is 61, which is set in
+node_version.h.
+So if the addon declares a function named node_register_module_v61 it will have its initialize function called.
