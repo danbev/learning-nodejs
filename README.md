@@ -1077,7 +1077,7 @@ connect_wrap.cc has a subclass named 'ConnectWrap` which is subclassed by PipeWr
 
 ### AsyncWrap
 Some background about AsyncWrap can be found [here](https://github.com/nodejs/diagnostics/blob/master/tracing/AsyncWrap/README.md)
-So using AsyncWrap we can have callbacks invoked during the life of handle objects. A handle object would for example e a TCPWrap
+So using AsyncWrap we can have callbacks invoked during the life of handle objects. A handle object would for example be a TCPWrap
 which extends ConnectionWrap -> StreamWrap -> HandleWrap.
 
 Being a builtin module it follows the same initialization as others. So lets take a look at the initialization function and see
@@ -1127,7 +1127,7 @@ The first thing to do is setup the hooks by calling `setupHooks`:
 
     var aw = process.binding('async_wrap');
     let asyncHooksObject = {}
-    qw.setupHooks(asyncHooksObject);
+    aw.setupHooks(asyncHooksObject);
 
 So AsyncWrap::SetupHooks takes a single object as its parameter. It expects this object to have 4 functions:
 
