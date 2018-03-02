@@ -1169,29 +1169,561 @@ An example of this usage might be:
       }
     };
 
-Alright, but when are these different functions called?  
-`init` is called from AsyncWrap's constructor:
+There is also a module named `async_hoooks` in lib/async_hook.js that can be used:
+```javascript
+var ah = require('async_hooks');
+let asyncObject = {
+  init: function(uid, provider, parentUid, parentHandle) {
+    process._rawDebug('init uid:', uid, ', provider:', provider);
+  },
+  before: function(uid) {
+    process._rawDebug('pre uid:', uid);
+  },
+  after: function(uid, didThrow) {
+    process._rawDebug('post. uid:', uid, 'didThrow:', didThrow);
+  },
+  destroy: function(uid) {
+    process._rawDebug('destroy: uid:', uid);
+  }
+};
+let asynchook = ah.createHook(asyncObject);
+```
+Now, we can create a break point and see when `SetupHooks` is called. 
+```console
+(lldb) br s -n node::SetupHooks
+```
+When the startup function in bootstrap_node.js is executed it will call the function `setupProcessFatal`.
+```javascript
+const {
+      executionAsyncId,
+      clearDefaultTriggerAsyncId,
+      clearAsyncIdStack,
+      hasAsyncIdStack,
+      afterHooksExist,
+      emitAfter
+    } = NativeModule.require('internal/async_hooks');
+```
+This will load `internal/async_hooks` module which will call:
+```javascript
+async_wrap.setupHooks({ init: emitInitNative,
+                        before: emitBeforeNative,
+                        after: emitAfterNative,
+                        destroy: emitDestroyNative,
+                        promise_resolve: emitPromiseResolveNative });
+```
+So this is the first time that setupHooks is called. 
+In `SetupHooks` we have the following macro:
+```c++
+#define SET_HOOK_FN(name)                                                     \
+  Local<Value> name##_v = fn_obj->Get(                                        \
+      env->context(),                                                         \
+      FIXED_ONE_BYTE_STRING(env->isolate(), #name)).ToLocalChecked();         \
+  CHECK(name##_v->IsFunction());                                              \
+  env->set_async_hooks_##name##_function(name##_v.As<Function>());
 
-    Local<Function> init_fn = env->async_hooks_init_function();
+  SET_HOOK_FN(init);
+  SET_HOOK_FN(before);
+  SET_HOOK_FN(after);
+  SET_HOOK_FN(destroy);
+  SET_HOOK_FN(promise_resolve);
+#undef SET_HOOK_FN
+```
+Lets expand it for the `init` function:
+```c++
+  Local<Value> init_v = fn_obj->Get(env->context(), FIXED_ONE_BYTE_STRING(env->isolate(), "init")).ToLocalChecked();
+  CHECK(init_v->IsFunction());
+  env->set_async_hooks_init_function(init_v.As<Function>());
+```
+```console
+(lldb) expr env->async_hooks_init_function()
+(v8::Local<v8::Function>) $66 = (val_ = 0x00000001060013c0)
+(lldb) jlh env->async_hooks_init_function()
+0x329732782401: [Function]
+ - map = 0x329757882521 [FastProperties]
+ - prototype = 0x3297917043d1
+ - elements = 0x3297cd382251 <FixedArray[0]> [HOLEY_ELEMENTS]
+ - function prototype =
+ - initial_map =
+ - shared_info = 0x32979b184ce1 <SharedFunctionInfo emitInitNative>
+ - name = 0x32979b1840f9 <String[14]: emitInitNative>
+ - formal_parameter_count = 4
+ - kind = [ NormalFunction ]
+ - context = 0x329732782241 <FixedArray[38]>
+ - code = 0x19146b71b241 <Code BUILTIN>
+ - source code = (asyncId, type, triggerAsyncId, resource) {
+  active_hooks.call_depth += 1;
+  // Use a single try/catch for all hook to avoid setting up one per iteration.
+  try {
+    for (var i = 0; i < active_hooks.array.length; i++) {
+      if (typeof active_hooks.array[i][init_symbol] === 'function') {
+        active_hooks.array[i][init_symbol](
+          asyncId, type, triggerAsyncId,
+          resource
+        );
+      }
+    }
+  } catch (e) {
+    fatalError(e);
+  } finally {
+    active_hooks.call_depth -= 1;
+  }
 
-So lets print the value of this function:
+  // Hooks can only be restored if there have been no recursive hook calls.
+  // Also the active hooks do not need to be restored if enable()/disable()
+  // weren't called during hook execution, in which case active_hooks.tmp_array
+  // will be null.
+  if (active_hooks.call_depth === 0 && active_hooks.tmp_array !== null) {
+    restoreActiveHooks();
+  }
+}
+ - properties = 0x3297cd382251 <FixedArray[0]> {
+    #length: 0x3297cd3b8c81 <AccessorInfo> (const accessor descriptor)
+    #name: 0x3297cd3b8c11 <AccessorInfo> (const accessor descriptor)
+    #prototype: 0x3297cd3b8cf1 <AccessorInfo> (const accessor descriptor)
+ }
 
-    (lldb) p _v8_internal_Print_Object(*(v8::internal::Object**)(*init_fn))
-    0x17bdd44f0d91: [Function]
-     - map = 0x359df9f06ea9 [FastProperties]
-     - prototype = 0xe23ea883f39
-     - elements = 0x28b309c02241 <FixedArray[0]> [FAST_HOLEY_ELEMENTS]
-     - initial_map =
-     - shared_info = 0x2a17ee0cda59 <SharedFunctionInfo init>
-     - name = 0x807c31bd419 <String[4]: init>
-     - formal_parameter_count = 4
-     - context = 0x17bdd4483b31 <FixedArray[8]>
-     - literals = 0x28b309c04a49 <FixedArray[1]>
-     - code = 0xf3fbca04481 <Code: BUILTIN>
-     - properties = {
-       #length: 0x28b309c50bd9 <AccessorInfo> (accessor constant)
-       #name: 0x28b309c50c49 <AccessorInfo> (accessor constant)
-       #prototype: 0x28b309c50cb9 <AccessorInfo> (accessor constant)
+ - feedback vector: not available
+```
+So lets take a closer look at `emitInitNative` in 'lib/internal/async_hooks.js':
+```javascript
+active_hooks.call_depth += 1;
+try {
+  for (var i = 0; i < active_hooks.array.length; i++) {
+    if (typeof active_hooks.array[i][init_symbol] === 'function') {
+      active_hooks.array[i][init_symbol]( asyncId, type, triggerAsyncId, resource);
+    }
+  }
+} catch (e) {
+  fatalError(e);
+} finally {
+  active_hooks.call_depth -= 1;
+}
+```
+So when will `env->async_hooks_init_function()` be called?
+
+Each Environment has an AsyncHook as a member (src/env.h):
+```c++
+AsyncHooks async_hooks_;
+```
+AsyncHook is a nested class of Environment.
+
+Lets take a look at tcp_wrap.h. TCPWrap extends ConnectionWrap, which extends LibuvStreamWrap, which extends HandleWrap, which
+extends AsyncWrap. 
+
+`listen` will eventually call:
+```javascript
+handle = new TCP(TCPConstants.SERVER);
+```
+This will call `void TCPWrap::New`:
+```c++
+  ...
+  ProviderType provider;
+  switch (type) {
+    case SOCKET:
+      provider = PROVIDER_TCPWRAP;
+      break;
+    case SERVER:
+      provider = PROVIDER_TCPSERVERWRAP;
+      break;
+    default:
+      UNREACHABLE();
+  }
+
+  new TCPWrap(env, args.This(), provider);
+```
+This constructor call will delegate up to the BaseObject class's constructor and then continue with AsyncWrap's constructor:
+```c++
+  // Shift provider value over to prevent id collision.
+  persistent().SetWrapperClassId(NODE_ASYNC_ID_OFFSET + provider);
+```
+What is this all about?
+```console
+(lldb) expr provider
+(ProviderType) $16 = PROVIDER_TCPSERVERWRAP
+```
+```c++
+#define NODE_ASYNC_ID_OFFSET 0xA1C
+```
+Which is 2588 in decimal.
+```console
+(lldb) expr 2588 + provider
+(int) $23 = 2613
+```
+TODO: look into SetWrapperClassId more closely.
+
+Next, `AsyncReset()` is called:
+```c++
+  // Use AsyncReset() call to execute the init() callbacks.
+  AsyncReset(execution_async_id);
+```
+Note that AsyncWrap has a default value for `execution_async_id`:
+```c++
+double execution_async_id = -1
+```
+Which is the value of execution_async_id in this call:
+```console
+(lldb) expr execution_async_id
+(double) $25 = -1
+```
+Also not the `AsyncReset` has default values defined for its parameters:
+```c++
+void AsyncReset(double execution_async_id = -1, bool silent = false);
+```
+So lets take a look at `AsyncReset`:
+```c++
+async_id_ = execution_async_id == -1 ? env()->new_async_id() : execution_async_id;
+```
+In our case we will get a new async_id (double) from the environment instance:
+```console
+inline double Environment::new_async_id() {
+  async_hooks()->async_id_fields()[AsyncHooks::kAsyncIdCounter] =
+    async_hooks()->async_id_fields()[AsyncHooks::kAsyncIdCounter] + 1;
+
+  return async_hooks()->async_id_fields()[AsyncHooks::kAsyncIdCounter];
+}
+```
+
+```console
+lldb) expr *async_hooks()
+(node::Environment::AsyncHooks) $28 = {
+...
+async_id_fields_ = {
+  isolate_ = 0x0000000105007400
+  count_ = 4
+  byte_offset_ = 0
+  buffer_ = 0x0000000104a1a2e0
+  js_array_ = {
+    v8::PersistentBase<v8::Float64Array> = (val_ = 0x000000010505c840)
+  }
+  free_buffer_ = true
+}
+```
+
+`async_id_fields_` is defined in src/env.h:
+```c++
+AliasedBuffer<double, v8::Float64Array> async_id_fields_;
+```
+The types of fields are:
+```c++
+enum UidFields {
+  kExecutionAsyncId,
+  kTriggerAsyncId,
+  kAsyncIdCounter,
+  kDefaultTriggerAsyncId,
+  kUidFieldsCount,
+};
+```
+So if we look at the above call again:
+```c++
+  async_hooks()->async_id_fields()[AsyncHooks::kAsyncIdCounter] = async_hooks()->async_id_fields()[AsyncHooks::kAsyncIdCounter] + 1;
+```
+We are getting using `kAsyncIdCounter` as the index incrementing that value. Would it not have been enough doing:
+```c++
+  async_hooks()->async_id_fields()[AsyncHooks::kAsyncIdCounter] += 1;
+```
+No, because the increment operator is not overloaded for AliasedBuffer::Reference. I've opened a [PR](https://github.com/nodejs/node/pull/19083) with a suggestion about
+adding the increment and descrement operators.
+So we obtaining an id for this AsyncWrap resource which remember is of type TCPWrap.
+Next we have:
+```c++
+trigger_async_id_ = env()->get_default_trigger_async_id();
+```
+Which we can find in src/env-inl.h:
+```c++
+inline double Environment::get_default_trigger_async_id() {
+  double default_trigger_async_id = async_hooks()->async_id_fields()[AsyncHooks::kDefaultTriggerAsyncId];
+  // If defaultTriggerAsyncId isn't set, use the executionAsyncId
+  if (default_trigger_async_id < 0)
+    default_trigger_async_id = execution_async_id();
+  return default_trigger_async_id;
+}
+```
+This time we are using kDefaultTriggerAsyncId as the index.
+In our case:
+```console
+(lldb) expr default_trigger_async_id
+(double) $36 = -1
+```
+So `execution_async_id()` will be called which does:
+```c++
+return async_hooks()->async_id_fields()[AsyncHooks::kExecutionAsyncId];
+```
+Next in `AsyncReset` we have:
+```c++
+ switch (provider_type()) {
+#define V(PROVIDER)                                                           \
+    case PROVIDER_ ## PROVIDER:                                               \
+      TRACE_EVENT_NESTABLE_ASYNC_BEGIN2("node.async_hooks",                   \
+        #PROVIDER, static_cast<int64_t>(get_async_id()),                      \
+        "executionAsyncId",                                                   \
+        static_cast<int64_t>(env()->execution_async_id()),                    \
+        "triggerAsyncId",                                                     \
+        static_cast<int64_t>(get_trigger_async_id()));                        \
+      break;
+    NODE_ASYNC_PROVIDER_TYPES(V)
+#undef V
+    default:
+      UNREACHABLE();
+  }
+```
+```console
+(lldb) expr provider_type()
+(node::AsyncWrap::ProviderType) $39 = PROVIDER_TCPSERVERWRAP
+```
+Lets expand the macro for the provider:
+```c++
+  case PROVIDER_TCPSERVERWRAP:
+    TRACE_EVENT_NESTABLE_ASYNC_BEGIN2("node.async_hooks",                   
+      TCPSERVERWRAP, static_cast<int64_t>(get_async_id()),                 
+      "executionAsyncId",                                                   
+      static_cast<int64_t>(env()->execution_async_id()),                    
+      "triggerAsyncId",                                                     
+      static_cast<int64_t>(get_trigger_async_id()));                        
+    break;
+```
+This add a v8 tracing event. TODO: take a closer look at this.
+Next, we have the following:
+```c++
+if (silent) return;
+
+  EmitAsyncInit(env(), object(),
+                env()->async_hooks()->provider_string(provider_type()),
+                async_id_, trigger_async_id_);
+```
+`EmitAsyncInit` has the following code:
+```c++
+Local<Function> init_fn = env->async_hooks_init_function();
+```
+This is the function that we looked at earlier. We can see the arguments being created:
+```c++
+Local<Value> argv[] = {
+    Number::New(env->isolate(), async_id),
+    type,
+    Number::New(env->isolate(), trigger_async_id),
+    object,
+  };
+```
+And these match the parameters that `init` takes:
+```console
+init uid: 6 , provider: TCPSERVERWRAP , parentUid: 1 , parentHandle: TCP { reading: false, owner: null, onread: null, onconnection: null }
+```
+And the function will execute the code generated from `emitInitNative` which will call all the `init` functions that have been registered.
+So where/when are the init functions added to the active_hooks.array ?
+Well, if we take a look at lib/internal/async_hooks.js we find:
+```javascript
+const active_hooks = {
+  // Array of all AsyncHooks that will be iterated whenever an async event fires.
+  array: [],
+  call_depth: 0,
+  tmp_array: null,
+  tmp_fields: null
+};
+
+In lib/internal/async_hooks.js we have these two fields:
+```javascript
+const async_wrap = process.binding('async_wrap');
+const { async_hook_fields, async_id_fields } = async_wrap;
+```
+When `process.binding('async_wrap')` is called this will invoke `AsyncWrap::Initialize`:
+```c++
+#define FORCE_SET_TARGET_FIELD(obj, str, field)                               \
+  (obj)->DefineOwnProperty(context,                                           \
+                           FIXED_ONE_BYTE_STRING(isolate, str),               \
+                           field,                                             \
+                           ReadOnlyDontDelete).FromJust()
+
+  // Attach the uint32_t[] where each slot contains the count of the number of
+  // callbacks waiting to be called on a particular event. It can then be
+  // incremented/decremented from JS quickly to communicate to C++ if there are
+  // any callbacks waiting to be called.
+  FORCE_SET_TARGET_FIELD(target, "async_hook_fields", env->async_hooks()->fields().GetJSArray());
+```
+
+This will expand to:
+```c++
+  target->DefineOwnProperty(context,
+                           FIXED_ONE_BYTE_STRING(isolate, "async_hook_fields"),
+                           env->async_hooks()->fields().GetJSArray(),
+                           ReadOnlyDontDelete).FromJust()
+```
+Notice that the field here is `env->async_hooks()->fields().GetJSArray()`. If we look at the fields function of 
+`AsyncHooks` we see:
+```c++
+inline AliasedBuffer<uint32_t, v8::Uint32Array>& fields();
+```
+So the native type
+And inspecting it we can see:
+```console
+(lldb) expr *this
+(node::AliasedBuffer<unsigned int, v8::Uint32Array>) $6 = {
+  isolate_ = 0x0000000105007400
+  count_ = 8
+  byte_offset_ = 0
+  buffer_ = 0x0000000104a1c590
+  js_array_ = {
+    v8::PersistentBase<v8::Uint32Array> = (val_ = 0x000000010505ba20)
+  }
+  free_buffer_ = true
+}
+```
+When an Environment is created the AsyncHooks constructor will be called as it is a member of Environment (src/env.h):
+```c++
+AsyncHooks async_hooks_;
+```
+AsyncHooks constructor (src/env-inl.h) will set construct a AliasedBuffer for the the async_id_fields_ member:
+```c++
+fields_(env()->isolate(), kFieldsCount),
+```
+In the constructor for AliasedBuffer we can see that a buffer is created:
+```c++
+buffer_ = Calloc<NativeT>(count)
+```
+So we are going to allocate zeroed out memory for an unsigned int (buffer_ pointing to it)
+```console
+(lldb) expr count
+(size_t) $11 = 8
+(lldb) expr buffer_
+(unsigned int *) $13 = 0x0000000106000000
+```
+Next, we are going to create a V8 ArrayBuffer using the newly allocated block of memory:
+```c++
+  v8::Local<v8::ArrayBuffer> ab = v8::ArrayBuffer::New(isolate_, buffer_, sizeInBytes);
+```
+```console
+(lldb) jlh ab
+0x24f52a506c11: [JSArrayBuffer]
+ - map = 0x24f5fbb02c01 [FastProperties]
+ - prototype = 0x24f522e89819
+ - elements = 0x24f5eb102251 <FixedArray[0]> [HOLEY_ELEMENTS]
+ - embedder fields: 2
+ - backing_store = 0x106000000
+ - byte_length = 32
+ - external
+ - neuterable
+ - properties = 0x24f5eb102251 <FixedArray[0]> {}
+ - embedder fields = {
+    0x0
+    0x0
+ }
+```
+We can see that the `backing_store` is pointing to the memory that was allocated.
+An ArrayBuffer is an object that represents a block of data. A view is used to 
+access the data, which are called TypedArray views. This is what we create next:
+```c++
+v8::Local<V8T> js_array = V8T::New(ab, byte_offset_, count);
+```
+```console
+(lldb) expr byte_offset_
+(size_t) $31 = 0
+(lldb) expr count
+(size_t) $32 = 8
+(lldb) jlh js_array
+0x24f52a506c61: [JSTypedArray]
+ - map = 0x24f5fbb03011 [FastProperties]
+ - prototype = 0x24f522e8ac51
+ - elements = 0x24f52a506ca9 <FixedUint32Array[8]> [UINT32_ELEMENTS]
+ - embedder fields: 2
+ - buffer = 0x24f52a506c11 <ArrayBuffer map = 0x24f5fbb02c01>
+ - byte_offset = 0
+ - byte_length = 32
+ - length = 8
+ - properties = 0x24f5eb102251 <FixedArray[0]> {}
+ - elements = 0x24f52a506ca9 <FixedUint32Array[8]> {
+         0-7: 0
+ }
+ - embedder fields = {
+    0x0
+    0x0
+ }
+```
+Next in AsyncHooks contructor we have the following line:
+```c++
+fields_[kCheck] = 1;
+```
+`AliasedBuffer` has overloaded the [] operator so this call will invoke AliasedBuffer::operator[]:
+```c++
+Reference operator[](size_t index) {
+  return Reference(this, index);
+}
+```
+And `Reference` in turn overloads the = operator so it will be invoked:
+```c++
+template <typename T>
+inline Reference& operator=(const T& val) {
+  aliased_buffer_->SetValue(index_, val);
+  return *this;
+}
+```
+So we can see that we are setting index_ which is kCheck, to value which is 1:
+```console
+(lldb) expr index_
+(size_t) $57 = 6
+(lldb) expr ::Fields::kCheck
+(int) $60 = 6
+(lldb) expr val
+(const int) $61 = 1
+```
+
+So we can get and set values using:
+```console
+(lldb) expr fields_.SetValue(::Fields::kCheck, 2)
+(lldb) expr fields_.GetValue(::Fields::kCheck)
+(unsigned int) $69 = 2
+(lldb) expr fields_
+(node::AliasedBuffer<unsigned int, v8::Uint32Array>) $72 = {
+  isolate_ = 0x0000000105007400
+  count_ = 8
+  byte_offset_ = 0
+  buffer_ = 0x0000000106000000
+  js_array_ = {
+    v8::PersistentBase<v8::Uint32Array> = (val_ = 0x0000000105057a20)
+  }
+  free_buffer_ = true
+}
+(lldb) memory read -f x -s 4 -c 7 0x0000000106000000
+0x106000000: 0x00000000 0x00000000 0x00000000 0x00000000
+0x106000010: 0x00000000 0x00000000 0x00000002
+(lldb) expr fields_.SetValue(::Fields::kCheck, 1)
+(lldb) memory read -f x -s 4 -c 7 0x0000000106000000
+0x106000000: 0x00000000 0x00000000 0x00000000 0x00000000
+0x106000010: 0x00000000 0x00000000 0x00000001
+```
+So we bacially have an 32 bit array which have 8 values in indexed using AsyncHooks::Fields enum.
+Getting back on track we were in `AsyncWrap::Initialize` :
+```c++
+  target->DefineOwnProperty(context,
+                           FIXED_ONE_BYTE_STRING(isolate, "async_hook_fields"),
+                           env->async_hooks()->fields().GetJSArray(),
+                           ReadOnlyDontDelete).FromJust()
+```
+So looking again at this like we can see that we are retreiving the JSTypedArray and setting that 
+on the target as `async_hook_fields`
+```console
+(lldb) expr env->async_hooks()->fields().GetJSArray()->Buffer()->GetContents()
+(v8::ArrayBuffer::Contents) $302 = {
+  data_ = 0x0000000106000000
+  byte_length_ = 32
+  allocation_base_ = 0x0000000106000000
+  allocation_length_ = 32
+  allocation_mode_ = kNormal
+}
+```
+Notice that the `data_` field points to the same memory location as `buffer_` above.
+Next `constants` property is populated.
+
+
+### AliasedBuffer
+
+```c++
+v8::Isolate* isolate_;
+  size_t count_;
+  size_t byte_offset_;
+  NativeT* buffer_;
+  v8::Global<V8T> js_array_;
+  bool free_buffer_;
+```
+
+
 
 ### HandleWrap
 HandleWrap represents a libuv handle which represents . Take the following functions:
