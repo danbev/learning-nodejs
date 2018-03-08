@@ -1123,14 +1123,6 @@ You can confirm this by using:
       } 
     } 
 
-The first thing to do is setup the hooks by calling `setupHooks`:
-
-    var aw = process.binding('async_wrap');
-    let asyncHooksObject = {}
-    aw.setupHooks(asyncHooksObject);
-
-So AsyncWrap::SetupHooks takes a single object as its parameter. It expects this object to have 4 functions:
-
 
     init(uid, provider, parentUid, parentHandle)
     pre(uid)
@@ -1421,8 +1413,9 @@ We are getting using `kAsyncIdCounter` as the index incrementing that value. Wou
 ```c++
   async_hooks()->async_id_fields()[AsyncHooks::kAsyncIdCounter] += 1;
 ```
-No, because the increment operator is not overloaded for AliasedBuffer::Reference. I've opened a [PR](https://github.com/nodejs/node/pull/19083) with a suggestion about
-adding the increment and descrement operators.
+No, because the increment operator is not overloaded for AliasedBuffer::Reference. 
+I've opened a [PR](https://github.com/nodejs/node/pull/19083) with a suggestion about adding the increment and descrement operators.
+
 So we obtaining an id for this AsyncWrap resource which remember is of type TCPWrap.
 Next we have:
 ```c++
@@ -1482,9 +1475,10 @@ Lets expand the macro for the provider:
     break;
 ```
 This add a v8 tracing event. TODO: take a closer look at this.
+
 Next, we have the following:
 ```c++
-if (silent) return;
+  if (silent) return;
 
   EmitAsyncInit(env(), object(),
                 env()->async_hooks()->provider_string(provider_type()),
@@ -1518,6 +1512,67 @@ const active_hooks = {
   tmp_array: null,
   tmp_fields: null
 };
+```
+`active_hooks` is exported and used by lib/async_hooks.js and called in `enable` and `disable`.
+Let's take a look at `enable` first:
+```javascript
+  const [hooks_array, hook_fields] = getHookArrays();
+
+  // Each hook is only allowed to be added once.
+  if (hooks_array.includes(this))
+    return this;
+
+  const prev_kTotals = hook_fields[kTotals];
+  hook_fields[kTotals] = 0;
+
+  // createHook() has already enforced that the callbacks are all functions,
+  // so here simply increment the count of whether each callbacks exists or
+  // not.
+  hook_fields[kTotals] += hook_fields[kInit] += +!!this[init_symbol];
+  hook_fields[kTotals] += hook_fields[kBefore] += +!!this[before_symbol];
+  hook_fields[kTotals] += hook_fields[kAfter] += +!!this[after_symbol];
+  hook_fields[kTotals] += hook_fields[kDestroy] += +!!this[destroy_symbol];
+  hook_fields[kTotals] += hook_fields[kPromiseResolve] += +!!this[promise_resolve_symbol];
+  hooks_array.push(this);
+ 
+  if (prev_kTotals === 0 && hook_fields[kTotals] > 0) {
+      enableHooks();
+  }
+
+  return this;
+```
+hook_fields[kTotals] is first set to 0. Not sure why the first line is doing `+=` as it would
+only be adding zero. Could that not just be:
+```javascript
+  hook_fields[kTotals] = hook_fields[kInit] += +!!this[init_symbol];
+```
+But lets take a look of the rest of this expression. 
+```javascript
+  hook_fields[kInit] += +!!this[init_symbol];
+```
+hook_fields[kInit] is a counter of all the init hooks. This is going to add either 0 or 1 depending
+on if there is a function for the `init_symbol`. Notice the `+` unary operator sign before double ! operators.
+It will try to convert that boolean to a number. So if an init function was defined this will add 1 to 
+hooks_fields[kInit] otherwise 0.
+Next, we see that this AsyncHook instance is added to the hooks_array. This answers the above question
+regarding here the init fuctions are added to the hooks array.
+
+Following this, lets take a look at enableHooks() which can be found in lib/internal/async_wrap.js:
+```javascript
+function enableHooks() {
+  enablePromiseHook();
+  async_hook_fields[kCheck] += 1;
+}
+```
+`enablePromiseHook` can be found in src/async_wrap.cc:
+```c++
+static void EnablePromiseHook(const FunctionCallbackInfo<Value>& args) {
+  Environment* env = Environment::GetCurrent(args);
+  env->AddPromiseHook(PromiseHook, static_cast<void*>(env));
+}
+```
+
+
 
 In lib/internal/async_hooks.js we have these two fields:
 ```javascript
@@ -1654,6 +1709,8 @@ inline Reference& operator=(const T& val) {
   return *this;
 }
 ```
+`Reference` is used store the index for the elmenet being used (plus the AliasedBuffer pointer).
+
 So we can see that we are setting index_ which is kCheck, to value which is 1:
 ```console
 (lldb) expr index_
@@ -1689,6 +1746,11 @@ So we can get and set values using:
 0x106000010: 0x00000000 0x00000000 0x00000001
 ```
 So we bacially have an 32 bit array which have 8 values in indexed using AsyncHooks::Fields enum.
+These are basically counters as far as I can tell. The entries are used to keep track of the number
+of init functions that should be called.
+Looking at the code we can see that
+
+
 Getting back on track we were in `AsyncWrap::Initialize` :
 ```c++
   target->DefineOwnProperty(context,
@@ -4067,6 +4129,10 @@ Then try to apply the patch again to make sure it applied cleanly
     $ git am --directory deps/v8  ~/work/google/javascript/v8/verbose.patch
 
 Don't forget to bump the patch version in deps/v8/include/v8-version.h
+Also common common.gypi needs to be updated as well:
+```console
+'v8_embedder_string': '-node.5',
+```
 
 
 #### HTTP/2
