@@ -1124,14 +1124,6 @@ You can confirm this by using:
     } 
 
 
-    init(uid, provider, parentUid, parentHandle)
-    pre(uid)
-    post(uid, didThrow)
-    destroy(uid);
-
-These functions (if they exist, there is only a check for that the init function actually exist and if the
-others do not exist or are not functions then they are simply ignored).
-
     env->set_async_hooks_init_function(init_v.As<Function>());
 
 So, if you are like me you might have gone searching for this `set_async_hooks_init_function` and not finding it. You
@@ -1186,17 +1178,21 @@ Now, we can create a break point and see when `SetupHooks` is called.
 ```
 When the startup function in bootstrap_node.js is executed it will call the function `setupProcessFatal`.
 ```javascript
-const {
-      executionAsyncId,
-      clearDefaultTriggerAsyncId,
-      clearAsyncIdStack,
-      hasAsyncIdStack,
-      afterHooksExist,
-      emitAfter
-    } = NativeModule.require('internal/async_hooks');
+function setupProcessFatal() {
+  const {
+    executionAsyncId,
+    clearDefaultTriggerAsyncId,
+    clearAsyncIdStack,
+    hasAsyncIdStack,
+    afterHooksExist,
+    emitAfter
+  } = NativeModule.require('internal/async_hooks');
+  ...
 ```
 This will load `internal/async_hooks` module which will call:
 ```javascript
+const async_wrap = process.binding('async_wrap');
+...
 async_wrap.setupHooks({ init: emitInitNative,
                         before: emitBeforeNative,
                         after: emitAfterNative,
@@ -1226,6 +1222,18 @@ Lets expand it for the `init` function:
   CHECK(init_v->IsFunction());
   env->set_async_hooks_init_function(init_v.As<Function>());
 ```
+After these function have been set we also have the following code in `SetupHooks`:
+```c++
+  Local<FunctionTemplate> ctor = FunctionTemplate::New(env->isolate()); 
+  ctor->SetClassName(FIXED_ONE_BYTE_STRING(env->isolate(), "PromiseWrap"));
+  Local<ObjectTemplate> promise_wrap_template = ctor->InstanceTemplate();
+  promise_wrap_template->SetInternalFieldCount(PromiseWrap::kInternalFieldCount);  // kInternalFieldCount = 3
+  promise_wrap_template->SetAccessor(FIXED_ONE_BYTE_STRING(env->isolate(), "promise"), PromiseWrap::GetPromise);
+  promise_wrap_template->SetAccessor(FIXED_ONE_BYTE_STRING(env->isolate(), "isChainedPromise"), PromiseWrap::getIsChainedPromise);
+  env->set_promise_wrap_template(promise_wrap_template);
+```
+`PromiseWrap` is a class defined in async_wrap.cc. So we are setting up a constructor templeate for a PromiseWrap on the environment. 
+
 ```console
 (lldb) expr env->async_hooks_init_function()
 (v8::Local<v8::Function>) $66 = (val_ = 0x00000001060013c0)
@@ -1291,7 +1299,8 @@ try {
   active_hooks.call_depth -= 1;
 }
 ```
-So when will `env->async_hooks_init_function()` be called?
+
+When will `env->async_hooks_init_function()` be called?
 
 Each Environment has an AsyncHook as a member (src/env.h):
 ```c++
@@ -1329,10 +1338,12 @@ This constructor call will delegate up to the BaseObject class's constructor and
   persistent().SetWrapperClassId(NODE_ASYNC_ID_OFFSET + provider);
 ```
 What is this all about?
+
 ```console
 (lldb) expr provider
 (ProviderType) $16 = PROVIDER_TCPSERVERWRAP
 ```
+
 ```c++
 #define NODE_ASYNC_ID_OFFSET 0xA1C
 ```
@@ -1343,12 +1354,12 @@ Which is 2588 in decimal.
 ```
 TODO: look into SetWrapperClassId more closely.
 
-Next, `AsyncReset()` is called:
+Next, `AsyncReset()` is called from AsyncWrap's constructor:
 ```c++
   // Use AsyncReset() call to execute the init() callbacks.
   AsyncReset(execution_async_id);
 ```
-Note that AsyncWrap has a default value for `execution_async_id`:
+Note that AsyncWrap has a default value for `execution_async_id` in async_wrap.h:
 ```c++
 double execution_async_id = -1
 ```
@@ -1407,20 +1418,14 @@ enum UidFields {
 ```
 So if we look at the above call again:
 ```c++
-  async_hooks()->async_id_fields()[AsyncHooks::kAsyncIdCounter] = async_hooks()->async_id_fields()[AsyncHooks::kAsyncIdCounter] + 1;
-```
-We are getting using `kAsyncIdCounter` as the index incrementing that value. Would it not have been enough doing:
-```c++
   async_hooks()->async_id_fields()[AsyncHooks::kAsyncIdCounter] += 1;
 ```
-No, because the increment operator is not overloaded for AliasedBuffer::Reference. 
-I've opened a [PR](https://github.com/nodejs/node/pull/19083) with a suggestion about adding the increment and descrement operators.
-
 So we obtaining an id for this AsyncWrap resource which remember is of type TCPWrap.
 Next we have:
 ```c++
 trigger_async_id_ = env()->get_default_trigger_async_id();
 ```
+The trigger id is an id for what triggered.
 Which we can find in src/env-inl.h:
 ```c++
 inline double Environment::get_default_trigger_async_id() {
@@ -1513,7 +1518,7 @@ const active_hooks = {
   tmp_fields: null
 };
 ```
-`active_hooks` is exported and used by lib/async_hooks.js and called in `enable` and `disable`.
+`active_hooks` is accessed by calling `setHookArrays()` in lib/async_hooks.js, called in `enable` and `disable`.
 Let's take a look at `enable` first:
 ```javascript
   const [hooks_array, hook_fields] = getHookArrays();
@@ -1571,6 +1576,271 @@ static void EnablePromiseHook(const FunctionCallbackInfo<Value>& args) {
   env->AddPromiseHook(PromiseHook, static_cast<void*>(env));
 }
 ```
+This will land us in `env.cc` `AddPromiseHook`:
+```c++
+void Environment::AddPromiseHook(promise_hook_func fn, void* arg) {
+  auto it = std::find_if(
+      promise_hooks_.begin(), promise_hooks_.end(),
+      [&](const PromiseHookCallback& hook) {
+        return hook.cb_ == fn && hook.arg_ == arg;
+      });
+  if (it != promise_hooks_.end()) {
+    it->enable_count_++;
+    return;
+  }
+  promise_hooks_.push_back(PromiseHookCallback{fn, arg, 1});
+
+  if (promise_hooks_.size() == 1) {
+    isolate_->SetPromiseHook(EnvPromiseHook);
+  }
+}
+```
+Every environment has a vector of PromiseHookCallbacks (env.h):
+```c++
+struct PromiseHookCallback {
+    promise_hook_func cb_;
+    void* arg_;
+    size_t enable_count_;
+  };
+std::vector<PromiseHookCallback> promise_hooks_;
+```
+Next, remember that `std::find_if` will return an iterator to the first element for which the 
+predicate returns true. If nothing is found the function returns last/end.
+So if the passed in `promise_hook_func` which is a typedef for a function pointer:
+```c++
+typedef void (*promise_hook_func) (v8::PromiseHookType type,
+                                   v8::Local<v8::Promise> promise,
+                                   v8::Local<v8::Value> parent,
+                                   void* arg);
+```
+if the fn and the arg already match an existing PromiseHookCallback, the iterator 
+will not be equal to end() and in that case that PromiseHookCallback  will have
+it's enable_count incremented and return. If the passed in promise_hook_func and args
+have not been added then a new PromiseHookCallback will be created and added to 
+`promise_hooks_`.
+
+Last thing that happens in `AddPromiseHook` is `SetPromiseHook` is called on the 
+isolate. The function EnvPromiseHook is a promise hook that will run all the 
+promise_hook_'s added.
+
+So when will `EnvPromiseHook` be called?
+Lets take a closer look at the V8 side of this. If we look in `deps/v8/include/v8.h` we 
+can find:
+```c++
+enum class PromiseHookType { kInit, kResolve, kBefore, kAfter };
+
+typedef void (*PromiseHook)(PromiseHookType type, Local<Promise> promise,
+                            Local<Value> parent);
+```
+So we can see that PromiseHook is a function pointer to a function that takes a type, 
+promise, and a parent value.
+This callback will be invoked by `Isolate::RunPromiseHook`:
+```c++
+void Isolate::RunPromiseHook(PromiseHookType type, Handle<JSPromise> promise,
+                             Handle<Object> parent) {
+  if (debug()->is_active()) debug()->RunPromiseHook(type, promise, parent);
+  if (promise_hook_ == nullptr) return;
+  promise_hook_(type, v8::Utils::PromiseToLocal(promise), v8::Utils::ToLocal(parent));
+}
+```
+The first time this is called is from `deps/v8/src/runtime/runtime-promise.cc` and:
+```c++
+RUNTIME_FUNCTION(Runtime_PromiseHookInit) {
+  HandleScope scope(isolate);
+  DCHECK_EQ(2, args.length());
+  CONVERT_ARG_HANDLE_CHECKED(JSPromise, promise, 0);
+  CONVERT_ARG_HANDLE_CHECKED(Object, parent, 1);
+  isolate->RunPromiseHook(PromiseHookType::kInit, promise, parent);
+  return isolate->heap()->undefined_value();
+}
+```
+V8 provides four hooks, `init`, `resolve`, `before`, and `after`.
+Init is run when a new Promise is created in V8. `resolve` when a promise is resolved.
+`before` is run before a PromiseReactionJob, and `after` after that job. 
+
+Lets say we create the following JavaScript:
+```javascript
+const p = new Promise((resolve, reject) => {
+  resolve('ok');
+});
+```
+If I'm reading this correctly, this would invoke code generated by `v8/src/builtins/builtins-promise-gen.cc`:
+```c++
+TF_BUILTIN(PromiseConstructor, PromiseBuiltinsAssembler) {
+  ...
+  GotoIfNot(IsPromiseHookEnabledOrDebugIsActive(), &debug_push);
+  CallRuntime(Runtime::kPromiseHookInit, context, instance, UndefinedConstant());
+}
+```
+So, `Runtime_PromiseHookInit` would only be called if a promise hook was enabled. Lets see if we can force this:
+```console
+(lldb) br s -n ExecuteScript
+(lldb) r
+(lldb) expr ((v8::internal::Isolate*)env->isolate())->promise_hook_or_debug_is_active_
+(bool) $8 = false
+(lldb) expr ((v8::internal::Isolate*)env->isolate())->promise_hook_or_debug_is_active_ = true
+(bool) $9 = true
+(lldb) br s -f runtime-promise.cc -l 113
+(lldb) continue
+```
+Indeed, we can now see that `Runtime_PromiseHookInit` is getting called and it will in turn call
+`Isolate::RunPromiseHook`, but in this case promise_hook_ will be a nullptr as it was not set
+it will simply return.
+
+When a PromiseHook as been set on the isolate it will call `EnvPromiseHook`
+`EnvPromiseHook` will iterate of all the added promise_hook_s in the environment
+and call there:
+```c++
+Environment* env = Environment::GetCurrent(promise->CreationContext());
+for (const PromiseHookCallback& hook : env->promise_hooks_) {
+  hook.cb_(type, promise, parent, hook.arg_);
+}
+```
+Recall, that the `cb_` in this case it the callback added from `async_wrap.cc` by
+`EnablePromiseHook` which was called from `enableHooks()` in `lib/internal/async_wrap.js`:
+```c++
+env->AddPromiseHook(PromiseHook, static_cast<void*>(env));
+```
+So, lets take a look a `PromiseHook`. For this we need to update our example to use both async_hooks and
+a promise:
+```javascript
+const http = require('http')
+const ah = require('async_hooks');
+let asyncObject = {
+  init: function(uid, provider, parentUid, parentHandle) {
+    process._rawDebug('init uid:', uid, ', provider:', provider, ', parentUid:', parentUid);
+  },
+  before: function(uid) {
+    process._rawDebug('before uid:', uid);
+  },
+  after: function(uid, didThrow) {
+    process._rawDebug('after. uid:', uid, 'didThrow:', didThrow);
+  },
+  destroy: function(uid) {
+    process._rawDebug('destroy: uid:', uid);
+  },
+  promiseResolve: function(uid) {
+    process._rawDebug('promiseResolve: uid:', uid);
+  }
+};
+let asynchook = ah.createHook(asyncObject);
+asynchook.enable();
+
+const p = new Promise((resolve, reject) => {
+  resolve('ok');
+});
+
+p.then(msg => {
+  console.log(msg);
+});
+```
+We should now be able to set a breakpoint in `PromiseHook`:
+```console
+(lldb) br s -f async_wrap.cc -l 288
+(lldb) r
+```
+Just to recap, `Runtime_PromiseHookInit` in `deps/v8/src/runtime/runtime-promise.cc` will
+call our `PromiseHook`:
+```c++
+isolate->RunPromiseHook(PromiseHookType::kInit, promise, parent);
+```
+And `Isolate::RunPromiseHook` will call the registered hook, which is `EnvPromiseHook`, which
+iterates over the registered `PromiseHookCallback` (which is a struct containing the callback,
+ the arg and a counter) calling the struct's callback (which is PromiseHook):
+```c++
+static void PromiseHook(PromiseHookType type, Local<Promise> promise,
+                        Local<Value> parent, void* arg) {
+  Environment* env = static_cast<Environment*>(arg);
+  Local<Value> resource_object_value = promise->GetInternalField(0);
+```
+```console
+(lldb) expr promise
+(v8::Local<v8::Promise>) $67 = (val_ = 0x00007fff5fbfce10)
+(lldb) expr promise->State()
+(v8::Promise::PromiseState) $12 = kPending
+(lldb) expr promise->HasHandler()
+(bool) $11 = false
+```
+`v8::Promise` can be found in deps/v8/include/v8.h. A v8::Promise also have a Result() function
+which can be called if the state is not pending. And a Catch and Then function to register function
+handlers. So this is the promise that was passed up from V8. 
+`GetInternalField` is a function of v8::Object. For kInit there will not be any thing in the internal field (at least
+not during this debugging session) but later when `PromiseWrap::New` is called:
+
+```c++
+wrap = PromiseWrap::New(env, promise, nullptr, silent);
+```
+```
+So, lets take a closer look at `PromiseWrap::New`:
+```c++
+  Local<Object> object = env->promise_wrap_template()->NewInstance(env->context()).ToLocalChecked();
+  object->SetInternalField(PromiseWrap::kPromiseField, promise);
+  object->SetInternalField(PromiseWrap::kIsChainedPromiseField,
+                           parent_wrap != nullptr ?
+                              v8::True(env->isolate()) :
+                              v8::False(env->isolate()));
+  CHECK_EQ(promise->GetAlignedPointerFromInternalField(0), nullptr);
+  promise->SetInternalField(0, object);
+  return new PromiseWrap(env, object, silent);
+```
+As the name of this class indicates this will wrap a v8::Promise. So we first create
+a new instance of the template that was created previously in `SetupHooks`. The wrapping
+is done by setting the promise on this object as an internal field (kPromiseField).
+Also note that the object is set as an internal field on the promise, as index 0. This is
+later accessed in `PromiseHook`
+```c++
+Local<Value> resource_object_value = promise->GetInternalField(0);
+PromiseWrap* wrap = nullptr;
+  if (resource_object_value->IsObject()) {
+    Local<Object> resource_object = resource_object_value.As<Object>();
+    wrap = Unwrap<PromiseWrap>(resource_object);
+  }
+```
+So `resource_object_value` can contain `PromiseWrap` and if so it is unwrapped.
+
+When a parent promise exists a DefaultTriggerAsyncIdScope is used before calling `PromiseWrap::New`:
+```c++
+  AsyncHooks::DefaultTriggerAsyncIdScope trigger_scope(parent_wrap);
+```
+The constructor that takes a `AsyncWrap` can be found in `src/async_wrap-inl.h`:
+```c++
+inline Environment::AsyncHooks::DefaultTriggerAsyncIdScope ::DefaultTriggerAsyncIdScope(AsyncWrap* async_wrap)
+    : DefaultTriggerAsyncIdScope(async_wrap->env(),
+                                 async_wrap->get_async_id()) {}
+```
+So this constructor just delegates to the one that takes an Environment pointer and a double. This constructor 
+can be found in `src/env-inl.h`.
+
+Recall that this following `SetAccessor` was set on the template:
+```c++
+  promise_wrap_template->SetAccessor(FIXED_ONE_BYTE_STRING(env->isolate(), "promise"), PromiseWrap::GetPromise);
+```
+So accessing `promise` on `object` above will invoke `PromiseWrap::GetPromise`:
+```c++
+  info.GetReturnValue().Set(info.Holder()->GetInternalField(kPromiseField));
+```
+
+Next, a new PromiseWrap is created using this object. And since `PromiseWrap` extends AsyncWrap it's constructor will
+call `AsyncReset`:
+```c++
+  AsyncReset(-1, silent);
+```
+
+which will call `AsyncWrap::EmitAsyncInit`:
+```c++
+  Local<Value> argv[] = {
+    Number::New(env->isolate(), async_id),
+    type,
+    Number::New(env->isolate(), trigger_async_id),
+    object,
+  };
+USE(init_fn->Call(env->context(), object, arraysize(argv), argv));
+```
+These are the arguments that will be passed to `init`:
+```console
+init uid: 6 , provider: PROMISE , parentUid: 1 , parentHandle: PromiseWrap { isChainedPromise: false, promise: Promise { <pending> } }
+```
+
 
 
 
