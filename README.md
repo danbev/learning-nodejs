@@ -1334,27 +1334,192 @@ This will call `void TCPWrap::New`:
 ```
 This constructor call will delegate up to the BaseObject class's constructor and then continue with AsyncWrap's constructor:
 ```c++
+#define NODE_ASYNC_ID_OFFSET 0xA1C
+  ...
   // Shift provider value over to prevent id collision.
   persistent().SetWrapperClassId(NODE_ASYNC_ID_OFFSET + provider);
 ```
-What is this all about?
-
+Lets take a look SetWrapperClassId more closely. e following will use
+`NODE_ASYNC_ID_OFFSET` is 2588 in decimal.
 ```console
-(lldb) expr provider
-(ProviderType) $16 = PROVIDER_TCPSERVERWRAP
+(lldb) expr provider_type_
+(const node::AsyncWrap::ProviderType) $3 = PROVIDER_PROMISE
+(lldb) expr 2588 + provider_type_
+(int) $4 = 2607
 ```
+`persistent()` is a member function of BaseObject which returns the handle for this AsyncWrap instance.
+`SetWrapperClassId` is a member function in `PersistentBase<T>`:
+```c++
+internal::Object** obj = reinterpret_cast<internal::Object**>(this->val_);
+uint8_t* addr = reinterpret_cast<uint8_t*>(obj) + I::kNodeClassIdOffset
+```
+`obj` is a pointer to a pointer which I find hard to visualize but here is an attempt:
+```console
+(lldb) expr this->val_
+(v8::Object *) $76 = 0x000000010604b680
+(lldb) expr obj
+(v8::internal::Object **) $75 = 0x000000010604b680
+
+lldb) expr &this->val_
+(v8::Object **) $84 = 0x0000000104507a28
+
+(lldb) expr &obj
+(v8::internal::Object ***) $85 = 0x00007fff5fbfc898
+
+```
+So `this-val_` is a pointer to v8::Object and we are using reinterpret_cast to instruct the compiler to treat it 
+like it was of type v8::internal::Object**.
+
+&this->val
+0x0000000104507a28 -----------------------> 0x000000010604b680 -------------> v8::Object
+                                                  | 
+                                                  | 
+&obj                                              |
+0x00007fff5fbfc898 -------------------------------+
+```
+Next, we are going to interpret the obj as an uint8_t* type so that we can perform the addition:
+```c++
+uint8_t* addr = reinterpret_cast<uint8_t*>(obj) + I::kNodeClassIdOffset
+*reinterpret_cast<uint16_t*>(addr) = class_id;
+```
+And then we set the value that addr is pointing to, to the passed in class it. But that does not really explain why
+this is being done. Lets stick a break point in the PromiseWrap constructor:
+```console
+(lldb) br s -f async_wrap.cc -l 611
+```
+Now, lets try casting `obj` to
+```console
+(lldb) expr *reinterpret_cast<v8::internal::GlobalHandles::Node*>(obj)
+(v8::internal::GlobalHandles::Node) $96 = {
+  object_ = 0x000033d8d5325b49
+  class_id_ = 0
+  index_ = 'D'
+  flags_ = 'a'
+  weak_callback_ = 0x0000000000000000
+  parameter_or_next_free_ = {
+    parameter = 0x0000000000000000
+    next_free = 0x0000000000000000
+  }
+}
+```
+`v8::internal::GlobalHandles::Node` can be found in `deps/v8/src/global-handles.cc` and we can see that it has
+the following private members:
+```c++
+  Object* object_;
+  // Wrapper class ID.
+  uint16_t class_id_;
+  // Index in the containing handle block.
+  uint8_t index_;
+```
+Notice the order. This is what addr is pointing to in :
+```c++
+uint8_t* addr = reinterpret_cast<uint8_t*>(obj) + I::kNodeClassIdOffset
+*reinterpret_cast<uint16_t*>(addr) = class_id;
+```
+After having set the value we can again inspect the value:
+```console
+(lldb) expr *reinterpret_cast<v8::internal::GlobalHandles::Node*>(obj)
+(v8::internal::GlobalHandles::Node) $107 = {
+  object_ = 0x000033d8d5325b49
+  class_id_ = 2607
+  index_ = 'D'
+  flags_ = 'a'
+  weak_callback_ = 0x0000000000000000
+  parameter_or_next_free_ = {
+    parameter = 0x0000000000000000
+    next_free = 0x0000000000000000
+  }
+}
+```
+TODO: Figure out how the connection between the Node and the stored object actually works.
+
+So lets take a step back and see how things all fits together. 
+```console
+(lldb) br s -f async_wrap.cc -l 264
+(lldb) br s -f v8.h -l 9082
+```
+When we create a new PromiseWrap it will delegate calling the above constructors, the last on
+is the BaseObject constructor it will invoke .
 
 ```c++
-#define NODE_ASYNC_ID_OFFSET 0xA1C
+template <class T>
+T* PersistentBase<T>::New(Isolate* isolate, T* that) {
+  if (that == NULL) return NULL;
+  internal::Object** p = reinterpret_cast<internal::Object**>(that);
+  return reinterpret_cast<T*>(V8::GlobalizeReference(reinterpret_cast<internal::Isolate*>(isolate), p));
+}
 ```
-Which is 2588 in decimal.
+`GlobalizeReference` will then do the following:
+```c++
+i::Object** V8::GlobalizeReference(i::Isolate* isolate, i::Object** obj) {
+  LOG_API(isolate, Persistent, New);
+  i::Handle<i::Object> result = isolate->global_handles()->Create(*obj);
+  return result.location();
+}
+```
+`GlobalHandles` can be found in `deps/v8/src/global-handles.h`. A global handle is alive until it's `Destroy`
+function is called (so it is not cleared when it does out of scope like a local handle with a HandleScope).
 ```console
-(lldb) expr 2588 + provider
-(int) $23 = 2613
+(lldb) expr *this
+(v8::internal::GlobalHandles) $126 = {
+  isolate_ = 0x0000000105807800
+  number_of_global_handles_ = 1
+  first_block_ = 0x0000000104801800
+  first_used_block_ = 0x0000000104801800
+  first_free_ = 0x0000000104801820
+  new_space_nodes_ = size=1 {
+    [0] = 0x0000000104801800
+  }
+  post_gc_processing_count_ = 0
+  number_of_phantom_handle_resets_ = 0
+  pending_phantom_callbacks_ = size=0 {}
+}
 ```
-TODO: look into SetWrapperClassId more closely.
+GlobalHandles class has a number of private members as we can see above: 
+```c++
+Isolate* isolate_;
+int number_of_global_handles_;
+NodeBlock* first_block_;
+NodeBlock* first_used_block_;
+Node* first_free_;
+std::vector<Node*> new_space_nodes_;
+int post_gc_processing_count_;
+size_t number_of_phantom_handle_resets_;
+std::vector<PendingPhantomCallback> pending_phantom_callbacks_;
+```
+So lets take a closer look at `Create` and see what it does. 
+```c++
+Node* result = first_free_;
+result->Acquire(value);
+```
+`Acquire` performs the following on the passed on Object:
+```c++
+  DCHECK(state() == FREE);
+  object_ = object;
+  class_id_ = v8::HeapProfiler::kPersistentHandleNoClassId;
+  set_active(false);
+  set_state(NORMAL);
+  parameter_or_next_free_.parameter = nullptr;
+  weak_callback_ = nullptr;
+  IncreaseBlockUses();
+```
+Now, Aquire is a member function on GlobalHandles::Node and we can see that the object pointer is set, 
+and the class_id_ (and others but I'm focusing on these two).
 
-Next, `AsyncReset()` is called from AsyncWrap's constructor:
+Create then returns:
+```c++
+return result->handle();
+```
+Which does:
+```c++
+Handle<Object> handle() { return Handle<Object>(location()); }
+```
+
+v8::Object does not have any members and an Object can be either a Smi or a HeapObject.
+
+persistent().SetWrapperClassId(NODE_ASYNC_ID_OFFSET + provider_type_);
+
+`AsyncReset()` is called from AsyncWrap's constructor:
 ```c++
   // Use AsyncReset() call to execute the init() callbacks.
   AsyncReset(execution_async_id);
