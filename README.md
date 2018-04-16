@@ -5305,7 +5305,7 @@ https://github.com/danbev/learning-libcrypto#fips
 
 
 #### OpenSSL FIPS Object Module
-OpenSSL itself is not validated,and never will be. Instead a carefully defined software component
+OpenSSL itself is not validated, and never will be. Instead a carefully defined software component
 called the OpenSSL FIPS Object Module has been created. The Module was designed for
 compatibility with the OpenSSL library so products using the OpenSSL library and API can be
 converted to use FIPS 140-2 validated cryptography with minimal effort.
@@ -13121,3 +13121,404 @@ we can see that are going to look for a name `node_register_module_v` and the va
 The above comes from debugging test/addons/hello-world and the NODE_MODULE_VERSION is 61, which is set in
 node_version.h.
 So if the addon declares a function named node_register_module_v61 it will have its initialize function called.
+
+### Streams
+`StreamBase` extends StreamResource which represents a generic stream and has public member functions 
+like ReadStart, ReadStop, DoShutdown, DoTryWrite, DoWrite, PushStreamListener, RemoveStreamListener
+It as a two protected members:
+```c++
+  StreamListener* listener_ = nullptr;
+  uint64_t bytes_read_ = 0;
+```
+
+Lets take a closer look as StreamListener. To understand things lets see how it is used by debugging:
+```console
+$ lldb -- out/Debug/node --inspect-brk test/parallel/test-fs-read-stream.js
+(lldb) br s -f stream_wrap.cc -l 57
+```
+If we back up the frame stack a little we can see that this is called from GetBinding with a string
+value of:
+````console
+(lldb) up 2
+(lldb) jlh module
+#stream_wrap
+```
+This call originates from lib/internal/boostrap.node.js where we have:
+```javascript
+setupGlobalConsole();
+...
+function setupGlobalConsole() {
+
+  const wrappedConsole = NativeModule.require('console');
+}
+```
+This will trickle down into
+
+```javascript
+module.exports = new Console(process.stdout, process.stderr);
+
+function getStdout() {
+    if (stdout) return stdout;
+    stdout = createWritableStdioStream(1);
+    stdout.destroySoon = stdout.destroy;
+    stdout._destroy = function(er, cb) {
+      // Avoid errors if we already emitted
+      er = er || new ERR_STDOUT_CLOSE();
+      cb(er);
+    };
+    if (stdout.isTTY) {
+      process.on('SIGWINCH', () => stdout._refreshSize());
+    }
+    return stdout;
+  }
+
+function createWritableStdioStream(fd) {
+  ...
+  var tty = require('tty');
+}
+```
+And in `lib/tty.js` we have:
+```javascript
+const net = require('net');
+```
+And in `lib/net.js we have:
+```
+process.binding('stream_wrap');
+```
+So that is the first time that `LibuvStreamWrap::Initialize` is called. How about a function like `OnStreamRead`?
+```console
+(lldb) br s -n OnStreamRead
+```
+
+`EmitToJSStreamListener::OnStreamRead`
+
+```c++
+int LibuvStreamWrap::ReadStart() {
+  return uv_read_start(stream(), [](uv_handle_t* handle,
+                                    size_t suggested_size,
+                                    uv_buf_t* buf) {
+    static_cast<LibuvStreamWrap*>(handle->data)->OnUvAlloc(suggested_size, buf);
+  }, [](uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf) {
+    static_cast<LibuvStreamWrap*>(stream->data)->OnUvRead(nread, buf);
+  });
+}
+```
+Notice that this is calling `uv_read_start` and the second argument (the lambda) the allocation callback for libuv, and
+the third argument is the read callback. So when `ReadStart` called? Well it is set in the Initialize function for
+js_stream.cc, node_file.cc, node_http2.cc, and tls_wrap.cc:
+```c++
+
+```
+
+With those out of the was, we should stop in the debug console in our test file:
+```javascript
+const file = fs.ReadStream(fn);
+```
+And in ReadStream we can find:
+```javascript
+if (typeof this.fd !== 'number')
+    this.open();
+```
+This will call `ReadStream.open` which looks like this:
+```javaascript
+ fs.open(this.path, this.flags, this.mode, function(er, fd) {
+    if (er) {
+      if (self.autoClose) {
+        self.destroy();
+      }
+      self.emit('error', er);
+      return;
+    }
+
+    self.fd = fd;
+    self.emit('open', fd);
+    self.emit('ready');
+    // start the flow of data.
+    self.read();
+  });
+};
+```
+`fs.open` can be found in `lib/fs.js` and what I think is the important parts are:
+```javascript
+const req = new FSReqWrap();
+  req.oncomplete = callback;
+
+  binding.open(pathModule.toNamespacedPath(path),
+               stringToFlags(flags),
+               mode,
+               req);
+```
+Notice that `new `FSReqWrap` will call the C++ constructor in node_file.h. And also note that the callback is
+set on the req.
+
+`AsyncDestCall` 
+
+```c++
+  CHECK_NE(req_wrap, nullptr);
+  req_wrap->Init(syscall, dest, len, enc);
+  int err = fn(env->event_loop(), req_wrap->req(), fn_args..., after);
+  req_wrap->Dispatched();
+```
+In our case `fn` will be `uv_fs_open`.
+
+
+```javascript
+  const req = new FSReqWrap();
+  req.oncomplete = callback;
+
+  binding.open(pathModule.toNamespacedPath(path),
+               stringToFlags(flags),
+               mode,
+               req);
+```
+
+
+
+
+
+Lets start by takeing a look at classes that extend StreamBase:
+class JSStream : public AsyncWrap, public StreamBase
+class FileHandle : public AsyncWrap, public StreamBase
+class Http2Stream : public AsyncWrap, public StreamBase 
+class StreamPipe : public AsyncWrap 
+class LibuvStreamWrap : public HandleWrap, public StreamBase
+class TLSWrap : public AsyncWrap, public crypto::SSLWrap<TLSWrap>, public StreamBase, public StreamListener
+
+I noticed that stream_base.h includes `req_wrap-inl.h` but as far as I can tell nothing from ReqWrap
+is used in StreamBase.
+
+Let's take a look when the StreamReq constructor is called.
+
+```console
+$ lldb out/Debug/node test/parallel/test-stream-wrap.js
+(lldb) br s -f stream_wrap.cc -l 58
+```
+
+In test-stream-wrap.js we have:
+```javascript
+const ShutdownWrap = process.binding('stream_wrap').ShutdownWrap;
+```
+
+This will break in `LibuvStreamWrap::Initialize`. This function will create two constructor functions, 
+one named `ShutdownWrap` and `WriteWrap`. Both share the same actual constructor function which is 
+defined as a lambda:
+```c++
+auto is_construct_call_callback = [](const FunctionCallbackInfo<Value>& args) {
+    CHECK(args.IsConstructCall());
+    StreamReq::ResetObject(args.This());
+  };
+  Local<FunctionTemplate> sw = FunctionTemplate::New(env->isolate(), is_construct_call_callback);
+  sw->InstanceTemplate()->SetInternalFieldCount(StreamReq::kStreamReqField + 1);
+  Local<String> wrapString = FIXED_ONE_BYTE_STRING(env->isolate(), "ShutdownWrap");
+  sw->SetClassName(wrapString);
+  AsyncWrap::AddWrapMethods(env, sw);
+  target->Set(wrapString, sw->GetFunction());
+  env->set_shutdown_wrap_template(sw->InstanceTemplate());
+```
+```console
+> process.binding('stream_wrap')
+{ ShutdownWrap: [Function: ShutdownWrap],
+  WriteWrap: [Function: WriteWrap] }
+```
+`AsyncWrap::AddWrapMethods` adds the `getAsyncId` and `asyncReset` functions to ShutdownWrap function template.
+
+The constructor for `LibuvStreamWrap` delegates to `StreamBase(env)` which does:
+```c++
+PushStreamListener(&default_listener_);
+```
+`default_listener_` can be found in `stream_base.h` and is of type `EmitToJSStreamListener`:
+```c++
+class EmitToJSStreamListener : public ReportWritesToJSStreamListener {
+ public:
+  void OnStreamRead(ssize_t nread, const uv_buf_t& buf) override;
+};
+```
+
+#### TTYWrap
+`lib/tty.js` :
+```javascript
+const { TTY, isTTY } = process.binding('tty_wrap');
+```
+Take a closer look at the duplication in lib/internal/process/stdio.js.
+
+
+### test-child-process-spawnsync-validation-errors.js
+Just a note for myself that you need to run as non-root when running the tests or you'll get
+the following error:
+```console
+bash-4.2# out/Release/node test/parallel/test-child-process-spawnsync-validation-errors.js
+Mismatched innerFn function calls. Expected exactly 62, actual 42.
+    at Object.exports.mustCall (/home/danbev/node/test/common/index.js:427:10)
+    at Object.expectsError (/home/danbev/node/test/common/index.js:736:18)
+    at Object.<anonymous> (/home/danbev/node/test/parallel/test-child-process-spawnsync-validation-errors.js:14:12)
+    at Module._compile (internal/modules/cjs/loader.js:677:30)
+    at Object.Module._extensions..js (internal/modules/cjs/loader.js:688:10)
+    at Module.load (internal/modules/cjs/loader.js:588:32)
+    at tryModuleLoad (internal/modules/cjs/loader.js:527:12)
+    at Function.Module._load (internal/modules/cjs/loader.js:519:3)
+    at Function.Module.runMain (internal/modules/cjs/loader.js:718:10)
+```
+I sometime need to setup run in docker containers and this has hit me then. Just create a user and switch to that
+user and things should work.
+
+### Bundled ca with openssl-system-ca-path
+Currently it is possible to specify that system ca certs should be included using `--openssl-system-ca-path`.
+There is a test named `test-tls-cnnic-whitelist.js that uses the `--use-bundled-ca` option which fails (since
+8.11.0):
+```console
+$ out/Debug/node --use-bundled-ca test/parallel/test-tls-cnnic-whitelist.js
+assert.js:80
+  throw new AssertionError(obj);
+  ^
+
+AssertionError [ERR_ASSERTION]: 'CERT_SIGNATURE_FAILURE' strictEqual 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'
+    at TLSSocket.client.on.common.mustCall (/Users/danielbevenius/work/nodejs/node/test/parallel/test-tls-cnnic-whitelist.js:64:14)
+    at TLSSocket.<anonymous> (/Users/danielbevenius/work/nodejs/node/test/common/index.js:467:15)
+    at TLSSocket.emit (events.js:182:13)
+    at emitErrorNT (internal/streams/destroy.js:75:8)
+    at process._tickCallback (internal/process/next_tick.js:174:19)
+```
+So for some reason the clients certificate is not acceptable to the server, in this case the error is 
+`CERT_SIGNATURE_FAILURE`, but in the master branch the expected error is `UNABLE_TO_VERIFY_LEAF_SIGNATURE`. 
+The following `clientOptions` are used in the above failed case:
+```javascript
+{ 
+  // Test 0: for the check of a cert not in the whitelist.
+  // agent7-cert.pem is issued by the fake CNNIC root CA so that its
+  // hash is not listed in the whitelist.
+  // fake-cnnic-root-cert has the same subject name as the original
+  // rootCA.
+  serverOpts: {
+    key: loadPEM('agent7-key'),
+    cert: loadPEM('agent7-cert')
+  },
+  clientOpts: {
+    port: undefined,
+    rejectUnauthorized: true,
+    ca: [loadPEM('fake-cnnic-root-cert')]
+    },
+  errorCode: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'
+}
+```
+There was an issue with this test which caused a different error than the one expected, 
+see https://github.com/nodejs/node/pull/19767 for details.
+
+I think that this test was not worked as expected sinse 2bc7841d0fcdd066fe477873229125b6f003b693  
+("test: use random ports where possible"). The test in that commit checked for `CERT_REVOKED`.
+I tried checking out that version and running it, and with the update to the cert and the 
+change in the above mentioned PR it still worked. I noticed that this was done by src/node_crypto.cc
+and the function `CheckWhitelistedServerCert` which has since been removed. Lets find out when it 
+was removed:
+```console
+$ git blame --reverse 2bc7841d0fcdd066fe477873229125b6f003b693.. src/node_crypto.cc
+```
+
+test: remove test case 0 from test-tls-cnnic-whitelist.js
+
+I looks like this test has not worked as expected since commit
+2bc7841d0fcdd066fe477873229125b6f003b693 ("test: use random ports
+where possible"). The test in that commit checked for `CERT_REVOKED`
+which was returned by CheckWhitelistedServerCert. 
+CheckWhitelistedServerCert was removed in commit 
+dc875438a3953102febffa79b691317bb24ba2aa ("src: drop CNNIC+StartCom
+certificate whitelisting").
+
+I'm suggesting that this test case be removed as I don't think it is valid anymore.
+
+It turns out that the `fake-cnnic-root-cert` has expired:
+```console
+$ openssl x509 -in fake-cnnic-root-cert.pem -text -noout
+Certificate:
+    Data:
+        Version: 3 (0x2)
+        Serial Number:
+            c2:79:4a:2b:ea:49:93:6d
+        Signature Algorithm: sha256WithRSAEncryption
+        Issuer: C=CN, O=CNNIC, CN=CNNIC ROOT
+        Validity
+            Not Before: Jun  9 17:15:16 2015 GMT
+            Not After : Mar 29 17:15:16 2018 GMT
+```
+Lets create a new one and see if the test works now:
+```console
+$ rm fake-cnnic-root-cert.pem
+$ make fake-cnnic-root-cert.pem
+openssl req -x509 -new \
+        -key fake-cnnic-root-key.pem \
+        -days 1024 \
+        -out fake-cnnic-root-cert.pem \
+        -config fake-cnnic-root.cnf
+$ openssl x509 -in fake-cnnic-root-cert.pem -text -noout
+Certificate:
+    Data:
+        Version: 3 (0x2)
+        Serial Number:
+            a9:dd:e8:f6:46:aa:9b:73
+        Signature Algorithm: sha1WithRSAEncryption
+        Issuer: C=CN, O=CNNIC, CN=CNNIC ROOT
+        Validity
+            Not Before: Apr 13 06:23:48 2018 GMT
+            Not After : Jan 31 06:23:48 2021 GMT
+
+```
+With those updates a re-run of the test will just "hang", actuall it is now waiting for incoming 
+connections:
+```console
+$ out/Debug/node --use-bundled-ca test/parallel/test-tls-cnnic-whitelist.js
+```
+So what is this test really expecting? 
+Notice that --use-bundled-ca is specified and these have recently been updated.
+In commit 79fa372b79 ("crypto: update root certificates") the CNNIC Root certificate
+was removed:
+```console
+ Certificates removed:
+    - CNNIC ROOT
+```
+
+So, lets debug this:
+```javascript
+const client = tls.connect(tcase.clientOpts);
+```
+This call will land in `lib/_tls_wrap.js` which will setup the options and the call
+```javascript
+const context = options.secureContext || tls.createSecureContext(options);
+```
+`createSecureContext` can be found in `_tls_common.js`:
+```javascript
+const binding = process.binding('crypto');
+const NativeSecureContext = binding.SecureContext;
+...
+var c = new SecureContext(options.secureProtocol, secureOptions, context);
+```
+
+So the error means that the server cannot verify the signature of the of the ca
+
+"no signatures could be verified because the chain contains only one certificate and it is not
+self signed."
+
+### TLS sreateServer
+This function can be found in `lib/_tlw_wrap.js`:
+```javascript
+exports.createServer = function(options, listener) {
+  return new Server(options, listener);
+};
+```
+
+### util.h
+This header contains the following util functions/macros:
+
+UncheckedRealloc
+...
+Abort
+Assert
+void DumpBacktrace(FILE* fp);
+FIXED_ONE_BYTE_STRING
+STRINGIFY_(x) #x
+STRINGIFY(x) STRINGIFY_(x)
+CHECK
+CHECK_EQ ...
+ListNode
+ContainerOfHelper
+
+arraysize can be found in `src/node_internals.h'. Just be aware that there is a macro in v8 with the same
+name (deps/v8/src/base/macros.h)
