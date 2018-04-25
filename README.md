@@ -4289,7 +4289,8 @@ China Internet Network Information Center (CNNIC) is referenced in some code. It
 
 
 #### Signed Public Key and Challenge (SPKAC)
-Also known as Netscape SPKI.
+Also known as Netscape SPKI (spooky). There was originally an element named keygen in the html5 spec which was later
+removed. The intention was to create client side certificates
 
 #### Building with shared openssl
 Building an [locally built version](https://github.com/danbev/learning-libcrypto#building-openssl) of OpenSSL.
@@ -13274,8 +13275,6 @@ In our case `fn` will be `uv_fs_open`.
 
 
 
-
-
 Lets start by takeing a look at classes that extend StreamBase:
 class JSStream : public AsyncWrap, public StreamBase
 class FileHandle : public AsyncWrap, public StreamBase
@@ -13333,6 +13332,47 @@ class EmitToJSStreamListener : public ReportWritesToJSStreamListener {
   void OnStreamRead(ssize_t nread, const uv_buf_t& buf) override;
 };
 ```
+
+
+`src/stream_base.h` includes `req_wrap-inl.h` but does not use the `ReqWrap` which is the
+only class `req_wrap` contains. Commenting out this include will cause a number 
+of compile time warnings and link time errors, for example:
+```console
+sers/danielbevenius/work/nodejs/node/out/Debug/obj.target/node_lib/src/tls_wrap.o ../src/tls_wrap.cc
+In file included from ../src/tcp_wrap.cc:22:
+In file included from ../src/tcp_wrap.h:27:
+In file included from ../src/async_wrap.h:27:
+../src/base_object.h:41:32: warning: inline function 'node::BaseObject::object' is not defined [-Wundefined-inline]
+  inline v8::Local<v8::Object> object();
+                               ^
+../src/stream_base-inl.h:45:26: note: used here
+  return GetAsyncWrap()->object();
+                         ^
+```
+So if we follow this, line 22 of `tcp_wrap.cc` is the include of `tcp_wrap.h`, and line 27 of `tcp_wrap.h` is
+the include of `async_wrap.h`. Line 27 of `async_wrap.h` is the include of `base_object.h` and line 41:
+```c++
+inline v8::Local<v8::Object> object();
+```
+And if we look at `stream_base-inl.h` line 45:
+```c++
+inline v8::Local<v8::Object> StreamReq::object() {
+  return GetAsyncWrap()->object();
+}
+```
+
+`req_wrap-inl.h` includes `async_wrap-inl.h`, which in turn includes `base_object-inl.h`  which has the following 
+definition of object():
+```c++
+inline v8::Local<v8::Object> BaseObject::object() {
+  return PersistentToLocal(env_->isolate(), persistent_handle_);
+}
+```
+If `stream_base.h` includes `async_wrap-inl.h` it will get a definition of `object()` since `async_wrap-inl.h` 
+includes `base_object-inl.h'.
+But removing `req_wrap-inl.h` will also have an affect on connect_wrap.h which will no longer have a definition
+of `Dispatch`, so it should inlude `req_wrap-inl.h` instead of just 'req_wrap.h`
+
 
 #### TTYWrap
 `lib/tty.js` :
@@ -13503,6 +13543,261 @@ exports.createServer = function(options, listener) {
   return new Server(options, listener);
 };
 ```
+```console
+$ lldb -- out/Debug/node --inspect-brk ../scripts/tls-server.js
+```
+```javascript
+const server = tls.Server(options, function(socket) {
+```
+`tls.Server` is a function defined as :
+```javascript
+exports.Server = require('_tls_wrap').Server;
+```
+This will land in lib/_tls_wrap and the Server function which will parst the options passed in and 
+store them.
+this.setOptions(options);
+var sharedCreds = tls.createSecureContext({
+    pfx: this.pfx,
+    key: this.key,
+    passphrase: this.passphrase,
+    cert: this.cert,
+    clientCertEngine: this.clientCertEngine,
+    ca: this.ca,
+    ciphers: this.ciphers,
+    ecdhCurve: this.ecdhCurve,
+    dhparam: this.dhparam,
+    secureProtocol: this.secureProtocol,
+    secureOptions: this.secureOptions,
+    honorCipherOrder: this.honorCipherOrder,
+    crl: this.crl,
+    sessionIdContext: this.sessionIdContext
+});
+This will call `lib/_tls_common.js` createSecureContext
+
+
+var c = new SecureContext(options.secureProtocol, secureOptions, context);
+
+
+
+Will 
+this.context = new NativeSecureContext();
+
+This will call src/node_crypto.h SecureContext::New
+
+context.init will call SecureContext::Init:
+```c++
+const SSL_METHOD* method = TLS_method();
+```
+`TLS_method` is defined in deps/openssl/openssl/ssl/:
+```c
+IMPLEMENT_tls_meth_func(TLS_ANY_VERSION, 0, 0,
+                        TLS_method,
+                        ossl_statem_accept,
+                        ossl_statem_connect, TLSv1_2_enc_data)
+```
+`IMPLEMENT_tls_meth_func` is a macro in `deps/openssl/openssl/ssl/ssl_locl.h`. This function will return
+a referense to a const struct:
+```c
+struct ssl_method_st {
+    int version;
+    unsigned flags;
+    unsigned long mask;
+    int (*ssl_new) (SSL *s);
+    void (*ssl_clear) (SSL *s);
+    void (*ssl_free) (SSL *s);
+    int (*ssl_accept) (SSL *s);
+    int (*ssl_connect) (SSL *s);
+    int (*ssl_read) (SSL *s, void *buf, int len);
+    int (*ssl_peek) (SSL *s, void *buf, int len);
+    int (*ssl_write) (SSL *s, const void *buf, int len);
+    int (*ssl_shutdown) (SSL *s);
+    int (*ssl_renegotiate) (SSL *s);
+    int (*ssl_renegotiate_check) (SSL *s);
+    int (*ssl_read_bytes) (SSL *s, int type, int *recvd_type,
+                           unsigned char *buf, int len, int peek);
+    int (*ssl_write_bytes) (SSL *s, int type, const void *buf_, int len);
+    int (*ssl_dispatch_alert) (SSL *s);
+    long (*ssl_ctrl) (SSL *s, int cmd, long larg, void *parg);
+    long (*ssl_ctx_ctrl) (SSL_CTX *ctx, int cmd, long larg, void *parg);
+    const SSL_CIPHER *(*get_cipher_by_char) (const unsigned char *ptr);
+    int (*put_cipher_by_char) (const SSL_CIPHER *cipher, unsigned char *ptr);
+    int (*ssl_pending) (const SSL *s);
+    int (*num_ciphers) (void);
+    const SSL_CIPHER *(*get_cipher) (unsigned ncipher);
+    long (*get_timeout) (void);
+    const struct ssl3_enc_method *ssl3_enc; /* Extra SSLv3/TLS stuff */
+    int (*ssl_version) (void);
+    long (*ssl_callback_ctrl) (SSL *s, int cb_id, void (*fp) (void));
+    long (*ssl_ctx_callback_ctrl) (SSL_CTX *s, int cb_id, void (*fp) (void));
+};
+```
+```console
+(lldb) expr *method
+(SSL_METHOD) $54 = {
+  version = 65536
+  flags = 0
+  mask = 0
+  ssl_new = 0x00000001019bd2f0 (node`tls1_new at t1_lib.c:98)
+  ssl_clear = 0x00000001019bd380 (node`tls1_clear at t1_lib.c:112)
+  ssl_free = 0x00000001019bd340 (node`tls1_free at t1_lib.c:106)
+  ssl_accept = 0x00000001019a5660 (node`ossl_statem_accept at statem.c:174)
+  ssl_connect = 0x00000001019a4fa0 (node`ossl_statem_connect at statem.c:169)
+  ssl_read = 0x0000000101988740 (node`ssl3_read at s3_lib.c:3875)
+  ssl_peek = 0x00000001019888a0 (node`ssl3_peek at s3_lib.c:3880)
+  ssl_write = 0x00000001019885f0 (node`ssl3_write at s3_lib.c:3836)
+  ssl_shutdown = 0x0000000101988450 (node`ssl3_shutdown at s3_lib.c:3786)
+  ssl_renegotiate = 0x00000001019888d0 (node`ssl3_renegotiate at s3_lib.c:3885)
+  ssl_renegotiate_check = 0x0000000101988660 (node`ssl3_renegotiate_check at s3_lib.c:3897)
+  ssl_read_bytes = 0x000000010197c250 (node`ssl3_read_bytes at rec_layer_s3.c:976)
+  ssl_write_bytes = 0x000000010197a2e0 (node`ssl3_write_bytes at rec_layer_s3.c:344)
+  ssl_dispatch_alert = 0x00000001019894b0 (node`ssl3_dispatch_alert at s3_msg.c:68)
+  ssl_ctrl = 0x0000000101985ba0 (node`ssl3_ctrl at s3_lib.c:2898)
+  ssl_ctx_ctrl = 0x0000000101986ce0 (node`ssl3_ctx_ctrl at s3_lib.c:3261)
+  get_cipher_by_char = 0x0000000101987d20 (node`ssl3_get_cipher_by_char at s3_lib.c:3564)
+  put_cipher_by_char = 0x0000000101987d80 (node`ssl3_put_cipher_by_char at s3_lib.c:3576)
+  ssl_pending = 0x0000000101979b70 (node`ssl3_pending at rec_layer_s3.c:130)
+  num_ciphers = 0x0000000101985720 (node`ssl3_num_ciphers at s3_lib.c:2781)
+  get_cipher = 0x0000000101985730 (node`ssl3_get_cipher at s3_lib.c:2786)
+  get_timeout = 0x00000001019bd2e0 (node`tls1_default_timeout at t1_lib.c:89)
+  ssl3_enc = 0x0000000102bd58f0
+  ssl_version = 0x000000010199ac90 (node`ssl_undefined_void_function at ssl_lib.c:3251)
+  ssl_callback_ctrl = 0x0000000101986c30 (node`ssl3_callback_ctrl at s3_lib.c:3233)
+  ssl_ctx_callback_ctrl = 0x0000000101987ab0 (node`ssl3_ctx_callback_ctrl at s3_lib.c:3508)
+}
+```
+```c++
+  sc->ctx_ = SSL_CTX_new(method);
+  SSL_CTX_set_app_data(sc->ctx_, sc);
+```
+The last call is setting the created SecureContext on the OpenSSL CTX created with the previous call.
+This allows user data to be stored with the context. This function will return 1 if they items were
+stored successfully and 0 if not.
+Get will return the data or NULL.
+
+Next: 
+```c++
+  SSL_CTX_set_options(sc->ctx_, SSL_OP_NO_SSLv2);
+```
+SSL_OP_NO_SSLv2 Do not use the SSLv2 protocol. As of OpenSSL 1.0.2g the SSL_OP_NO_SSLv2 option is set by default.
+
+```c++
+SSL_CTX_set_session_cache_mode(sc->ctx_, SSL_SESS_CACHE_SERVER | SSL_SESS_CACHE_NO_INTERNAL | SSL_SESS_CACHE_NO_AUTO_CLEAR);
+```
+Enables session caching. To reuse a session a client must send the session id to the server.
+
+
+SSL_CTX_set_tlsext_ticket_key_cb(sc->ctx_, SecureContext::TicketCompatibilityCallback);
+Session tickets are defined in RFC5077 provide an enhanced session resumption capability where the server 
+implementation is not required to maintain per session state.
+
+Back in `lib/_tls_common.js` we have
+```javascript
+if (secureOptions) this.context.setOptions(secureOptions);
+```
+After this we will have returned from the call to new SecureContext.
+```javascript
+var ca = options.ca;
+```
+If a `ca` options was specifed for the options passed into the `tls.Server` function.
+
+```javascript
+c.context.addRootCerts(); 
+```
+This will land in `SecureContext::AddRootCerts` which in our case the will no be ca certs parsed yet
+so the ones in `root_certs`
+```c++
+static std::vector<X509*> root_certs_vector;
+  if (root_certs_vector.empty()) {
+
+```
+
+### GCM 
+This algorithm produces both a cipher text and an authentication tag (think MAC).
+Example encryption/decryption:
+```javascript
+const crypto = require('crypto');
+const algo = 'aes-128-gcm';
+const key = '6970787039613669314d623455536234';
+const iv  = '583673497131313748307652';
+const plainText = 'Bajja!';
+const options = {};
+
+console.log('PlainText: ', plainText);
+
+const encrypt = crypto.createCipheriv(algo,
+                                      Buffer.from(key, 'hex'),
+                                      Buffer.from(iv, 'hex'),
+                                      options);
+
+let cipherText = encrypt.update(plainText, 'utf8', 'hex');
+cipherText += encrypt.final('hex');
+console.log('CipherText:', cipherText);
+
+const decrypt = crypto.createDecipheriv(algo,
+                                        Buffer.from(key, 'hex'),
+                                        Buffer.from(iv, 'hex'),
+                                        options);
+
+// You have to remember tht GCM is both encryption and authentiction
+// and you have to supply the mac/tag that was generated
+decrypt.setAuthTag(Buffer.from(encrypt.getAuthTag()));
+let decrypted = decrypt.update(cipherText, 'hex', 'utf8');
+decrypted += decrypt.final('utf8');
+console.log('Decrypted: ', decrypted);
+```
+In `node_crypto.cc` CipherBase::Final` we can see that the authentication token
+is set. The following call be get the tag and set the value of `auth_tag_`.
+```c++
+EVP_CIPHER_CTX_ctrl(ctx_, EVP_CTRL_GCM_GET_TAG, auth_tag_len_, reinterpret_cast<unsigned char*>(auth_tag_)));
+```
+
+### Authenticated Encryption with Associated Data
+You can also add additional data that will be covered by the authentication tag but not encrypted.
+This can be useful for package headers which should be allowed to be read, but you still don't want
+them to be tampered with. Lets take a look at an example:
+```javascript
+const crypto = require('crypto');
+
+const algo = 'aes-128-gcm';
+const key = '6970787039613669314d623455536234';
+const iv  = '583673497131313748307652';
+const plainText = 'Bajja!';
+const options = {};
+
+console.log('PlainText: ', plainText);
+
+const encrypt = crypto.createCipheriv(algo,
+                                      Buffer.from(key, 'hex'),
+                                      Buffer.from(iv, 'hex'),
+                                      options);
+
+encrypt.setAAD(Buffer.from('someheader=10', 'utf8'));
+let cipherText = encrypt.update(plainText, 'utf8', 'hex');
+cipherText += encrypt.final('hex');
+console.log('CipherText:', cipherText);
+
+// Send the cipherText, additional data, and tag someone
+const decrypt = crypto.createDecipheriv(algo,
+                                        Buffer.from(key, 'hex'),
+                                        Buffer.from(iv, 'hex'),
+                                        options);
+
+// You have to remember tht GCM is both encryption and authentiction
+// and you have to supply the mac/tag that was generated
+decrypt.setAuthTag(Buffer.from(encrypt.getAuthTag()));
+
+// We have to set the additional data before descrypting
+// as decryption is defined as ADAD(K, C, A, T) = (P, A)
+decrypt.setAAD(Buffer.from('someheader=10', 'utf8'));
+let decrypted = decrypt.update(cipherText, 'hex', 'utf8');
+decrypted += decrypt.final('utf8');
+// Notice that the additional data is not part of the decrypted message
+console.log('Decrypted: ', decrypted);
+```
+
+```console
+(lldb) br s -n CipherBase::SetAAD
+```
 
 ### util.h
 This header contains the following util functions/macros:
@@ -13522,3 +13817,101 @@ ContainerOfHelper
 
 arraysize can be found in `src/node_internals.h'. Just be aware that there is a macro in v8 with the same
 name (deps/v8/src/base/macros.h)
+
+`src/util-inl.h`
+
+### getUIntOption
+This function is part of the `lib/internal/crypto/cipher.js`;
+```javascript
+function getUIntOption(options, key) {
+  let value;
+  if (options && (value = options[key]) != null) {
+    if (value >>> 0 !== value)
+      throw new ERR_INVALID_OPT_VALUE(key, value);
+    return value;
+  }
+  return -1;
+}
+```
+What was intersting is the usage of `>>>`, the zero filling right shift operator.
+This ensures that value is a valid number (value exists, is numeric, and is integral). If it is it will be unaffected 
+by the operation. If it's undefined or non-numeric, it will always return zero.
+
+You can also use `>>` to do the same thing but for signed int values.
+
+
+### Libraries that the node executable requires
+```console
+$ otool -L out/Release/node
+out/Release/node:
+/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 1259.22.0)
+/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1226.10.1)
+/usr/lib/libc++.1.dylib (compatibility version 1.0.0, current version 120.1.0)
+```
+On mac the System library contains the following components:
+* libc
+The standard c library
+* libinfo
+The netinfo library
+* libkvm
+The kernel virtual memory library
+* libm
+The math lib
+* libpthread
+The POSIX threads library
+
+You can see that these libs are symbolic links:
+```console
+$ ls -l /usr/lib/libpthread.dylib
+lrwxr-xr-x  1 root  wheel  15 Jan 13  2016 /usr/lib/libpthread.dylib -> libSystem.dylib
+```
+And you can list the symbols using:
+```console
+$ nm /usr/lib/libSystem.B.dylib
+...
+```
+The other linked library is `libc++.1.dylib` which is the implementation of the C++ standard library, targeting C++11.
+For node-gyp you will also need python 2.7, make, and a C++ compiler toolchain.
+
+### Module exports
+In `lib/crypto.js` we have the following line:
+```javascript
+module.exports = exports = {
+
+```
+When crypto is required it will have a NativeModule instance created for it, which can be seen in 
+`internal/bootstrap/loaders`:
+```javascript
+  const nativeModule = new NativeModule(id);
+  nativeModule.cache();
+  nativeModule.compile();
+```
+And later the function 'fn' will be called.
+```javascript
+  const script = new ContextifyScript(source, this.filename);
+  // Arguments: timeout, displayErrors, breakOnSigint
+  const fn = script.runInThisContext(-1, true, false);
+  const requireFn = this.id.startsWith('internal/deps/') ?
+    NativeModule.requireForDeps :
+    NativeModule.require;
+  fn(this.exports, requireFn, this, process);
+````
+Notice that `this.export` and this are being passed in. This will be set to the `exports` variable and `this` will
+be set to the `module` varialbe:
+```javascript
+(function (exports, require, module, process)
+```
+But I'm surprised to see the `module.exports = exports =` statement. Why would the exports object have to be set
+unless they are pointing to different things?
+Well this is because we are overwriting module.exports, and in this case exports and module.exports will not point
+to the same object.
+
+Lets take a closer look at:
+```javascript
+const fn = script.runInThisContext(-1, true, false);
+```
+```console
+(lldb) br s -f node_contextify.cc -l 733
+```
+
+
