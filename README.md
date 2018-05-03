@@ -13918,6 +13918,135 @@ const fn = script.runInThisContext(-1, true, false);
 ### TLS
 This section is going to take a closer look at what happens on the server side when a client connect
 using tls.
+Take the following example:
+```javascript 
+const tls = require('tls');
+const path = require('path');
+const fs = require('fs');
+const port = 1888;
+
+const options = {
+  key: fs.readFileSync(path.join(__dirname, 'danbev-key.pem')),
+  cert: fs.readFileSync(path.join(__dirname, 'danbev-cert.pem'))
+};
+
+const server = tls.Server(options, function(socket) {
+  console.log('Connected : ', socket);
+});
+
+server.listen(port, function() {
+  console.log('Server listening on port ', port);
+});
+```
+`tls.Server` will land in `_tls_wrap.js`. The first part of this constructor function checks if options
+is a function, in which case it is used as the connection listener (for about it below).
+
+Each server instance has an array of context which is initially empty:
+```javascript
+  this._contexts = [];
+```
+After this the options are set using `setOptions` (not sure why but this function is missing a name:
+```javascript
+Server.prototype.setOptions = function(options) {
+  ...
+}
+```
+This should probably be:
+```javascript
+Server.prototype.setOptions = function setOptions(options) {
+  ...
+}
+```
+So what options do we have available:
+* requestCert
+Clients always request the server certificate to authenticate it and servers can optionall do this by setting this option.
+* rejectUnauthorized
+Used in conjunction with requestClient (it has to be true) and will be used to set the verifyMode:
+```javascript
+if (requestCert || rejectUnauthorized)
+    ssl.setVerifyMode(requestCert, rejectUnauthorized);
+```
+
+
+A sessionIdContext will be created in `setOptions` if one was not passed in:
+```javascript
+s.sessionIdContext = crypto.createHash('sha1')
+                                  .update(process.argv.join(' '))
+                                  .digest('hex')
+                                  .slice(0, 32);
+```
+Next, `tls.createSecureContext` is called which can be found in `_tls_common.js`. In this function there are a few
+options checks and then a new SecureContext will be create:
+```javascript
+const c = new SecureContext(options.secureProtocol, secureOptions, context);
+```
+This will call the constructor function SecureContext in also in `_tls_common.js`. In our case there was no existing context
+passed in so the following path will be taken:
+```javascript
+this.context = new NativeSecureContext();
+```
+Note that `NativeSecureContext` is bound using:
+```javascript
+const { SecureContext: NativeSecureContext } = process.binding('crypto');
+```
+So this  will land in node_crypto.cc and `SecureContext::New`
+```c++
+void SecureContext::New(const FunctionCallbackInfo<Value>& args) {
+  Environment* env = Environment::GetCurrent(args);
+  new SecureContext(env, args.This());
+}
+```
+
+Back in `_tls_wrap.js` and the Server constructor function after the call to `var sharedCreds = tls.createSecureContext`.
+
+Next, the constructor will call `net.Server`'s constructor:
+```javascript
+  net.Server.call(this, tlsConnectionListener);
+```
+This will pass in the `tlsConnectionListener` which will be set in the above called constructor:
+```javascript
+ this.on('connection', connectionListener);
+```
+
+The connection listener look like this:
+```javascript
+function tlsConnectionListener(rawSocket) {
+  const socket = new TLSSocket(rawSocket, {
+    secureContext: this._sharedCreds,
+    isServer: true,
+    server: this,
+    requestCert: this.requestCert,
+    rejectUnauthorized: this.rejectUnauthorized,
+    handshakeTimeout: this[kHandshakeTimeout],
+    ALPNProtocols: this.ALPNProtocols,
+    SNICallback: this[kSNICallback] || SNICallback
+  });
+
+  socket.on('secure', onSocketSecure);
+
+  socket[kErrorEmitted] = false;
+  socket.on('close', onSocketClose);
+  socket.on('_tlsError', onSocketTLSError);
+}
+```
+
+After `net.Server` returns we have the following in `_tls_wrap`'s Server constructor function:
+```javascript
+  if (listener) {
+    this.on('secureConnection', listener);
+  }
+```
+The listener here is the one passed in to 'tls.Server', so in our case it just logs a message.
+
+So that is creation of the `server` object instance in our example. Next will call `server.listen`:
+```javascript
+server.listen(port, function() {
+  console.log('Server listening on port ', port);
+});
+```
+`listen` is defined in `net.js`
+
+
 `net.js` will emit an `onconnect` event and pass the socket. `_tls_wrap` will be listening for this event and the listener
 function is named `tlsConnectionListener`. This listener is added by the following call:
 ```javascript
@@ -13961,6 +14090,10 @@ const socket = new TLSSocket(rawSocket, {
   });
 ```
 Notice that there is a default SNICallback.
+
+
+I noticed that `lib/tls.js` requires `internal/tls` which only has one function named parseCertString, and I'm 
+wondering why this is not in internal/crypto/util or something? It is deprecated and will be removed later.
 
 
 ### Duplex constructor
