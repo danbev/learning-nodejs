@@ -1367,7 +1367,7 @@ lldb) expr &this->val_
 (v8::internal::Object ***) $85 = 0x00007fff5fbfc898
 
 ```
-So `this-val_` is a pointer to v8::Object and we are using reinterpret_cast to instruct the compiler to treat it 
+So `this->val_` is a pointer to v8::Object and we are using reinterpret_cast to instruct the compiler to treat it 
 like it was of type v8::internal::Object**.
 
 &this->val
@@ -12783,7 +12783,7 @@ typedef ListHead<HandleWrap, &HandleWrap::handle_wrap_queue_> HandleWrapQueue;
 ...
 HandleWrapQueue handle_wrap_queue_;
 ```
-So every Environment has a `handle_wrap_queue` list which stores HandleWrap instances and the member in HandleWray that holds the 
+So every Environment has a `handle_wrap_queue` list which stores HandleWrap instances and the member in HandleWrap that holds the 
 node datastructure (of type ListNode) is `&HandleWrap::handle_wrap_queue_`:
 ```console
 (lldb) expr &HandleWrap::handle_wrap_queue_
@@ -14044,7 +14044,723 @@ server.listen(port, function() {
   console.log('Server listening on port ', port);
 });
 ```
-`listen` is defined in `net.js`
+`listen` is defined in `net.js`. After some checking and normalizing of options the following will be called:
+```javascript
+listenInCluster(this, null, options.port | 0, 4, backlog, undefined, options.exclusive);
+```
+The definition of `listenInCluster` look like this:
+```javascript
+function listenInCluster(server, address, port, addressType, backlog, fd, exclusive) {
+   ...
+   server._listen2(address, port, addressType, backlog, fd);
+}
+```
+`listen2` is an alias for `setupListenHandle`:
+```javascript
+Server.prototype._listen2 = setupListenHandle;
+```
+
+```javascript
+val = createServerHandle('::', port, 6, fd);
+
+```
+
+```javascript
+handle = new TCP(TCPConstants.SERVER);
+```
+This call will land in `tcp_wrap.cc`'s TCPWrap::New function
+```c++
+void TCPWrap::New(const FunctionCallbackInfo<Value>& args) {
+  // This constructor should not be exposed to public javascript.
+  // Therefore we assert that we are not trying to call this as a
+  // normal function.
+  CHECK(args.IsConstructCall());
+  CHECK(args[0]->IsInt32());
+  Environment* env = Environment::GetCurrent(args);
+
+  int type_value = args[0].As<Int32>()->Value();
+  TCPWrap::SocketType type = static_cast<TCPWrap::SocketType>(type_value);
+
+  ProviderType provider;
+  switch (type) {
+    case SOCKET:
+      provider = PROVIDER_TCPWRAP;
+      break;
+    case SERVER:
+      provider = PROVIDER_TCPSERVERWRAP;
+      break;
+    default:
+      UNREACHABLE();
+  }
+
+  new TCPWrap(env, args.This(), provider);
+}
+```
+When TCPWrap is called, what is really happening is that the 
+
+```console
+(lldb) jlh this->This()
+0x186f76c6b591: [JS_API_OBJECT_TYPE]
+ - map: 0x186f88ee1481 <Map(HOLEY_ELEMENTS)> [FastProperties]
+ - prototype: 0x186ff17efcb1 <Object map = 0x186f9db4fcd1>
+ - elements: 0x186ffb702251 <FixedArray[0]> [HOLEY_ELEMENTS]
+ - embedder fields: 1
+ - properties: 0x186f76c6b5b1 <PropertyArray[6]> {
+    #reading: 0x186ffb7023f1 <false> (data field 0) properties[0]
+    #owner: 0x186ffb702201 <null> (data field 1) properties[1]
+    #onread: 0x186ffb702201 <null> (data field 2) properties[2]
+    #onconnection: 0x186ffb702201 <null> (data field 3) properties[3]
+ }
+ - embedder fields = {
+    0x186ffb7022e1
+ }
+```
+These properties are configured in TCPWrap::Initialize:
+```c++
+  Local<FunctionTemplate> t = env->NewFunctionTemplate(New);
+  Local<String> tcpString = FIXED_ONE_BYTE_STRING(env->isolate(), "TCP");
+  t->SetClassName(tcpString);
+  t->InstanceTemplate()->SetInternalFieldCount(1);
+
+  // Init properties
+  t->InstanceTemplate()->Set(FIXED_ONE_BYTE_STRING(env->isolate(), "reading"),
+                             Boolean::New(env->isolate(), false));
+  t->InstanceTemplate()->Set(env->owner_string(), Null(env->isolate()));
+  t->InstanceTemplate()->Set(env->onread_string(), Null(env->isolate()));
+  t->InstanceTemplate()->Set(env->onconnection_string(), Null(env->isolate()));
+```
+How does the object returned by `this->This()` above get created?
+
+```
+(lldb) br s -f builtins-api.cc -l 126
+```
+We can take a look at `deps/v8/src/builtins/builtins-api.cc`:
+```c++
+BUILTIN(HandleApiCall) {
+  HandleScope scope(isolate);
+  Handle<JSFunction> function = args.target();
+  Handle<Object> receiver = args.receiver();
+  Handle<HeapObject> new_target = args.new_target();
+  Handle<FunctionTemplateInfo> fun_data(function->shared()->get_api_func_data(),
+                                        isolate);
+  if (new_target->IsJSReceiver()) {
+    RETURN_RESULT_OR_FAILURE(isolate, 
+                             HandleApiCallHelper<true>(isolate, function, new_target, fun_data, receiver, args));
+```
+`BUILTIN` is a macro (deps/v8/src/builtins/builtins-utils.h). Here is what the above would look like once expanded 
+by the preprocessor:
+```c++
+  MUST_USE_RESULT static Object* Builtin_Impl_HandleApiCall(BuiltinArguments args Isolate* isolate);
+                                                                              
+  V8_NOINLINE static Object* Builtin_Impl_Stats_HandleApiCall(int args_length, Object** args_object, Isolate* isolate) {              
+    BuiltinArguments args(args_length, args_object);                          
+    RuntimeCallTimerScope timer(isolate, RuntimeCallCounterId::kBuiltin_HandleApiCall);       
+    TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.runtime"), "V8.Builtin_HandleApiCall");                                        
+    return Builtin_Impl_HandleApiCall(args, isolate);                                
+  }                                                                           
+                                                                              
+  MUST_USE_RESULT Object* Builtin_HandleApiCall(int args_length, Object** args_object, Isolate* isolate) {              
+    DCHECK(isolate->context() == nullptr || isolate->context()->IsContext()); 
+    if (V8_UNLIKELY(FLAG_runtime_stats)) {                                    
+      return Builtin_Impl_Stats_HandleApiCall(args_length, args_object, isolate);    
+    }                                                                         
+    BuiltinArguments args(args_length, args_object);                          
+    return Builtin_Impl_HandleApiCall(args, isolate);                                
+  }                                                                           
+                                                                              
+  MUST_USE_RESULT static Object* Builtin_Impl_HandleApiCall(BuiltinArguments args, Isolate* isolate) {
+    HandleScope scope(isolate);
+    Handle<JSFunction> function = args.target();
+    Handle<Object> receiver = args.receiver();
+    Handle<HeapObject> new_target = args.new_target();
+    Handle<FunctionTemplateInfo> fun_data(function->shared()->get_api_func_data(),
+                                          isolate);
+    if (new_target->IsJSReceiver()) {
+      RETURN_RESULT_OR_FAILURE(isolate, 
+                               HandleApiCallHelper<true>(isolate, function, new_target, fun_data, receiver, args));
+  }
+```
+
+
+```console
+(lldb) expr receiver->Print()
+#hole
+(lldb) expr function->shared()->Print()
+0x3e62e0db9829: [SharedFunctionInfo] in OldSpace
+ - map: 0x3e62323027f1 <Map(HOLEY_ELEMENTS)>
+ - name: 0x3e62e0da4f11 <String[3]: TCP>
+ - kind: NormalFunction
+ - function_map_index: 128
+ - formal_parameter_count: -1
+ - expected_nof_properties: 0
+ - language_mode: sloppy - code: 0x16dedcb1eea1 <Code BUILTIN>
+ - function token position: 0
+ - start position: 0
+ - end position: 0
+ - no debug info
+ - scope info: 0x3e62a2602459 <ScopeInfo[0]>
+ - length: 0
+ - feedback_metadata: 0x3e62a2602251: [FeedbackMetadata] in OldSpace
+ - map: 0x3e6232302341 <Map(HOLEY_ELEMENTS)>
+ - length: 0 (empty)
+
+ - no preparsed scope data
+(lldb) expr function->shared()->get_api_func_data()
+(v8::internal::FunctionTemplateInfo *) $9 = 0x00003e62e0db6339
+```
+`get_api_func_data` :
+```c++
+FunctionTemplateInfo* SharedFunctionInfo::get_api_func_data() {
+  DCHECK(IsApiFunction());
+  return FunctionTemplateInfo::cast(function_data());
+}
+```
+
+Lets take a closer look at `HandleApiCallHelper` which is called with the following arguments:
+```c++
+RETURN_RESULT_OR_FAILURE(
+            isolate, HandleApiCallHelper<true>(isolate, function, new_target,
+                                               fun_data, receiver, args));
+```
+
+```c++
+template <bool is_construct>
+MUST_USE_RESULT MaybeHandle<Object> HandleApiCallHelper(
+    Isolate* isolate, Handle<HeapObject> function,
+    Handle<HeapObject> new_target, Handle<FunctionTemplateInfo> fun_data,
+    Handle<Object> receiver, BuiltinArguments args) {
+  Handle<JSObject> js_receiver;
+  JSObject* raw_holder;
+  if (is_construct) {
+    DCHECK(args.receiver()->IsTheHole(isolate));
+    if (fun_data->instance_template()->IsUndefined(isolate)) {
+      v8::Local<ObjectTemplate> templ =
+          ObjectTemplate::New(reinterpret_cast<v8::Isolate*>(isolate),
+                              ToApiHandle<v8::FunctionTemplate>(fun_data));
+      fun_data->set_instance_template(*Utils::OpenHandle(*templ));
+    }
+    Handle<ObjectTemplateInfo> instance_template(
+        ObjectTemplateInfo::cast(fun_data->instance_template()), isolate);
+    ASSIGN_RETURN_ON_EXCEPTION(
+        isolate, js_receiver,
+        ApiNatives::InstantiateObject(instance_template,
+                                      Handle<JSReceiver>::cast(new_target)),
+        Object);
+    args[0] = *js_receiver;
+    DCHECK_EQ(*js_receiver, *args.receiver());
+
+    raw_holder = *js_receiver;
+  } else {
+```
+Notice that the ObjectTemplateInfo is retrieved from the shared function data:
+```c++
+Handle<ObjectTemplateInfo> instance_template(ObjectTemplateInfo::cast(fun_data->instance_template()), isolate);
+```
+If we inspect it we find:
+```console
+lldb) expr instance_template->number_of_properties()
+(int) $28 = 4
+(lldb) expr instance_template->property_list()
+(v8::internal::Object *) $29 = 0x00003e62ada58031
+(lldb) expr instance_template->property_list()->Print()
+0x3e62ada58031: [FixedArray] in OldSpace
+ - map: 0x3e6232302341 <Map(HOLEY_ELEMENTS)>
+ - length: 20
+           0: 12
+           1: 0x3e62ada58011 <String[7]: reading>
+           2: 192
+           3: 0x3e62a26023f1 <false>
+           4: 0x3e62afc83339 <String[5]: owner>
+           5: 192
+           6: 0x3e62a2602201 <null>
+           7: 0x3e62afc83139 <String[6]: onread>
+           8: 192
+           9: 0x3e62a2602201 <null>
+          10: 0x3e62afc82f21 <String[12]: onconnection>
+          11: 192
+          12: 0x3e62a2602201 <null>
+       13-19: 0x3e62a2602321 <the_hole>
+```
+Now, if we look back at `TCPWrap::Initialize` we can see that this matches the properties set:
+```c++
+  t->InstanceTemplate()->Set(FIXED_ONE_BYTE_STRING(env->isolate(), "reading"),
+                             Boolean::New(env->isolate(), false));
+  t->InstanceTemplate()->Set(env->owner_string(), Null(env->isolate()));
+  t->InstanceTemplate()->Set(env->onread_string(), Null(env->isolate()));
+  t->InstanceTemplate()->Set(env->onconnection_string(), Null(env->isolate()));
+```
+
+The next call is to instantiate the object:
+```c++
+ASSIGN_RETURN_ON_EXCEPTION(
+        isolate, js_receiver,
+        ApiNatives::InstantiateObject(instance_template,
+                                      Handle<JSReceiver>::cast(new_target)),
+        Object);
+```
+Ignoring the macro for now lets take a closer look at `ApiNatives::InstantiateObject` which we can find 
+in `deps/v8/src/api-natives.cc`:
+```c++
+  Isolate* isolate = data->GetIsolate();
+  InvokeScope invoke_scope(isolate);
+  return ::v8::internal::InstantiateObject(isolate, data, new_target, false, false);
+```
+
+```c++
+MaybeHandle<JSObject> InstantiateObject(Isolate* isolate,
+                                        Handle<ObjectTemplateInfo> info,
+                                        Handle<JSReceiver> new_target,
+                                        bool is_hidden_prototype,
+                                        bool is_prototype) {
+  int serial_number = Smi::ToInt(info->serial_number());
+  if (!new_target.is_null()) {
+    if (IsSimpleInstantiation(isolate, *info, *new_target)) {
+      constructor = Handle<JSFunction>::cast(new_target);
+
+   ...
+   Handle<JSObject> object;
+   ASSIGN_RETURN_ON_EXCEPTION(isolate, object,
+                              JSObject::New(constructor, new_target), JSObject);
+   ...
+```
+The call to `JSObject::New` will end up in `deps/v8/src/objects.cc` which will create the instance, 
+and then that new instance, `object` above, will be configured:
+
+```c++
+ASSIGN_RETURN_ON_EXCEPTION(
+      isolate, result,
+      ConfigureInstance(isolate, object, info, is_hidden_prototype), JSObject);
+```
+`ConfigureInstance` is also in `deps/v8/src/api-natives.cc`.
+
+```c++
+Object* maybe_property_list = data->property_list();
+```
+We can inspect the `property_list` and verify that it matches the properties set using:
+```console
+(lldb) expr maybe_property_list->Print()
+0x3e62ada58031: [FixedArray] in OldSpace
+ - map: 0x3e6232302341 <Map(HOLEY_ELEMENTS)>
+ - length: 20
+           0: 12
+           1: 0x3e62ada58011 <String[7]: reading>
+           2: 192
+           3: 0x3e62a26023f1 <false>
+           4: 0x3e62afc83339 <String[5]: owner>
+           5: 192
+           6: 0x3e62a2602201 <null>
+           7: 0x3e62afc83139 <String[6]: onread>
+           8: 192
+           9: 0x3e62a2602201 <null>
+          10: 0x3e62afc82f21 <String[12]: onconnection>
+          11: 192
+          12: 0x3e62a2602201 <null>
+       13-19: 0x3e62a2602321 <the_hole>
+```
+Notice that we have first an integer, then the string, another integer and a boolean value.
+
+Next the properties iterated through:
+```c++
+  for (int c = 0; c < data->number_of_properties(); c++) {
+    auto name = handle(Name::cast(properties->get(i++)), isolate);
+    Object* bit = properties->get(i++);
+    if (bit->IsSmi()) {
+      PropertyDetails details(Smi::cast(bit));
+      PropertyAttributes attributes = details.attributes();
+      PropertyKind kind = details.kind();
+
+      if (kind == kData) {
+        auto prop_data = handle(properties->get(i++), isolate);
+        RETURN_ON_EXCEPTION(isolate, DefineDataProperty(isolate, obj, name,
+                                                        prop_data, attributes),
+                            JSObject);
+      } else {
+        auto getter = handle(properties->get(i++), isolate);
+        auto setter = handle(properties->get(i++), isolate);
+        RETURN_ON_EXCEPTION(
+            isolate, DefineAccessorProperty(isolate, obj, name, getter, setter,
+                                            attributes, is_hidden_prototype),
+            JSObject);
+      }
+    } else {
+      // Intrinsic data property --- Get appropriate value from the current
+      // context.
+      PropertyDetails details(Smi::cast(properties->get(i++)));
+      PropertyAttributes attributes = details.attributes();
+      DCHECK_EQ(kData, details.kind());
+
+      v8::Intrinsic intrinsic =
+          static_cast<v8::Intrinsic>(Smi::ToInt(properties->get(i++)));
+      auto prop_data = handle(GetIntrinsic(isolate, intrinsic), isolate);
+
+      RETURN_ON_EXCEPTION(isolate, DefineDataProperty(isolate, obj, name,
+                                                      prop_data, attributes),
+                          JSObject);
+    }
+  }
+  return obj;
+```
+Looking at the above the first index in the array seems to be the size or limit of the entries.
+So the first property is named 'reading', its bit is:
+```console
+(lldb) expr name->Print()
+"reading"
+(lldb) expr bit->Print()
+Smi: 0xc0 (192)
+(lldb) expr details.kind()
+(v8::internal::PropertyKind) $171 = kData
+(lldb) expr details.location()
+(v8::internal::PropertyLocation) $172 = kField
+(lldb) expr details.attributes()
+(v8::internal::PropertyAttributes) $173 = NONE
+```
+
+`PropertyDetails` can be found in `deps/v8/src/property-details.h` and the constructor that takes an Smi
+can be found in `deps/v8/src/objects-inl.h`:
+```c++
+PropertyDetails::PropertyDetails(Smi* smi) {
+  value_ = smi->value();
+}
+```
+
+While stepping through the above for look we can inspect that `obj` that the properties are getting added to:
+```console
+(lldb) expr obj->Print()
+0x38ec09dd0641: [JS_API_OBJECT_TYPE]
+ - map: 0x38ec21004501 <Map(HOLEY_ELEMENTS)> [FastProperties]
+ - prototype: 0x38ecff033799 <Object map = 0x38ec483199a1>
+ - elements: 0x38ec11d82251 <FixedArray[0]> [HOLEY_ELEMENTS]
+ - embedder fields: 1
+ - properties: 0x38ec09dd0699 <PropertyArray[3]> {
+    #reading: 0x38ec11d823f1 <false> (data field 0) properties[0]
+    #owner: 0x38ec11d82201 <null> (data field 1) properties[1]
+ }
+ - embedder fields = {
+    0x38ec11d822e1
+ }
+```
+The above shows the `reading`, and `owner` properties have been added.
+After returning from we'll again be in `HandleApiCallHelper`:
+```c++
+ASSIGN_RETURN_ON_EXCEPTION(isolate, js_receiver,
+          ApiNatives::InstantiateObject(instance_template,
+                                        Handle<JSReceiver>::cast(new_target)),
+          Object);
+      args[0] = *js_receiver;
+```
+And we can verify that js_receiver is the object created and configured/populated:
+```console
+(lldb) expr js_receiver->Print()
+0x38ec09dd0839: [JS_API_OBJECT_TYPE]
+ - map: 0x38ec210045a1 <Map(HOLEY_ELEMENTS)> [FastProperties]
+ - prototype: 0x38ecff033799 <Object map = 0x38ec483199a1>
+ - elements: 0x38ec11d82251 <FixedArray[0]> [HOLEY_ELEMENTS]
+ - embedder fields: 1
+ - properties: 0x38ec09dd0859 <PropertyArray[6]> {
+    #reading: 0x38ec11d823f1 <false> (data field 0) properties[0]
+    #owner: 0x38ec11d82201 <null> (data field 1) properties[1]
+    #onread: 0x38ec11d82201 <null> (data field 2) properties[2]
+    #onconnection: 0x38ec11d82201 <null> (data field 3) properties[3]
+ }
+ - embedder fields = {
+    0x38ec11d822e1
+ }
+```
+
+Next, we have:
+```c++
+  FunctionCallbackArguments custom(isolate, data_obj, *function, raw_holder,
+                                   *new_target, &args[0] - 1,
+                                   args.length() - 1);
+  Handle<Object> result = custom.Call(call_data);
+```
+
+```c++
+FunctionCallbackArguments(internal::Isolate* isolate, internal::Object* data,
+                            internal::HeapObject* callee,
+                            internal::Object* holder,
+                            internal::HeapObject* new_target,
+                            internal::Object** argv, int argc)
+      : Super(isolate), argv_(argv), argc_(argc) {
+    Object** values = begin();
+    values[T::kDataIndex] = data;
+    values[T::kHolderIndex] = holder;
+    values[T::kNewTargetIndex] = new_target;
+    values[T::kIsolateIndex] = reinterpret_cast<internal::Object*>(isolate);
+    // Here the hole is set as default value.
+    // It cannot escape into js as it's remove in Call below.
+    values[T::kReturnValueDefaultValueIndex] =
+        isolate->heap()->the_hole_value();
+    values[T::kReturnValueIndex] = isolate->heap()->the_hole_value();
+    DCHECK(values[T::kHolderIndex]->IsHeapObject());
+    DCHECK(values[T::kIsolateIndex]->IsSmi());
+  }
+```
+
+`custom.Call` can be found in `deps/v8/src/api-arguments.cc`:
+```c++
+Handle<Object> FunctionCallbackArguments::Call(CallHandlerInfo* handler) {
+  Isolate* isolate = this->isolate();
+  LOG(isolate, ApiObjectAccess("call", holder()));
+  RuntimeCallTimerScope timer(isolate, RuntimeCallCounterId::kFunctionCallback);
+  v8::FunctionCallback f =
+      v8::ToCData<v8::FunctionCallback>(handler->callback());
+  if (isolate->needs_side_effect_check() &&
+      !isolate->debug()->PerformSideEffectCheckForCallback(FUNCTION_ADDR(f))) {
+    return Handle<Object>();
+  }
+  VMState<EXTERNAL> state(isolate);
+  ExternalCallbackScope call_scope(isolate, FUNCTION_ADDR(f));
+  FunctionCallbackInfo<v8::Value> info(begin(), argv_, argc_);
+  f(info);
+  return GetReturnValue<Object>(isolate);
+}
+```
+```console
+(lldb) expr f
+(v8::FunctionCallback) $384 = 0x000000010019ce20 (node`node::TCPWrap::New(v8::FunctionCallbackInfo<v8::Value> const&) at tcp_wrap.cc:137)
+```
+And we can see how this function is called by `f(info)`.
+
+Notice the last line where we create a new TCPWrap and that the instance is not saved or returned.
+
+```c++
+TCPWrap::TCPWrap(Environment* env, Local<Object> object, ProviderType provider)
+    : ConnectionWrap(env, object, provider) {
+  int r = uv_tcp_init(env->event_loop(), &handle_);
+  CHECK_EQ(r, 0); 
+}
+```
+TCPWrap has a constructor but no destructor (apart from the default one that is). So this is the logic needed to be performed
+for `New`. But we also have to look at what `ConnectionWrap`'s constructor does:
+```c++
+template <typename WrapType, typename UVType>
+ConnectionWrap<WrapType, UVType>::ConnectionWrap(Environment* env, Local<Object> object, ProviderType provider)
+    : LibuvStreamWrap(env, object, reinterpret_cast<uv_stream_t*>(&handle_), provider) {}
+```
+Notice that `handle_` is from `connection_wrap.h`:
+```c++
+UVType handle_;
+```
+
+It does not have any logic apart from delegating to `LibuvStreamWrap`'s contructor:
+```c++
+LibuvStreamWrap::LibuvStreamWrap(Environment* env, Local<Object> object, uv_stream_t* stream, AsyncWrap::ProviderType provider)
+    : HandleWrap(env, object, reinterpret_cast<uv_handle_t*>(stream), provider),
+      StreamBase(env),
+      stream_(stream) {
+}
+```
+As we can see `LibuvStreamWrap` inherits from `HandleWrap` `StreamBase` and delegates to those constructors
+Let's take a look at HandleWrap's constructor:
+```c++
+HandleWrap::HandleWrap(Environment* env,
+                       Local<Object> object,
+                       uv_handle_t* handle,
+                       AsyncWrap::ProviderType provider)
+    : AsyncWrap(env, object, provider),
+      state_(kInitialized),
+      handle_(handle) {
+  handle_->data = this;
+  HandleScope scope(env->isolate());
+  Wrap(object, this);
+  env->handle_wrap_queue()->PushBack(this);
+}
+```
+And we see that it delegates to `AsyncWrap`'s constructor:
+```c++
+AsyncWrap::AsyncWrap(Environment* env,
+                     Local<Object> object,
+                     ProviderType provider,
+                     double execution_async_id,
+                     bool silent)
+    : BaseObject(env, object),
+      provider_type_(provider) {
+  CHECK_NE(provider, PROVIDER_NONE);
+  CHECK_GE(object->InternalFieldCount(), 1);
+
+  // Shift provider value over to prevent id collision.
+  persistent().SetWrapperClassId(NODE_ASYNC_ID_OFFSET + provider_type_);
+
+  // Use AsyncReset() call to execute the init() callbacks.
+  AsyncReset(execution_async_id, silent);
+}
+```
+And `AsyncWrap`'s constructor delegates to BaseObject:
+```c++
+BaseObject::BaseObject(Environment* env, v8::Local<v8::Object> handle)
+    : persistent_handle_(env->isolate(), handle),
+      env_(env) {
+  CHECK_EQ(false, handle.IsEmpty());
+  CHECK_GT(handle->InternalFieldCount(), 0);
+  handle->SetAlignedPointerInInternalField(0, static_cast<void*>(this));
+}
+```
+Recall that `handle` was passed via the TCPWrap constructor using args.This():
+```console
+(lldb) expr handle
+(v8::Local<v8::Object>) $413 = (val_ = 0x00007fff5fbfbcc8)
+(lldb) expr info.This()
+(v8::Local<v8::Object>) $411 = (val_ = 0x00007fff5fbfbcc8)
+(lldb) jlh handle
+0x38ec09dd0839: [JS_API_OBJECT_TYPE]
+ - map: 0x38ec210045a1 <Map(HOLEY_ELEMENTS)> [FastProperties]
+ - prototype: 0x38ecff033799 <Object map = 0x38ec483199a1>
+ - elements: 0x38ec11d82251 <FixedArray[0]> [HOLEY_ELEMENTS]
+ - embedder fields: 1
+ - properties: 0x38ec09dd0859 <PropertyArray[6]> {
+    #reading: 0x38ec11d823f1 <false> (data field 0) properties[0]
+    #owner: 0x38ec11d82201 <null> (data field 1) properties[1]
+    #onread: 0x38ec11d82201 <null> (data field 2) properties[2]
+    #onconnection: 0x38ec11d82201 <null> (data field 3) properties[3]
+ }
+ - embedder fields = {
+    0x38ec11d822e1
+ }
+```
+So, have stored this object, the receiver, as a persistent object meaning that this heap allocated object
+will have a non-local scope (is not tied to the C++ scopes) and must be cleared explicitely with 
+Persistent::Reset.
+
+Next, we are going to store a reference to `this` which is the current BaseObject (which is really our TCPWrap instance) and 
+we can see that we are storing the reference to that instance, it will be attached to the receiver object in the internal 
+field.
+
+And now the constructors will "bubble" up and first is AsyncWrap's constructor:
+```c++
+persistent().SetWrapperClassId(NODE_ASYNC_ID_OFFSET + provider_type_);
+```
+The `provider_type_` in our case is:
+```console
+(lldb) expr provider_type_
+(const node::AsyncWrap::ProviderType) $436 = PROVIDER_TCPSERVERWRAP
+```
+Now, the the wrapper class id is used V8's `RetainedObjectInfo` which enables us to provide information
+about native objects for heap snapshots.
+In `Environment::Start` in  `env.cc` we have:
+```c++
+  SetupProcessObject(this, argc, argv, exec_argc, exec_argv);
+  LoadAsyncWrapperInfo(this);
+```
+Lets take a closer look at `LoadAsyncWraperInfo`:
+```c++
+void LoadAsyncWrapperInfo(Environment* env) {
+  HeapProfiler* heap_profiler = env->isolate()->GetHeapProfiler();
+#define V(PROVIDER)                                                           \
+  heap_profiler->SetWrapperClassInfoProvider(                                 \
+      (NODE_ASYNC_ID_OFFSET + AsyncWrap::PROVIDER_ ## PROVIDER), WrapperInfo);
+  NODE_ASYNC_PROVIDER_TYPES(V)
+#undef V
+}
+```
+And after the preprocessor has expanded that (just showing `TCPSERVERWRAP`):
+```c++
+void LoadAsyncWrapperInfo(Environment* env) {
+  HeapProfiler* heap_profiler = env->isolate()->GetHeapProfiler();
+  heap_profiler->SetWrapperClassInfoProvider(                                 
+      (NODE_ASYNC_ID_OFFSET + AsyncWrap::PROVIDER_TCPSERVERWRAP), WrapperInfo);
+  ....
+}
+```
+This binds the callback `WrapperInfo` to the class id:
+```c++
+  RetainedObjectInfo* WrapperInfo(uint16_t class_id, Local<Value> wrapper) {
+  // No class_id should be the provider type of NONE.
+  CHECK_GT(class_id, NODE_ASYNC_ID_OFFSET);
+  // And make sure the class_id doesn't extend past the last provider.
+  CHECK_LE(class_id - NODE_ASYNC_ID_OFFSET, AsyncWrap::PROVIDERS_LENGTH);
+  CHECK(wrapper->IsObject());
+  CHECK(!wrapper.IsEmpty());
+
+  Local<Object> object = wrapper.As<Object>();
+  CHECK_GT(object->InternalFieldCount(), 0);
+
+  AsyncWrap* wrap;
+  ASSIGN_OR_RETURN_UNWRAP(&wrap, object, nullptr);
+
+  return new RetainedAsyncInfo(class_id, wrap);
+}
+```
+`WrapperInfo` will be called by `HeapProfiler::ExecuteWrapperClassCallback` which is called
+by `VisitSubtreeWrapper` in `deps/v8/src/profiler/heap-snapshot-generator.cc'
+
+If we start node with `--track-heap-objects` heap tracking will be enabled. And we can use
+`heapdump.writeSnapshot()` from module `heapdump` to generate a heap dump:
+```javascript
+const heapdump = require('heapdump');
+...
+
+const server = tls.Server(options, function(socket) {
+  console.log('Connected : ', socket);
+  heapdump.writeSnapshot();
+});
+```
+```console
+$ lldb -- out/Debug/node --track-heap-objects ../scripts/tls-server.js
+(lldb) br s -f env.cc -l 117
+(lldb) r
+$ out/Debug/node ../scripts/tls-client.js
+```
+And we will be able to see that the callback `WrapperInfo` is called is called.
+
+
+A snapshot can be taken by calling:
+```console
+(lldb) expr reinterpret_cast<v8::internal::HeapProfiler*>(env->isolate()->GetHeapProfiler())->TakeSnapshot(nullptr, nullptr)
+```
+
+So, now we understand what the setting of class id is used for. Lets move on. The next constructor is `HandleWrap`'s.
+A libuv [uv_handle_t](http://docs.libuv.org/en/v1.x/handle.html#api) is a base type for all libuv handle types and HandleWrap `wraps` one of these.
+```c++
+HandleWrap::HandleWrap(Environment* env,
+                       Local<Object> object,
+                       uv_handle_t* handle,
+                       AsyncWrap::ProviderType provider)
+    : AsyncWrap(env, object, provider),
+      state_(kInitialized),
+      handle_(handle) {
+  handle_->data = this;
+  HandleScope scope(env->isolate());
+  env->handle_wrap_queue()->PushBack(this);
+}
+```
+Private members:
+```c++
+  ListNode<HandleWrap> handle_wrap_queue_;
+  enum { kInitialized, kClosing, kClosingWithCallback, kClosed } state_;
+  uv_handle_t* const handle_;
+```
+Also notice `handle_wrap_queue_` which will be constructed for each new instance. We can find the constructor for NodeList in 
+`util-inl.h`:
+```c++
+ListNode<T>::ListNode() : prev_(this), next_(this) {}
+```
+Just to be clear what `this` is:
+```console
+(lldb) expr *this
+(node::ListNode<node::HandleWrap>) $555 = {
+  prev_ = 0x0000000104fb9730
+  next_ = 0x0000000104fb9730
+}
+```
+So initially `prev_` and `next_` point to `this`.
+Next, back in HandleWrap's constructor state_ is set to kInitilized and 
+Notice that `HandleWrap` has a private member named `handle_`. BaseObject' constructor takes a parameter named `handle_` but they are of 
+different types. I've found this confusing sometimes when stepping through code and the especially the inheritance chain for wrap
+objects (like TCPWrap for example).
+
+
+While stepping through this call I came accross `isLegalPort` in `internal/net.js`:
+```javascript
+function isLegalPort(port) {
+  if ((typeof port !== 'number' && typeof port !== 'string') ||
+      (typeof port === 'string' && port.trim().length === 0))
+    return false;
+
+  return +port === (+port >>> 0) && port <= 0xFFFF;
+}
+```
+
 
 
 `net.js` will emit an `onconnect` event and pass the socket. `_tls_wrap` will be listening for this event and the listener
