@@ -14062,7 +14062,6 @@ Server.prototype._listen2 = setupListenHandle;
 
 ```javascript
 val = createServerHandle('::', port, 6, fd);
-
 ```
 
 ```javascript
@@ -14743,11 +14742,115 @@ Just to be clear what `this` is:
   next_ = 0x0000000104fb9730
 }
 ```
-So initially `prev_` and `next_` point to `this`.
+So initially `prev_` and `next_` point to `this`. 
+
 Next, back in HandleWrap's constructor state_ is set to kInitilized and 
 Notice that `HandleWrap` has a private member named `handle_`. BaseObject' constructor takes a parameter named `handle_` but they are of 
 different types. I've found this confusing sometimes when stepping through code and the especially the inheritance chain for wrap
 objects (like TCPWrap for example).
+
+The handle wrap queue is used in env.h:
+```c++
+  typedef ListHead<HandleWrap, &HandleWrap::handle_wrap_queue_> HandleWrapQueue;
+  typedef ListHead<ReqWrap<uv_req_t>, &ReqWrap<uv_req_t>::req_wrap_queue_>
+          ReqWrapQueue;
+
+  inline HandleWrapQueue* handle_wrap_queue() { return &handle_wrap_queue_; }
+  inline ReqWrapQueue* req_wrap_queue() { return &req_wrap_queue_; }
+```
+Notice `handle_wrap_queue_` is of type `HandleWrapQueue*` and that ListHead is a template class:
+```c++
+template <typename T, ListNode<T> (T::*M)>
+class ListHead {
+  ...
+```
+So every time a handle is created, like what happens when a new TCPWrap instance is created it will be added
+the the handle queue which contains the active handles. This can be inspected by calling `get_activeHandles`
+
+```c++
+env->SetMethod(process, "_getActiveRequests", GetActiveRequests);
+env->SetMethod(process, "_getActiveHandles", GetActiveHandles);
+```
+Also so in HandleWrap's constructor we have:
+```c++
+handle_->data = this;
+```
+This is setting the data member of the handle_ struct to this. This allows this instance to be retreived in 
+libuv callbacks. For example, if we take a look at connection_wrap.cc's OnConnection we can see that this is
+retreived:
+```c++
+WrapType* wrap_data = static_cast<WrapType*>(handle->data);
+```
+
+When we have seen that calling tls.Server(opions, callback) will find its way to TCPWrap::New
+which will call TCPWrap::TCPWrap:
+```c++
+int r = uv_tcp_init(env->event_loop(), &handle_);
+```
+Lets take a look atht the handle_ after uv_tcp_init
+```console
+(lldb) expr handle_
+(uv_tcp_s) $52 = {
+  data = 0x0000000104eebbd0
+  loop = 0x0000000102c72300
+  type = UV_TCP
+  close_cb = 0x0000000000000000
+  handle_queue = ([0] = 0x0000000102c72310, [1] = 0x0000000104bab578)
+  u = {
+    fd = 33066
+    reserved = ([0] = 0x000000000000812a, [1] = 0x0000000000000000, [2] = 0x0000000000000000, [3] = 0x0000000000000002)
+  }
+  next_closing = 0x0000000000000000
+  flags = 8192
+  write_queue_size = 0
+  alloc_cb = 0x0000000000000000
+  read_cb = 0x0000000000000000
+  connect_req = 0x0000000000000000
+  shutdown_req = 0x0000000000000000
+  io_watcher = {
+    cb = 0x0000000101983450 (node`uv__stream_io at stream.c:1297)
+    pending_queue = ([0] = 0x0000000104eebcf8, [1] = 0x0000000104eebcf8)
+    watcher_queue = ([0] = 0x0000000104eebd08, [1] = 0x0000000104eebd08)
+    pevents = 0
+    events = 0
+    fd = -1
+    rcount = 0
+    wcount = 0
+  }
+  write_queue = ([0] = 0x0000000104eebd30, [1] = 0x0000000104eebd30)
+  write_completed_queue = ([0] = 0x0000000104eebd40, [1] = 0x0000000104eebd40)
+  connection_cb = 0x0000000000000000
+  delayed_error = 0
+  accepted_fd = -1
+  queued_fds = 0x0000000000000000
+  select = 0x0000000000000000
+}
+(lldb) expr &handle_
+(uv_tcp_s *) $53 = 0x0000000104eebc68
+```
+And lets put a break point in connection_wrap.cc and inspect the handle passed to that function:
+```console
+(lldb) expr handle
+(uv_stream_t *) $54 = 0x0000000104eebc68
+```
+As described above the libuv handle will have be the same and the data was set to TCPWrap by HandleWrap's constructor.
+```c++
+WrapType* wrap_data = static_cast<WrapType*>(handle->data);
+```
+```console
+(lldb) expr wrap_data
+(node::TCPWrap *) $66 = 0x00000001061e3d90
+```
+Next we have
+```c++
+Local<Object> client_obj = WrapType::Instantiate(env,
+                                                 wrap_data,
+                                                 WrapType::SOCKET);
+```
+This will call `TCPWrap::Instantiate` in our case. Just note that there was one TCPwrap instance for the server's 
+listen setup and not there is one for the connection.
+
+This function will later make a callback to `onconnection` in lib/net.js.
 
 
 While stepping through this call I came accross `isLegalPort` in `internal/net.js`:
