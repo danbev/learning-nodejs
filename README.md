@@ -416,7 +416,73 @@ This is done in LoadEnvironment.
 
 #### LoadEnvironment
 
-    Local<String> script_name = FIXED_ONE_BYTE_STRING(env->isolate(), "bootstrap_node.js");
+```c++
+  Local<String> loaders_name = FIXED_ONE_BYTE_STRING(env->isolate(), "internal/bootstrap/loaders.js");
+  Local<Function> loaders_bootstrapper = GetBootstrapper(env, LoadersBootstrapperSource(env), loaders_name);
+  Local<String> node_name = FIXED_ONE_BYTE_STRING(env->isolate(), "internal/bootstrap/node.js");
+  Local<Function> node_bootstrapper = GetBootstrapper(env, NodeBootstrapperSource(env), node_name);
+
+  ...
+  // Create binding loaders
+  v8::Local<v8::Function> get_binding_fn = env->NewFunctionTemplate(GetBinding)->GetFunction(env->context()).ToLocalChecked();
+  v8::Local<v8::Function> get_linked_binding_fn = env->NewFunctionTemplate(GetLinkedBinding)->GetFunction(env->context()).ToLocalChecked();
+  v8::Local<v8::Function> get_internal_binding_fn = env->NewFunctionTemplate(GetInternalBinding)->GetFunction(env->context()).ToLocalChecked();
+
+  Local<Value> loaders_bootstrapper_args[] = {
+    env->process_object(),
+    get_binding_fn,
+    get_linked_binding_fn,
+    get_internal_binding_fn
+  }; 
+
+  Local<Value> bootstrapped_loaders;
+  if (!ExecuteBootstrapper(env, loaders_bootstrapper,
+                           arraysize(loaders_bootstrapper_args),
+                           loaders_bootstrapper_args,
+                           &bootstrapped_loaders)) {
+    return;
+  } 
+```
+So ExecuteBootstrapper will call the function in `internal/bootstrap/loaders.js`:
+```console
+(lldb) jlh bootstrapper
+```
+I'm not showing the output as it is a little long but you can see the contents of loaders.js.
+We can see the arguments that the function takes:
+```javascript
+- source code: (process, getBinding, getLinkedBinding, getInternalBinding) {
+```
+These match the arguments from `loaders_bootstrapper_args` above.
+Next we have:
+```c++
+  // Bootstrap Node.js
+  Local<Value> bootstrapped_node;
+  Local<Value> node_bootstrapper_args[] = {
+    env->process_object(),
+    bootstrapped_loaders
+  };
+  if (!ExecuteBootstrapper(env, node_bootstrapper,
+                           arraysize(node_bootstrapper_args),
+                           node_bootstrapper_args,
+                           &bootstrapped_node)) {
+    return;
+```
+Notice that `bootstrapped_loaders` is passed as an argument:
+```console
+(lldb) jlh bootstrapped_loaders
+0x9b2977bc179: [JS_OBJECT_TYPE]
+ - map: 0x9b269e9e361 <Map(HOLEY_ELEMENTS)> [FastProperties]
+ - prototype: 0x9b27a204479 <Object map = 0x9b269e822a1>
+ - elements: 0x9b2e0782251 <FixedArray[0]> [HOLEY_ELEMENTS]
+ - properties: 0x9b2e0782251 <FixedArray[0]> {
+    #internalBinding: 0x9b2977b3e31 <JSFunction internalBinding (sfi = 0x9b27a2794d9)> (data field 0)
+    #NativeModule: 0x9b2977b3369 <JSFunction NativeModule (sfi = 0x9b27a2792f9)> (data field 1)
+ }
+```
+`internalBinding` and `NativeModule` properties are destructed in the function:
+```console
+- source code: (process, { internalBinding, NativeModule }) {
+```
 
 #### lib/internal/bootstrap_node.js
 This is the file that is loaded by `LoadEnvironment` as "bootstrap_node.js". 
@@ -14853,6 +14919,7 @@ listen setup and not there is one for the connection.
 This function will later make a callback to `onconnection` in lib/net.js.
 
 
+
 While stepping through this call I came accross `isLegalPort` in `internal/net.js`:
 ```javascript
 function isLegalPort(port) {
@@ -14863,8 +14930,14 @@ function isLegalPort(port) {
   return +port === (+port >>> 0) && port <= 0xFFFF;
 }
 ```
-
-
+So is port is negative we make it positive and then check if is an unsigned int:
+```javascript
+  +port === (+port >>> 0)
+```
+And the check that the port is not great than 65535:
+```
+  && port <= 65535
+```
 
 `net.js` will emit an `onconnect` event and pass the socket. `_tls_wrap` will be listening for this event and the listener
 function is named `tlsConnectionListener`. This listener is added by the following call:
@@ -14980,4 +15053,157 @@ Constant pool (size = 7)
            5: 0x2e8ae77c4d59 <String[3]: age>
            6: 0x2e8ae77c5df9 <String[7]: got age>
 ```
+
+
+### ModuleWrap
+To look into this a little closer we can step through the following:
+```console
+$ lldb -- out/Debug/node --expose-internals --inspect-brk ../scripts/module_wrap.js
+(lldb) br s -n ModuleWrap::Initialize
+(lldb) br s -n ModuleWrap::New
+(lldb) r
+```
+So when we call:
+```javascript
+const mod = new ModuleWrap('export * from "bar"; 6;', 'foo');
+```
+This will break in ModuleWrap::New.
+```console
+(lldb) jlh source_text
+#export * from "bar"; 6;
+(lldb) jlh url
+#foo
+```
+You can see the functions avaiable to mod:
+```console
+
+```
+
+Now ModuleWrap is also used by `lib/internal/vm/module.js`:
+```javascript
+const {
+  ModuleWrap,
+  kUninstantiated,
+  kInstantiating,
+  kInstantiated,
+  kEvaluating,
+  kEvaluated,
+  kErrored,
+} = internalBinding('module_wrap');
+```
+The Module class's constructor creates an instance of ModuleWrap:
+```javascript
+  const wrap = new ModuleWrap(src, url, context, lineOffset, columnOffset);
+```
+
+Lets take a look at an example of using the new modules:
+```javascript
+const vm = require('vm');
+
+const contextifiedSandbox = vm.createContext({ secret: 42 });
+
+(async () => {
+  const bar = new vm.Module(`
+    import s from 'foo';
+    s;
+  `, { context: contextifiedSandbox });
+
+  async function linker(specifier, referencingModule) {
+    if (specifier === 'foo') {
+      return new vm.Module(`
+        // The "secret" variable refers to the global variable we added to
+        // "contextifiedSandbox" when creating the context.
+        export default secret;
+      `, { context: referencingModule.context });
+    }
+    throw new Error(`Unable to resolve dependency: ${specifier}`);
+  }
+  await bar.link(linker);
+
+  bar.instantiate();
+
+  const { result } = await bar.evaluate();
+
+  console.log(result);
+  // Prints 42.
+})();
+```
+First a `contextifiedSandbox` is created by calling `vm.createContext`.
+```javascript
+function createContext(sandbox = {}, options = {}) {
+  if (isContext(sandbox)) {
+    return sandbox;
+  }
+```
+The above `isContext` will call a javascript function that checks the input parmeter sandbox and then
+will call `_isContext` which will call the c++ function Contextify::IsContext in node_contextify:
+```c++
+void ContextifyContext::IsContext(const FunctionCallbackInfo<Value>& args) {
+  Environment* env = Environment::GetCurrent(args);
+
+  CHECK(args[0]->IsObject());
+  Local<Object> sandbox = args[0].As<Object>();
+
+  Maybe<bool> result =
+      sandbox->HasPrivate(env->context(),
+                          env->contextify_context_private_symbol());
+  args.GetReturnValue().Set(result.FromJust());
+}
+```
+We can inspect the `sandbox` object using:
+```console
+(lldb) jlh sandbox
+0x3222865311d1: [JS_OBJECT_TYPE] in OldSpace
+ - map: 0x3222f9466981 <Map(HOLEY_ELEMENTS)> [FastProperties]
+ - prototype: 0x3222aca04479 <Object map = 0x3222f94022a1>
+ - elements: 0x322215182251 <FixedArray[0]> [HOLEY_ELEMENTS]
+ - properties: 0x322215182251 <FixedArray[0]> {
+    #secret: 42 (data field 0)
+ }
+```
+Next, we check this object to see if it has any private. Private is a symbol which is not converted 
+to a string and exposed by Object.getOwnPropertyNames. Only using the symbol reference can one set 
+and retrieve values from the object. A list of assigned symbols for a given object can still be 
+accessed with the Object.getOwnPropertySymbols function.
+So in this case we are checking if there is a symbol named `node:contextify:context` was added to 
+this sandbox object, something like this in javascript (but done in c++):
+```javascript
+var s = Symbol('node:contextify:context');
+sandbox[s] = true;
+```
+We can see that the passed in sandbox instance does not have it set:
+```console
+lldb) expr result
+(v8::Maybe<bool>) $10 = (has_value_ = true, value_ = false)
+```
+
+After this `createContext` will setup and check the options passed and the call `createContext`:
+```javascript
+makeContext(sandbox, name, origin, strings, wasm);
+```
+
+```console
+(lldb) jlh env->contextify_context_private_symbol()
+0x3222aca022c9: [Symbol] in OldSpace
+ - map: 0x322236e82701 <Map(HOLEY_ELEMENTS)>
+ - hash: 686904622
+ - name: 0x3222aca02299 <String[23]: node:contextify:context>
+ - private: 1
+```
+`ContextifyContext::MakeContext` will check the options passed in and then create a ContextOptions with
+them which is the passed to the `ContextifyConext` constructor:
+```c++
+ContextifyContext* context = new ContextifyContext(env, sandbox, options);
+```
+ContextifyContext will call ContextifyContext::CreateV8Context
+
+This context will then be using a private symbol on the sandbox object:
+```c++
+sandbox->SetPrivate(
+      env->context(),
+      env->contextify_context_private_symbol(),
+      External::New(env->isolate(), context));
+```
+
+
 
