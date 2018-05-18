@@ -15205,5 +15205,7 @@ sandbox->SetPrivate(
       External::New(env->isolate(), context));
 ```
 
-
-
+### Breaking in bootstraper code
+Previsouly I was able to run a script using `--inspect-brk` and then afterwards set a break point anywhere in node's bootstrap files, then rerun and the debugger would break
+there. This does not seem to work for my anymore, but what does work is setting a `debugger;` line in the code, so you can stick that in one of the javascript files in
+`lib/internal/bootstrap` and you should be able to break in them.
