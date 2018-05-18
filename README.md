@@ -14,7 +14,7 @@ After compiling (with debugging enabled) start node using lldb:
     $ cd node/out/Debug
     $ lldb ./node
 
-Node uses Generate Your Projects (gyp) for which I was not familare with so there is a 
+Node uses Generate Your Projects (gyp) for which I was not familiar with so there is a 
 example project in [gyp](./gyp) to look into it.
 
 ### Running the Node.js tests
