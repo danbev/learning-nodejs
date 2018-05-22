@@ -3408,8 +3408,6 @@ Open developer tools from Chrome `CMD+OPT+I`
 
 #### Editor
 `SHIFT+CMD+P`   go to member  
-`CMD+P`         open file  
-`CMD+OPT+F`     search all files
   
 `ESC`           toggle drawer  
 `CTRL+~`        jump to console  
@@ -4216,88 +4214,81 @@ So that gives us more information, but lets say you'd like to see the name of th
     (lldb) jlh init_fn->GetName()
     #init
 
-### Promises
-The section is about understanding how ECMAScript 6 Promise API works.
+### Promise builtin
+For debug the builtin promise we are going to disable V8 snapshots:
+```console
+(lldb) br s -f bootstrapper.cc -l 2321
+```
+It takes a while before the breakpoint is hit but it will be.
+And we are going to look at the following js:
+```javascript
+const p = new Promise((resolve, reject) => {
+  resolve('ok');
+});
+```
+```console
+$ lldb -- out/Debug/node ../scripts/promise.js
+$ ./configure --without-snapshot --debug
+```
 
-    let promise = new Promise(function(resolve, reject) {
-      if (true) {
-        resolve("resolved");
-      } else {
-        reject("rejected");
-      }  
-    }
+```c++
+Handle<JSFunction> promise_fun = InstallFunction(global,
+    "Promise", JS_PROMISE_TYPE, JSPromise::kSizeWithEmbedderFields,
+    0, factory->the_hole_value(), Builtins::kPromiseConstructor);
+```
+```console
+(lldb) expr isolate()->builtins()->builtin_handle(Builtins::Name::kPromiseConstructor)->Print()
+0x3c5be1744d61: [Code]
+ - map: 0x3657d7704051 <Map(HOLEY_ELEMENTS)>
+kind = BUILTIN
+name = PromiseConstructor
+compiler = turbofan
+address = 0x3c5be1744d61
+Body (size = 3644)
+Instructions (size = 3320)
+0x3c5be1744dc0     0  55             push rbp
+0x3c5be1744dc1     1  4889e5         REX.W movq rbp,rsp
+0x3c5be1744dc4     4  56             push rsi
+0x3c5be1744dc5     5  57             push rdi
+0x3c5be1744dc6     6  50             push rax
+0x3c5be1744dc7     7  4883ec40       REX.W subq rsp,0x40
+0x3c5be1744dcb     b  4989e2         REX.W movq r10,rsp
+0x3c5be1744dce     e  4883ec08       REX.W subq rsp,0x8
+0x3c5be1744dd2    12  4883e4f0       REX.W andq rsp,0xf0
+0x3c5be1744dd6    16  4c891424       REX.W movq [rsp],r10
+0x3c5be1744dda    1a  488bc2         REX.W movq rax,rdx
+0x3c5be1744ddd    1d  488955e0       REX.W movq [rbp-0x20],rdx
+0x3c5be1744de1    21  488bde         REX.W movq rbx,rsi
+0x3c5be1744de4    24  488bfe         REX.W movq rdi,rsi
+0x3c5be1744de7    27  48be000000001c000000 REX.W movq rsi,0x1c00000000
+0x3c5be1744df1    31  48ba69bce15e57360000 REX.W movq rdx,0x36575ee1bc69    ;; object: 0x36575ee1bc69 <String[157]: CAST(Parameter(Linkage::GetJSCallContextParamIndex( static_cast<int>(call_descriptor->JSParameterCount())))) at ../deps/v8/src/compiler/code-assembler.cc:385>
+0x3c5be1744dfb    3b  498d85185620fa REX.W leaq rax,[r13-0x5dfa9e8]
+....
+```
+```c++
+  Handle<SharedFunctionInfo> shared(promise_fun->shared(), isolate);
+  shared->SetConstructStub(*BUILTIN_CODE(isolate, JSBuiltinsConstructStub));
+  shared->set_internal_formal_parameter_count(1);
+  shared->set_length(1);
 
-    promise.then(function (message) {
-      console.log(message);
-    });
-
-    $ lldb -- ./out/Debug/node --harmony --inspect --debug-brk manual.js
-    (lldb) breakpoint set -f isolate.cc -l 1717
-
-So when we do `new Promise` our break point in isolate.cc will be hit:
-
-    void Isolate::PushPromise(Handle<JSObject> promise) {
-      ThreadLocalTop* tltop = thread_local_top();
-      PromiseOnStack* prev = tltop->promise_on_stack_;
-      Handle<JSObject> global_promise =
-        Handle<JSObject>::cast(global_handles()->Create(*promise));
-      tltop->promise_on_stack_ = new PromiseOnStack(global_promise, prev);
-    }
-
-So lets take a close look a `PromiseOnStack` which can be found in isolate.h
-
-    class PromiseOnStack {
-      public:
-        PromiseOnStack(Handle<JSObject> promise, PromiseOnStack* prev)
-          : promise_(promise), prev_(prev) {}
-        Handle<JSObject> promise() { return promise_; }
-        PromiseOnStack* prev() { return prev_; }
-
-     private:
-       Handle<JSObject> promise_;
-       PromiseOnStack* prev_;
-    };
-
-
-    (lldb) breakpoint set -f runtime-debug.cc -l 251
-    
-
-I was having trouble understanding why I was not able to set a break point in V8 src/js/promise.js file as it was
-never availble in devtools. In the same way that Node performs a javascript to c (js2c) (see [bootstrap_node.js](#lib/internal/bootstrap_node.js)
-for more information). GN has a target that takes all the files in src/js and generates 
-$target_gen_dir/libraries.cc. You can inspect this file (out/x64.debug/obj/gen/libraries.cc).
-But I could not find a reference to libraries.cc in the source code base. This is instead used
-by target in src/v8.gyp which is v8_snapshot.
-
-out/Debug/obj/gen/libraries.cc and libraries.bin. 
-
-
-    * thread #1: tid = 0x8ea959, 0x0000000100c91504 node`v8::internal::Isolate::PushPromise(this=0x0000000105004e00, promise=Handle<v8::internal::JSObject> @ 0x00007fff5fbfc238) + 20 at isolate.cc:1717, queue = 'com.apple.main-thread', stop reason = breakpoint 3.1
-  * frame #0: 0x0000000100c91504 node`v8::internal::Isolate::PushPromise(this=0x0000000105004e00, promise=Handle<v8::internal::JSObject> @ 0x00007fff5fbfc238) + 20 at isolate.cc:1717
-    frame #1: 0x0000000100f277a2 node`v8::internal::__RT_impl_Runtime_DebugPushPromise(args=Arguments @ 0x00007fff5fbfc290, isolate=0x0000000105004e00) + 226 at runtime-debug.cc:1813
-    frame #2: 0x0000000100f27559 node`v8::internal::Runtime_DebugPushPromise(args_length=1, args_object=0x00007fff5fbfc348, isolate=0x0000000105004e00) + 297 at runtime-debug.cc:1809
-
-
-
-(v8::PromiseRejectCallback) $1 = 0x00000001012a92a0 (node`node::PromiseRejectCallback(v8::PromiseRejectMessage) at node.cc:1169)
-
-
-src/js/promise.js:
-
-    (function(global, utils, extrasUtils) {
-
-    "use strict";
-
-    %CheckIsBootstrapping();
-
-This is compiled by a call from bootstrapper.cc:
-
-    Handle<Object> args[] = {global, utils, extras_utils};
-    return Bootstrapper::CompileNative(isolate, name, source_code, arraysize(args), args, NATIVES_CODE);
+  InstallSpeciesGetter(promise_fun);
+  SimpleInstallFunction(promise_fun, "all", Builtins::kPromiseAll, 1, true);
+  SimpleInstallFunction(promise_fun, "race", Builtins::kPromiseRace, 1, true);
+  SimpleInstallFunction(promise_fun, "resolve", Builtins::kPromiseResolveTrampoline, 1, true);
+  SimpleInstallFunction(promise_fun, "reject", Builtins::kPromiseReject, 1, true);
+```
+So we can see that the Promise function is set up as a global. The `then` function is later setup using:
+```c++
+  Handle<JSFunction> promise_then = SimpleInstallFunction(prototype, isolate->factory()->then_string(), Builtins::kPromisePrototypeThen, 2, true);
+  native_context()->set_promise_then(*promise_then);
+```
 
 
-$ out/Debug/node --v8-options
-
+`deps/v8/src/builtins/builtins-definitions.h`:
+```c++
+TFJ(PromiseConstructor, 1, kExecutor)
+```
+TFJ means TurboFan JavaScript linkage and means it is callable as a JavaScript function.
 
 ### Debug JavaScript tests
 Just example commands that I use in different projects to run the debugger with 
@@ -15209,3 +15200,59 @@ sandbox->SetPrivate(
 Previsouly I was able to run a script using `--inspect-brk` and then afterwards set a break point anywhere in node's bootstrap files, then rerun and the debugger would break
 there. This does not seem to work for my anymore, but what does work is setting a `debugger;` line in the code, so you can stick that in one of the javascript files in
 `lib/internal/bootstrap` and you should be able to break in them.
+
+### WebAssembly (WASM)
+The text format for wasm is of type S-expressions where the first label inside a parentheses tell what kind of node it is:
+```wasm
+(module (memory 1) (func))
+```
+The above has a root node named `module` and two child nodes, `memory` and `func`.
+All code is grouped into functions:
+```wasm
+(func <signature> <locals> <body>)
+```
+The signature declares the functions parameters and its return type.
+The locals are local variables to the function
+The body is a list of instructions for the fuction.
+
+```wasm
+(module
+  (func $add (param $first i32) (param $second i32) (result i32)
+    get_local $first
+    get_local $second
+    (i32.add)
+  )
+  (export "add" (func $add))
+)
+```
+The body is stack based so `get_local` will push $first onto the stack. `i32.add` will take two values from the stack, add then and push
+the result onto the stack. 
+Notice the `$add` in the function. This is much like the parameters that are index based but can be named to make the code
+clearer. So we could just as well written:
+```wasm
+  (export "add" (func 0))
+```
+export is a function that makes the function available using the name `add` in our case.
+
+You can compile the above .wat file to wasm using [wabt](https://github.com/WebAssembly/wabt):
+```console
+$ out/clang/Debug/wat2wasm ~/work/nodejs/scripts/wasm-helloworld.wat -o helloworld.wasm
+
+```
+And the use the wasm from javascript:
+```javascript
+const fs = require('fs');
+const buffer = fs.readFileSync('helloworld.wasm');
+
+const promise = WebAssembly.instantiate(buffer, {});
+promise.then((result) => {
+  const instance = result.instance;
+  const module = result.module;
+  console.log('instance.exports:', instance.exports);
+  const addTwo = instance.exports.addTwo;
+  console.log(addTwo(1, 2));
+});
+
+`WebAssembly.Memory` is used to deal with more complex objects like strings. Is just a large array of bytes which can grow. You can read/write
+using i32.load and i32.store. 
+```
