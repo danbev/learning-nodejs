@@ -1,5 +1,8 @@
 ### Learning Node.js
 The sole purpose of this project is to aid in learning Node.js internals.
+Please not that viewing this README.md as the main page to the project might
+truncate it as it has become quite large. Opening the file (clicking on it) 
+you can view the whole content.
 
 ## Prerequisites
 You'll need to have checked out the node.js source.
