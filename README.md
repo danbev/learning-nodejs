@@ -1435,7 +1435,7 @@ lldb) expr &this->val_
 ```
 So `this->val_` is a pointer to v8::Object and we are using reinterpret_cast to instruct the compiler to treat it 
 like it was of type v8::internal::Object**.
-
+```
 &this->val
 0x0000000104507a28 -----------------------> 0x000000010604b680 -------------> v8::Object
                                                   | 
@@ -1582,8 +1582,6 @@ Handle<Object> handle() { return Handle<Object>(location()); }
 ```
 
 v8::Object does not have any members and an Object can be either a Smi or a HeapObject.
-
-persistent().SetWrapperClassId(NODE_ASYNC_ID_OFFSET + provider_type_);
 
 `AsyncReset()` is called from AsyncWrap's constructor:
 ```c++
@@ -2513,31 +2511,23 @@ the tests. There is a script in `node/tools` that can run to add rules to the fi
 
 ### Running a script
 This section attempts to explain the process of running a javascript file. We will create a break point in the javascript source and see how it is executed.
-Lets take one of the tests and use it as an example:
 
-    $ node-inspector
-
-With newer versions of Node.js the V8 Inspector is now available from Node.js (https://github.com/nodejs/node/pull/6792) and can be started using:
-
-    $ ./node --inspect --debug-brk
+    $ ./node -inspect-brk
 
 Next, start `lldb` and 
 
-    $ lldb -- out/Debug/node --debug-brk test/parallel/test-tcp-wrap-connect.js
-
-or with a newer version of Node.js use the built in V8 inspector:
-
-    $ lldb -- out/Debug/node --inspect --debug-brk test/parallel/test-tcp-wrap-connect.js
+    $ lldb -- out/Debug/node --inspect-brk test/parallel/test-tcp-wrap-connect.js
 
 Now, when a script is executed it will be read and loaded. Where is this done?
-To recap the loading is done by `LoadEnvironment` which loads and executes `lib/internal/bootstrap_node.js`. This is a function which is
+To recap the loading is done by `LoadEnvironment` which loads and executes `lib/internal/bootstrap/node.js`. This is a function which is
 then executed:
-
+```c++
     Local<Value> arg = env->process_object();
     f->Call(Null(env->isolate()), 1, &arg);
+```
 
 As we can see the process_object which was configured earlier is passed into the function:
-
+```javascript
     (function(process) {
       function startup() {
         ...
@@ -2546,15 +2536,18 @@ As we can see the process_object which was configured earlier is passed into the
       
       startup();
     });
+```
 
 We can see that the `startup` function will be called when the the `f` is called. Since we are specifying a script to run we will
 be looking at setting up the various object in the environment, mosty using the passed in process object (TODO: need to write out the
 details for this later) and eventually running:
-
+```javascript
      preloadModules();
      run(Module.runMain);
+```
 
-Module.runMain is a function in `lib/module.js`:
+`Module.runMain` is a function in `lib/module.js`:
+```javascript
 
     // bootstrap main module.
     Module.runMain = function() {
@@ -2563,26 +2556,29 @@ Module.runMain is a function in `lib/module.js`:
       // Handle any nextTicks added in the first tick of the program
       process._tickCallback();
     };
+```
 
 #### _load
 Will check the module cache for the filename and if it already exists just returns the exports object for this module. But otherwise
 the filename will be loaded using the file extension. Possible extensions are `.js`, `.json`, and `.node` (defaulting to .js if no extension is given).
-
+```javascript
     Module._extensions[extension](this, filename);
+```
 
 We know our extension is `.js` so lets look closer at it:
-
+```javascript
      // Native extension for .js
      Module._extensions['.js'] = function(module, filename) {
        var content = fs.readFileSync(filename, 'utf8');
        module._compile(internalModule.stripBOM(content), filename);
      };
+```
 
 So lets take a look at `_compile_`
 
 #### module._compile
 After removing the shebang from the `content` which is passed in as the first parameter the content is wrapped:
-
+```javascript
     var wrapper = Module.wrap(content);
 
     var compiledWrapper = vm.runInThisContext(wrapper, {
@@ -2590,26 +2586,29 @@ After removing the shebang from the `content` which is passed in as the first pa
       lineOffset: 0,
       displayErrors: true
     });
+```
 
-vm.runInThisContext :
-
+`vm.runInThisContext` :
+```javascript
     var dirname = path.dirname(filename);
     var require = internalModule.makeRequireFunction.call(this);
     var args = [this.exports, require, this, filename, dirname];
     var depth = internalModule.requireDepth;
     if (depth === 0) stat.cache = new Map();
     var result = compiledWrapper.apply(this.exports, args);
+```
 
 
 #### Module.wrap
 This is declared as:
-
+```javascript
     const NativeModule = require('native_module');
     ....
     Module.wrap = NativeModule.wrap;
+```
 
-NativeModule can be found lib/internal/bootstrap_node.js:
-
+NativeModule can be found lib/internal/bootstrap/node.js:
+```javascript
      NativeModule.wrap = function(script) {
        return NativeModule.wrapper[0] + script + NativeModule.wrapper[1];
      };
@@ -2618,66 +2617,67 @@ NativeModule can be found lib/internal/bootstrap_node.js:
        '(function (exports, require, module, __filename, __dirname) { ',
        '\n});'
      ];
+```
 
 We can see here that the content of our JavaScript file will be included/wrapped in
-
+```javascript
     (function (exports, require, module, __filename, __dirname) { 
 	// script content
     });'
+```
 
 So this is also how `exports`, `require`, `module`, `__filename`, and `__dirname` are made available
 to all scripts.
 
 So, to recap we have a `wrapper` instance that is a function. The next thing that happens in `lib/modules.js` is:
-
+```javascript
     var compiledWrapper = vm.runInThisContext(wrapper, {
       filename: filename,
       lineOffset: 0,
       displayErrors: true
     });
+```
 
 So what does `vm.runInThisContext` do?  
 This is defined in `lib/vm.js`:
-
+```javascript
     exports.runInThisContext = function(code, options) {
       var script = new Script(code, options);
       return script.runInThisContext(options);
     };
+```
 
 As described in the [vm](https://nodejs.org/api/vm.html) the vm module provides APIs for compiling and running code within V8 Virtual Machine contexts.
 Creating a new Script will compile but not run the code. It can later be run multiple times.
 
 So what is a Script? 
 It is declared as:
-
+```javascript
     const binding = process.binding('contextify');
     const Script = binding.ContextifyScript;
+```
 
 What is Contextify about?  
 This is related to V8 contexts and all JavaScript code is run in a context.
 
 `src/node_contextify.cc` is a builtin module and contains an `Init` function that does the following (among other things): 
-
+```c++
     env->SetProtoMethod(script_tmpl, "runInContext", RunInContext);
     env->SetProtoMethod(script_tmpl, "runInThisContext", RunInThisContext);
+```
 
-script.runInThisContext in vm.js overrides `runInThisContext` and then delegates to src/node_contextify.cc `RunInThisContext`.
-
+`script.runInThisContext` in vm.js overrides `runInThisContext` and then delegates to src/node_contextify.cc `RunInThisContext`.
+```c++
      // Do the eval within this context
      Environment* env = Environment::GetCurrent(args);
      EvalMachine(env, timeout, display_errors, break_on_sigint, args, &try_catch);
+```
 
 After all this processing is done we will be back in node.cc and continue processing there. As everything is event driven the event loop start running
 and trigger callbacks for anything that has been set up by the script.
 Just think about a V8 example you create yourself, you set up the c++ code that is to be called from JavaScript and then V8 takes care of the rest. 
 In node, the script is first wrapped in node specific JavaScript and then executed.  Node code uses libuv there are callbacks setup that are called 
 by libuv and more actions taken, like invoking a JavaScript callback function.
-
-### EvalMachine
-
-Script->Run in deps/v8/src/api.cc 
-
-### Tasks
 
 #### Remove need to specify a no-operation immediate_idle_handle
 When calling setImmediate, this will schedule the callback passed in to be scheduled for execution after I/O events:
@@ -2706,29 +2706,34 @@ This task did not come to anything yet. Perhaps with libuv 2.0 libuv might accep
 
 ### tcp\_wrap and pipe\_wrap
 Lets take a look at the following statement:
-
+```javascript
     var TCPConnectWrap = process.binding('tcp_wrap').TCPConnectWrap;
     var req = new TCPConnectWrap();
+```
     
 We know from before that `binding` is set as function on the process object. This was done in SetupProcessObject in node.cc:
-
+```c++
     env->SetMethod(process, "binding", Binding);
+```
 
 So we are invoking the Binding function in node.cc with the argument 'tcp_wrap':
-
+```c++
     static void Binding(const FunctionCallbackInfo<Value>& args) {
+```
 
 Binding will extract the first (and only) argument which is the name of the module. 
 Every environment seems to have a cache, and if the module is in this cache it is returned:
-
+```c++
     Local<Object> cache = env->binding_cache_object();
+```
 
 It will also create a instance of Local<Object> exports which is the object that will be returned.
-
+```c++
     Local<Object> exports;
+```
 
 So, when the tcp_wrap.cc was Initialized (see section about Builtins):
-
+```c++
     // Create FunctionTemplate for TCPConnectWrap.
     auto constructor = [](const FunctionCallbackInfo<Value>& args) {
       CHECK(args.IsConstructCall());
@@ -2737,36 +2742,41 @@ So, when the tcp_wrap.cc was Initialized (see section about Builtins):
     cwt->InstanceTemplate()->SetInternalFieldCount(1);
     cwt->SetClassName(FIXED_ONE_BYTE_STRING(env->isolate(), "TCPConnectWrap"));
     target->Set(FIXED_ONE_BYTE_STRING(env->isolate(), "TCPConnectWrap"), cwt->GetFunction());
+```
 
 What is going on here. We create a new FunctionTemplate using the `constructor` lamba, this is then added to the target (the object that we are initializing).
 The constructor is only checking that the passed in args can be used as a constructor (using new in JavaScript)  
 The object returned from the constructor call does not have any methods as far as I can tell. 
 The constructor would late be used like this:
-
+```javascript
     var client = new TCP();
     var req = new TCPConnectWrap();
     var err = client.connect(req, '127.0.0.1', this.address().port);
+```
 
 Now, we saw that TCP has a bunch of methods set up in Initialize, one of the being connect:
-
+```c++
     void TCPWrap::Connect(const FunctionCallbackInfo<Value>& args) {
       ...
       Local<Object> req_wrap_obj = args[0].As<Object>();
+```
 
 This is the instance of TCPConnectWrap `req` created above and we can see that it is of type `v8::Local<v8::Local>`.
-
+```c++
     ConnectWrap* req_wrap = new ConnectWrap(env, req_wrap_obj, AsyncWrap::PROVIDER_TCPCONNECTWRAP);
+```
 
-Remember that ConnectnWrap extends ReqWrap which extends AsyncWrap
+Remember that `ConnectWrap` extends `ReqWrap` which extends `AsyncWrap`.
 
 We know that ConnectWrap takes `Local<Object>` as the `req_wrap_obj`
-
+```c++
     err = uv_tcp_connect(req_wrap->req(), &wrap->handle_, reinterpret_cast<const sockaddr*>(&addr), AfterConnect);
+```
 
-uv_tcp_connect takes a pointer `uv_connect_t` and a pointer to `uv_tcp_t` handle. This will connect to the specified `sockaddr_in` and the
+`uv_tcp_connect` takes a pointer `uv_connect_t` and a pointer to `uv_tcp_t` handle. This will connect to the specified `sockaddr_in` and the
 callback will be called when the connection has been established or if an error occurs. So it makes sense that ConnectWrap extends ReqWrap
 as uv_connect_t is a request type in libuv:
-
+```c
     /* Request types. */
     typedef struct uv_req_s uv_req_t;
     typedef struct uv_getaddrinfo_s uv_getaddrinfo_t;
@@ -2777,9 +2787,10 @@ as uv_connect_t is a request type in libuv:
     typedef struct uv_udp_send_s uv_udp_send_t;
     typedef struct uv_fs_s uv_fs_t;
     typedef struct uv_work_s uv_work_t;
+```
 
 AsyncWrap extends BaseObject which 
-
+```console
     (lldb) p *this
     (node::BaseObject) $28 = {
       persistent_handle_ = {
@@ -2787,82 +2798,95 @@ AsyncWrap extends BaseObject which
       }
       env_ = 0x00007fff5fbfe108
     }
+```
 
 So each BaseObject instance has a v8::Persistent<v8:Object>. This is a persistent object as it needs to be preserved accross C++ function boundries.
 Also, we can see that each BaseObject instance also has a node::Environment associated with it.
 The only thing that BaseObject's constructor does (baseobject-inl-h) is :
-
+```c++
     // The zero field holds a pointer to the handle. Immediately set it to
     // nullptr in case it's accessed by the user before construction is complete.
     if (handle->InternalFieldCount() > 0)
       handle->SetAlignedPointerInInternalField(0, nullptr);
+```
 
 So after we have returned to AsyncWraps constructor, and then ReqWrap's we are back in ConnectWrap's constructor:
-
+```c++
     Wrap(req_wrap_obj, this);
+```
 
 `Wrap` in util-inl.h:
-
+```c++
     template <typename TypeName>
     void Wrap(v8::Local<v8::Object> object, TypeName* pointer) {
       CHECK_EQ(false, object.IsEmpty());
       CHECK_GT(object->InternalFieldCount(), 0);
       object->SetAlignedPointerInInternalField(0, pointer);
     }
+```
 
 We are now setting index 0 to the pointer which is the current 
 Object is the `v8::Local<v8::Object>`, the one we created in our JavaScript file and passed to the connect method named `req`:
-
+```javascript
     var req = new TCPConnectWrap();
     var err = client.connect(req, '127.0.0.1', this.address().port);
+```
 
 So we are setting/storing a pointer to the ConnectWrap instance at index 0 of the `req_wrap_obj`.
 
 After all that we are ready to make the uv_tcp_connect call:
-
+```c++
     err = uv_tcp_connect(req_wrap->req(), &wrap->handle_, reinterpret_cast<const sockaddr*>(&addr), AfterConnect);
+```
 
 We can see the callback is node::ConnectionWrap<node::TCPWrap, uv_tcp_s>::AfterConnect(uv_connect_s*, int)
 
 
 Notice that target is of type Local<Object>. 
-
+```c++
     Local<Object> exports;
     ....
     exports = Object::New(env->isolate());
     ...
     mod->nm_context_register_func(exports, unused, env->context(), mod->nm_priv);
+```
 
-exports is what is returned to the caller. 
-
+`exports` is what is returned to the caller. 
+```c++
     args.GetReturnValue().Set(exports);
+```
 
 And we access the TCPConnectWrap member, which is a function which can be used as 
 a constructor by using new. Lets start with where is ConnectWrap called?
 It is called from tcp_wrap.cc and its Connect method.
 ConnectWrap extends ReqWrap which extends AsyncWrap which extens BaseObject
-
+```javascript
     req.oncomplete = function(status, client_, req_) {
+```
 
 So, we know from earlier that our `req` object is basically empty. Here we are setting a property name `oncomplete` to be
 a function. This will be called in connection_wrap.cc 111:
-
+```c++
     req_wrap->MakeCallback(env->oncomplete_string(), arraysize(argv), argv);
+```
 
 oncomplete_string() is a generated method from a macro in env.h
-
+```c++
     v8::Local<v8::Value> cb_v = object()->Get(symbol);
     CHECK(cb_v->IsFunction());
     return MakeCallback(cb_v.As<v8::Function>(), argc, argv);
+```
 
 `object()` will return the persistent object to out handle (from base-object-inl.h) :
-
+```c++
     return PersistentToLocal(env_->isolate(), persistent_handle_);
+```
 
 We can see that the `persistent_handle_` is the handle that was created using which makes sense as this 
 is the object that oncomplete was created for:
-
+```c++
     var req = new TCPConnectWrap();
+```
 
 We are then calling Get(symbol) which will be a Symbol representing 'oncomplete'. And the calling it with number of arguments, and the
 arguments themselves.
@@ -2870,35 +2894,36 @@ arguments themselves.
 
 ### tcp\_wrap.cc
 In `OnConnect` I found the following:
-
+```c++
     TCPWrap* tcp_wrap = static_cast<TCPWrap*>(handle->data);
     ....
     Local<Object> client_obj = Instantiate(env, static_cast<AsyncWrap*>(tcp_wrap));
+```
 
-I'm not sure this cast is needed as we have already have a TCPWrap instance
-
-    Local<Object> client_obj = Instantiate(env, tcp_wrap);
-    
+```
 class TCPWrap : public StreamWrap
 class StreamWrap : public HandleWrap, public StreamBase
 class HandleWrap : public AsyncWrap {
-
-As far as I can tell TCPWrap is of type AsyncWrap. Looking at src/pipe_wrap.cc which has a very similar OnConnect method
+```
+As far as I can tell `TCPWrap` is of type `AsyncWrap`. Looking at `src/pipe_wrap.cc` which has a very similar OnConnect method
 (which I'm going to take a stab at refactoring) but does not have this cast.
 
 
 ### Refactoring tcpwrap and pipewrap
+This comment exist on pipewrap OnConnect:
+```c++
 // TODO(bnoordhuis) maybe share with TCPWrap?
-This comment exist on pipewarp OnConnect
+```
 
-
+```c++
     void PipeWrap::OnConnection(uv_stream_t* handle, int status) {
     PipeWrap* pipe_wrap = static_cast<PipeWrap*>(handle->data);
     CHECK_EQ(&pipe_wrap->handle_, reinterpret_cast<uv_pipe_t*>(handle));
+```
 
 The reinterpret_cast operator changes one data type into another. Recall how the types of libuv have a type of c inheritance allowing 
 casting.
-
+```c
     /*
      * uv_pipe_t is a subclass of uv_stream_t.
      *
@@ -2911,40 +2936,39 @@ casting.
       int ipc; /* non-zero if this pipe is used for passing handles */
       UV_PIPE_PRIVATE_FIELDS
    };
+```
 
 The main difference that I've been able to find is in pipewrap `status` is checked:
-
+```c++
     if (status != 0) {
       pipe_wrap->MakeCallback(env->onconnection_string(), arraysize(argv), argv);
       return;
    } 
+```
 
 ### src/stream_wrap.cc
 Looking into a task where the public member field req_ in src/req_wrap.cc is to be made private, I came accross the 
 following method:
-
+```console
     286 void StreamWrap::AfterShutdown(uv_shutdown_t* req, int status) {
     287   ShutdownWrap* req_wrap = ContainerOf(&ShutdownWrap::req_, req);
     288   HandleScope scope(req_wrap->env()->isolate());
     289   Context::Scope context_scope(req_wrap->env()->context());
     290   req_wrap->Done(status);
     291 }
+```
 
 What I did for the public req_ member is made it private and then added a public accessor method for it. This was easy
 to update in most places but in src/stream_wrap.cc we have the following line:
-
+```c++
    ShutdownWrap* req_wrap = ContainerOf(&ShutdownWrap::req_, req);
-
-    class StreamWrap : public HandleWrap, public StreamBase
-    class HandleWrap : public AsyncWrap 
-    class AsyncWrap : public BaseObject
-    class BaseObject
+```
 
 ## Extracting AfterConnect into connection_wrap.cc
 Just like `OnConnect` was extracted into connection_wrap and shared by both tcp_wrap and pipe_wrap the same should be done for `AfterConnect`.
 
 The main difference I found was in `PipeWrap::AfterConnect`:
-
+```c++
     bool readable, writable;
 
     if (status) {
@@ -2961,11 +2985,12 @@ The main difference I found was in `PipeWrap::AfterConnect`:
       Boolean::New(env->isolate(), readable),
       Boolean::New(env->isolate(), writable)
     };
+```
 
 AfterConnect is a callback that is passed to uv_pipe_connect. The status will be 0 if uv_connect() was successful and < 0 otherwise. 
 
 The thing to notice is the difference compared to tcp_wrap:
-
+```c++
     Local<Object> req_wrap_obj = req_wrap->object();
     Local<Value> argv[5] = {
       Integer::New(env->isolate(), status),
@@ -2974,6 +2999,7 @@ The thing to notice is the difference compared to tcp_wrap:
       v8::True(env->isolate()),
       v8::True(env->isolate())
     };
+```
 
 TCPWrap always sets the readable and writable values to true where as PipeWrap checks if the handle is readble/writeble. Seems like a the TCPWrap will always
 be both readable and writable. 
@@ -2986,25 +3012,28 @@ One issue when doing this was that after renaming req_ to req() I had to rename 
 parameter with the same name.
 
 The second issue I ran into was with src/stream_wrap.cc:
-
+```c++
     void StreamWrap::AfterShutdown(uv_shutdown_t* req, int status) {
       ShutdownWrap* req_wrap = ContainerOf(&ShutdownWrap::req_, req);
+```
 
 We can find `ContainerOf` in src/util-inl.h :
-
+```c++
     template <typename Inner, typename Outer>
     inline ContainerOfHelper<Inner, Outer> ContainerOf(Inner Outer::*field, Inner* pointer) {
       return ContainerOfHelper<Inner, Outer>(field, pointer);
     }
+```
 
 The call in question is auto-deducing the paremeter types from the arguments, it could also have been explicit:
-
+```c++
     ShutdownWrap* req_wrap = ContainerOf<uv_shutdown_t*, ShutdownWrap>(&ShutdownWrap::req_, req);
+```
 
 
 ## ContainerOfHelper
 `src/util.h` declares a class named ContainerOfHelper:
-
+```c++
     // The helper is for doing safe downcasts from base types to derived types.
     template <typename Inner, typename Outer>
     class ContainerOfHelper {
@@ -3015,29 +3044,33 @@ The call in question is auto-deducing the paremeter types from the arguments, it
      private:
        Outer* const pointer_;
  };
+```
 
 So back to our call using ContainerOf which will invoke:
-
+```c++
     template <typename Inner, typename Outer>
     ContainerOfHelper<Inner, Outer>::ContainerOfHelper(Inner Outer::*field, Inner* pointer)
         : pointer_(reinterpret_cast<Outer*>(reinterpret_cast<uintptr_t>(pointer) - reinterpret_cast<uintptr_t>(&(static_cast<Outer*>(0)->*field)))) {
     }
+```
 
 First, note that the parameter `field` is a pointer-to-member, which gives the offset of the member within the class object as opposed to using the
 address-of operator on a data member bound to an actual class object which yields the member's actual address in memory.
 `uintptr_t` is an unsigned int that is capable of storing a pointer. Such a type can be used when you need to perform integer operations on a pointer.
 [reinterpret_cast](http://en.cppreference.com/w/cpp/language/reinterpret_cast) is a compiler directive which instructs the compiler to treat the sequence
 of bits as if it had the new type:
-
+```c++
     reinterpret_cast<uintptr_t>(pointer) 
-
+```
 reinterpret_cast is used to convert any pointer type to any other pointer type and the result is a binary copy of the value. 
-
+```c++
         reinterpret_cast<uintptr_t>(&(static_cast<ShutdownWrap*>(0)->*field))
+```
 
 I've not seen this usage before using 0 as the argument to static_cast:
-
+```c++
     static_cast<ShutdownWrap*>(0)->*field)
+```
 
 The static_cast part of this expression will give a nullptr, but we are not accessing a member, but a pointer-to-member which remember is the offset.
 A pointer is only a memory address but the type of the object determines how a pointer can be used, like using a member it needs to know the offsets 
@@ -3047,7 +3080,7 @@ So we creating a pointer to Outer which by using the offset of the field and sub
 
 
 Why does the protected field req_ have to be last:
-
+```console
     Command: out/Release/node /Users/danielbevenius/work/nodejs/node/test/parallel/test-child-process-stdio-big-write-end.js
     --- CRASHED (Signal: 10) ---
     === release test-cluster-disconnect ===
@@ -3062,47 +3095,54 @@ Why does the protected field req_ have to be last:
      7: node::Start(int, char**) [/Users/danielbevenius/work/nodejs/node/out/Release/node]
      8: start [/Users/danielbevenius/work/nodejs/node/out/Release/node]
      9: 0x2
+```
 
 "req_wrap_queue_ needs to be at a fixed offset from the start of the struct because it is used by ContainerOf to calculate the address of the embedding ReqWrap.
 ContainerOf compiles down to simple, fixed pointer arithmetic. sizeof(req_) depends on the type of T, so req_wrap_queue_ would no longer be at a fixed offset if it came after req_."
 
 This is what ReqWrap currently looks like:
-
+```c++
      private:
       friend class Environment;
       ListNode<ReqWrap> req_wrap_queue_;
+```
 
 Notice that this is not a pointer and when a ReqWrap instance is created the ListNode::ListNode() constructor will be called:
-
+```c++
     template <typename T>
     ListNode<T>::ListNode() : prev_(this), next_(this) {}
+```
 
 So every instance will have it's own doubly link linked list and each entry contains a ReqWrap instance which has a type T member. Depending on the type of T
 the size of the ReqWrap object in memory will be different. So it would not be possible to have req_wrap_queue after req_, or req_ before req_wrap_queue as this
 would make the offset different during runtime (compile time would still work fine).
 
 Every Environment instance has the following queues:
-
+```c++
     HandleWrapQueue handle_wrap_queue_;
     ReqWrapQueue req_wrap_queue_; 
+```
 
 And a typedef for this is created using a pointer-to-member: 
-
+```c++
     typedef ListHead<ReqWrap<uv_req_t>, &ReqWrap<uv_req_t>::req_wrap_queue_> ReqWrapQueue;
+```
 
 Each time a instance of ReqWrap is created that instance will be added to the queue:
-
+```c++
     env->req_wrap_queue()->PushBack(reinterpret_cast<ReqWrap<uv_req_t>*>(this));
+```
 
 
 ### Share AfterWrite with with udp_wrap and stream_wrap 
 So, the task is basically to follow this comment in udb_wrap.cc:
-
+```c++
     // TODO(bnoordhuis) share with StreamWrap::AfterWrite() in stream_wrap.cc
     void UDPWrap::OnSend(uv_udp_send_t* req, int status) {
+```
 
 At first glance this don't look that similar that they could be shared:
-
+```c++
      void UDPWrap::OnSend(uv_udp_send_t* req, int status) {
        SendWrap* req_wrap = static_cast<SendWrap*>(req->data);
        if (req_wrap->have_callback()) {
@@ -3117,9 +3157,10 @@ At first glance this don't look that similar that they could be shared:
       }
       delete req_wrap;
     }
+```
 
 `have_callback()` is a method on the SendWrap class and does not exist for WriteWrap.
-
+```c++
    void StreamWrap::AfterWrite(uv_write_t* req, int status) {
     WriteWrap* req_wrap = WriteWrap::from_req(req);
     CHECK_NE(req_wrap, nullptr);
@@ -3127,10 +3168,11 @@ At first glance this don't look that similar that they could be shared:
     Context::Scope context_scope(req_wrap->env()->context());
     req_wrap->Done(status);
   }
+```
 
 First thing to notice is the checking for a callback, StreamWrap::AfterWrite seems to assume that there will
 always be a callback by looking at `req_wrap->Done`:
-
+```c++
       inline void Done(int status, const char* error_str = nullptr) {
          Req* req = static_cast<Req*>(this);
          Environment* env = req->env();
@@ -3139,19 +3181,19 @@ always be a callback by looking at `req_wrap->Done`:
          }
         cb_(req, status);
       }
-
-
+```
 
 When `DoShutdown` is called the last thing that is done is:
-
+```c++
     req_wrap->Dispatched();
+```
 
 which will set req_.data = this; this being the Shutdown wrap instance. Later when the `AfterShutdown` method is called that instance will be available 
 by using the req->data.
 
 
 ### Stream class hierarchy
-
+```
     class TTYWrap : public StreamWrap
 
     class PipeWrap : public ConnectionWrap<PipeWrap, uv_pipe_t>
@@ -3165,19 +3207,21 @@ by using the req->data.
 
     class StreamBase : public StreamResource
     class StreamResource
+```
 
 
 ### Wrapped 
-
+```javascript
     var TCP = process.binding('tcp_wrap').TCP;
     var TCPConnectWrap = process.binding('tcp_wrap').TCPConnectWrap;
     var ShutdownWrap = process.binding('stream_wrap').ShutdownWrap;
 
     var client = new TCP();
     var shutdownReq = new ShutdownWrap();
+```
 
-This above will invoke the constructor set up by TCPWrap::Initialize:
-
+This above will invoke the constructor set up by `TCPWrap::Initialize`:
+```c++
     auto constructor = [](const FunctionCallbackInfo<Value>& args) {
       CHECK(args.IsConstructCall());
     };
@@ -3185,22 +3229,26 @@ This above will invoke the constructor set up by TCPWrap::Initialize:
     cwt->InstanceTemplate()->SetInternalFieldCount(1);
     SetClassName(FIXED_ONE_BYTE_STRING(env->isolate(), "TCPConnectWrap"));
     Set(FIXED_ONE_BYTE_STRING(env->isolate(), "TCPConnectWrap"), GetFunction());
+```
 
 The only thing the constructor does is check that `new` is used with the function (as in new ShutdownWrap).
-
+```javascript
     var err = client.shutdown(shutdownReq);
+```
 
-The methods available to a TCP instance are also configured in TCPWrap::Initialize. The `shutdown` method is set up using the 
+The methods available to a TCP instance are also configured in `TCPWrap::Initialize`. The `shutdown` method is set up using the 
 following call:
-
+```c++
     StreamWrap::AddMethods(env, t, StreamBase::kFlagHasWritev);
+```
 
 `src/stream_base-inl.h` contains the shutdown method:
-
+```c++
     env->SetProtoMethod(t, "shutdown", JSMethod<Base, &StreamBase::Shutdown>); 
+````
 
 So we are using a referece to StreamBase::Shutdown which can be found in src/stream_base.cc:
-
+```c++
    int StreamBase::Shutdown(const FunctionCallbackInfo<Value>& args) {
      Environment* env = Environment::GetCurrent(args);
  
@@ -3211,25 +3259,30 @@ So we are using a referece to StreamBase::Shutdown which can be found in src/str
                                                req_wrap_obj,
                                                this,
                                                AfterShutdown);
+```
 
 The Shutdown constructor delegates to ReqWrap:
-
+```c++
     ReqWrap(env, req_wrap_obj, AsyncWrap::PROVIDER_SHUTDOWNWRAP),
+```
 
 Which delegates to AsyncWrap:
-
+```c++
     AsyncWrap(env, req_wrap_obj, AsyncWrap::PROVIDER_SHUTDOWNWRAP),
+```
 
 Which delegates to BaseObject:
-
+```c++
     BaseObject(env, req_wrap_obj)
+````
 
 req_wrap_obj is refered to handle in BaseObject and is made into a persistent V8 handle
 
 `AfterShutdown` is of type typedef void (*DoneCb)(Req* req, int status). This callback is passed to the constructor of 
 StreamReq:
-
+```c++
     StreamReq<ShutdownWrap>(cb)
+```
 
 This will simply store the callback in a private field.
 
@@ -3517,8 +3570,9 @@ The function pointer is to a function that returns void and takes a void pointer
 mp->nm_register_func(exports, module, mp->nm_priv);
 
 The above call can be found in `DLOpen` in src/node.cc`. The first thing that happens in DLOpen is:
-
+```c++
     Environment* env = Environment::GetCurrent(args);
+```
 
 I've covered the setting of the Environment in `AssignToContext` previously. This is done by the Environment contructor and by 
 node_contextify.cc. 
@@ -3526,7 +3580,7 @@ node_contextify.cc.
 
 The only `Start` function exposed in node.h is the one that takes `argc` and `argv`. Calling node::Start multiple times does
 not work and result in the following error:
-
+```console
 # Fatal error in ../deps/v8/src/isolate.cc, line 2021
 # Check failed: thread_data_table_.
 #
@@ -3554,21 +3608,22 @@ not work and result in the following error:
     19  cctest                              0x0000000100147a5b main + 43
     20  cctest                              0x00000001000010f4 start + 52
 make: *** [cctest] Illegal instruction: 4
+```
 
 The Environment created when using the above start function is done in
-
+```c++
     inline int Start(Isolate* isolate, IsolateData* isolate_data,
                      int argc, const char* const* argv,
                      int exec_argc, const char* const* exec_argv) {
-
-
+```
 Would it be safe to use GetCurrent using the isolate in 
 
 
 
 ### Thread-local
-
+```c++
     static thread_local Environment* thread_local_env;
+```
 
 The object is allocated when the thread begins and deallocated when the thread ends. Each thread has its own instance of the object. 
 Only objects declared thread_local have this storage duration.  thread_local can appear together with static or extern to adjust linkage.
@@ -3580,7 +3635,7 @@ But without the static linkage it would be external by default which is not what
 When used in a declaration of an object, it specifies static storage duration (except if accompanied by thread_local). When used in a declaration at 
 namespace scope, it specifies internal linkage.
 
-
+```console
 Using a `while(more == true)' :
     0x1011d81a9 <+1177>: jmp    0x1011d81ae               ; <+1182> at node.cc:4453
     0x1011d81ae <+1182>: movb   -0xd31(%rbp), %al         ; move byte value of -0xd31(%rpb) (move variable) into al register
@@ -3601,6 +3656,7 @@ Compared to using `while(more)`:
 
     0x1011d81bb <+1195>: leaq   -0xd30(%rbp), %rdi
     0x1011d81c2 <+1202>: callq  0x1002214e0               ; v8::SealHandleScope::~SealHandleScope at api.cc:926
+```
 
 
 #### Calling conventions
@@ -3619,25 +3675,27 @@ Function name is decorated by prepending an underscore character and appending a
 
 ### Issue
 When running the Node.js build on windows (trying to get cctest to work for a test I added), I got the following link error:
-
+```console
     env.obj : error LNK2001: unresolved external symbol 
     "public: __cdecl node::Utf8Value::Utf8Value(class v8::Isolate *,class v8::Local<class v8::Value>)" (??0Utf8Value@node@@QEAA@PEAVIsolate@v8@@V?$Local@VValue@v8@@@3@@Z) [c:\workspace\node-compile-windows\label\win-vs2015\cctest.vcxproj]
+```
 
 Now, we can see that the calling convention used is `__cdecl` but the name mangling does not look correct as it is using @@
-
-
-
+```c++
     process_title.len = argv[argc - 1] + strlen(argv[argc - 1]) - argv[0];
+```
 
 This would be the same as :
-
+```console
     (lldb) p (size_t) argv[argc-1] + (size_t) strlen(argv[argc-1]) - (size_t)argv[0]
     (unsigned long) $9 = 56
+```
 
 When in my unit test the same gives me:
-
+```console
     (lldb) p (size_t) argv[argc-1] + (size_t) strlen(argv[argc-1]) - (size_t)argv[0]
     (unsigned long) $10 = 34693
+```
 
 What is happening is that we are taking the memory address of argv[argc-1] + 
 
@@ -3646,12 +3704,13 @@ The task a hand was to debug Realm's addon to see why test were just hanging eve
 So, realm is a normal dependency and exist in node_modules.
 
 Setup:
-
+```console
     $ npm install --save realm
     $ cd node_modules/realm
     $ env REALMJS_USE_DEBUG_CORE=true node-pre-gyp install --build-from-source --debug
     $ lldb -- node test/datastores/realm-store-test.js
     (lldb) breakpoint set --file node_init.cpp --line 26
+```
 
 It turns out that when breaking in the debugger (CTRL+C) and then stepping through it was in a kevent and this migth be some kind of
 listerner for events, and there is a realm.removeAllListeners() that can be called and this solved my issue.
@@ -3663,19 +3722,22 @@ For example the target named `cctest` will generate out/cctest.target.mk file.
 
 ### Profiling
 You can use Google V8's built in profiler using the `--prof` command line option:
-
+```console
     $ out/Debug/node --prof test.js
+```
 
 
 This will generate a file in the current directory named something like `isolate-0x104005e00-v8.log`.
 Now we can process this file:
-
+```console
     $ export D8_PATH=~/work/google/javascript/v8/out/x64.debug
     $ deps/v8/tools/mac-tick-processor isolate-0x104005e00-v8.log
+```
 
 or you can use node's `---prof-process` option:
-
+```console
     $ ./out/Debug/node --prof-process isolate-0x104005e00-v8.log
+```
 
     Statistical profiling result from isolate-0x104005e00-v8.log, (332 ticks, 86 unaccounted, 0 excluded).
 
@@ -3683,6 +3745,7 @@ or you can use node's `---prof-process` option:
 The profiler is sample based so with wakes up and takes a sample. The intervals that is wakes up is called a tick. It will look
 at where the instruction pointer is RIP and reports the function if that function can be resolved. If cannot resolve the function
 this will be reported as an unaccounted tick.
+```console
 
     [Summary]:
      ticks  total  nonlib   name
@@ -3691,19 +3754,21 @@ this will be reported as an unaccounted tick.
         4    1.2%    1.2%  GC
        10    3.0%          Shared libraries
        86   25.9%          Unaccounted
+```
 
 We can see that `71.1%` of the time was spent in C++ code. Inspecting the C++ section you should be able to see were the most
 time is being spent and the sources.
 
-
+```console
     [C++]:
      ticks  total  nonlib   name
        66   19.9%   20.5%  node::ContextifyScript::New(v8::FunctionCallbackInfo<v8::Value> const&)
        20    6.0%    6.2%  node::Binding(v8::FunctionCallbackInfo<v8::Value> const&)
         5    1.5%    1.6%  v8::internal::HandleScope::ZapRange(v8::internal::Object**, v8::internal::Object**)
+```
 
 The `[Bottom up]` section shows us which the primary callers of the above are:
-
+```console
 
     [Bottom up (heavy) profile]:
     Note: percentage shows a share of a particular caller in the total amount of its parent calls.
@@ -3727,6 +3792,7 @@ The `[Bottom up]` section shows us which the primary callers of the above are:
         2    3.0%            LazyCompile: ~createWritableStdioStream internal/process/stdio.js:134:35
         2    3.0%            Function: ~<anonymous> fs.js:1:11
         2    3.0%            Function: ~<anonymous> buffer.js:1:11
+```
 
 LazyCompile: Simply means that the function was complied lazily and not that this was the time spent compiling.
 * before function name means that time is being spent in optimized function.
@@ -3735,17 +3801,21 @@ LazyCompile: Simply means that the function was complied lazily and not that thi
 The % in the parent column shows the percentage of samples for which the function in the row above was called by the
 function in the current row.
 So, 
+```console
 
        66   19.9%  node::ContextifyScript::New(v8::FunctionCallbackInfo<v8::Value> const&)
        66  100.0%    v8::internal::Builtin_HandleApiCall(int, v8::internal::Object**, v8::internal::Isolate*)
+```
 
 would be read as when `v8::internal::Builting_HandleApiCall` was sampled it called node:ContextifyScript every time.
 And
+```console
 
        66  100.0%          LazyCompile: ~NativeModule.require bootstrap_node.js:443:34
        15   22.7%            LazyCompile: ~startup bootstrap_node.js:12:19
+```
 that when startup in bootstrap_node.js was called, in 22% of the samples it called NativeModule.require.
-
+```console
 
     [Shared libraries]:
      ticks  total  nonlib   name
@@ -3753,21 +3823,24 @@ that when startup in bootstrap_node.js was called, in 22% of the samples it call
         2    0.6%          /usr/lib/system/libsystem_platform.dylib
         1    0.3%          /usr/lib/system/libsystem_malloc.dylib
         1    0.3%          /usr/lib/system/libsystem_c.dylib
+```
 
 
 
 ### setTimeout
 
 Let's take the following example:
-
+```javascript
     setTimeout(function () {
       console.log('bajja');
     }, 5000);
+```
+```console
+$ ./out/Debug/node --inspect --debug-brk settimeout.js
+```
 
-    $ ./out/Debug/node --inspect --debug-brk settimeout.js
-
-In Node you can call setTimeout with out having a require. This is done by lib/boostrap_node.js:
-
+In Node you can call setTimeout with out having a require. This is done by `lib/boostrap/node.js`:
+```javascript
     function setupGlobalTimeouts() {
       const timers = NativeModule.require('timers');
       global.clearImmediate = timers.clearImmediate;
@@ -3777,12 +3850,13 @@ In Node you can call setTimeout with out having a require. This is done by lib/b
       global.setInterval = timers.setInterval;
       global.setTimeout = timers.setTimeout;
    }
+```
 
 So we can see that we are able to call setTimout without having to require any module and that it is part of a
 native modules named timers. This is located in lib/timers.js.
 
 The first thing that will happen is a new Timeout will be created in `createSingleTimeout`. A timeout looks like:
-
+```javascript
     function Timeout(after, callback, args) {
       this._called = false;
       this._idleTimeout = after;  // this will be 5000 in our use-case
@@ -3793,32 +3867,37 @@ The first thing that will happen is a new Timeout will be created in `createSing
       this._timerArgs = args;
       this._repeat = null;
     }
+```
 
 This `timer` instance is then passed to `active(timer)` which will insert the timer by calling `insert`:
-
+```javascript
      insert(item, false);
+```
 
-(`item` is the timer, and false is the value of the unrefed argument)
-
+`item` is the timer, and false is the value of the unrefed argument)
+```javascript
     item._idleStart = TimerWrap.now();
 
 So we can see that we are using timer_wrap which is located in src/timer_wrap.cc and the now function which is 
 initialized to:
-
+```c++
     env->SetTemplateMethod(constructor, "now", Now);
+```
 
 Back in the insert function we then have the following:
-
+```javascript
     const lists = unrefed === true ? unrefedLists : refedLists;
+```
 
 We know that unrefed is false so lists will be the refedLists which is an object keyed with the millisecond that a timeout is due
 to expire. The value of each key is a linkedlist of timers that expire at the same time. 
-
+```javascript
     var list = lists[msecs];
+```
 
 If there are other timers that also expire after 5000ms then there might already be a list for them. But in this case there is not
 and a new list will be created:
-
+```javascript
     lists[msecs] = list = createTimersList(msecs, unrefed);
 
     const list = new TimersList(msecs, unrefed); // 5000 and false
@@ -3830,14 +3909,18 @@ and a new list will be created:
       this._unrefed = unrefed; // will be false in our case
       this.msecs = msecs; // will be 5000 in our case
    }
+```
 
 The `new TimerWrap` call will invoke `New` in timer_wrap.cc as setup in the initialize function:
-
+```c++
     Local<FunctionTemplate> constructor = env->NewFunctionTemplate(New);
+```
 
 `New` will invoke TimerWrap's constructor which does:
 
+```c++
     int r = uv_timer_init(env->event_loop(), &handle_);
+```
 
 So we can see that it is setting up a libuv [timer](https://github.com/danbev/learning-libuv/blob/master/timer.c).
 Shortly after we have the following code (back in JavaScript land and lib/timers.js):
@@ -3845,12 +3928,14 @@ Shortly after we have the following code (back in JavaScript land and lib/timers
 Next the list (TimerList) is initialized setting _idleNext and _idlePrev to list. After this we are adding
 a field to the list:
 
+```javascript
     list._timer._list = list;
 
     list._timer.start(msecs);
+```
 
 Start is initialized using :
-
+```c++
     env->SetProtoMethod(constructor, "start", Start);
 
     static void Start(const FunctionCallbackInfo<Value>& args) {
@@ -3862,10 +3947,12 @@ Start is initialized using :
       int err = uv_timer_start(&wrap->handle_, OnTimeout, timeout, 0);
       args.GetReturnValue().Set(err);
    }
+```
 
 Compare this with [timer.c](https://github.com/danbev/learning-libuv/blob/master/timer.c). and you can see that these is not
 that much of a difference. Let's look at the callback OnTimeout:
 
+```c++
     static void OnTimeout(uv_timer_t* handle) {
       TimerWrap* wrap = static_cast<TimerWrap*>(handle->data);
       Environment* env = wrap->env();
@@ -3873,9 +3960,10 @@ that much of a difference. Let's look at the callback OnTimeout:
       Context::Scope context_scope(env->context());
       wrap->MakeCallback(kOnTimeout, 0, nullptr);
     }
+```
 
 The callback in question looks like:
-
+```console
     0xa90abea6961: [Function]
      - map = 0x2fecee786da1 [FastProperties]
      - prototype = 0x1b3829484539
@@ -3892,19 +3980,23 @@ The callback in question looks like:
         #name: 0x35bd747eedc1 <AccessorInfo> (const accessor descriptor)
         #prototype: 0x35bd747eee31 <AccessorInfo> (const accessor descriptor)
      }
+```
 
-Notice that the callback is `listOnTimeout` and this can be found in lib/timer.js.
+Notice that the callback is `listOnTimeout` and this can be found in `lib/timer.js`.
 
 ### setImmediate
 The very simple JavaScript looks like this:
 
+```javascript
     setImmediate(function () {
       console.log('bajja');
     });
+```
 
 Like setTimeout the implementation is found in lib/timers.js. 
 A new Immediate will be created in `createImmediate` which looks like this:
 
+```javascript
     function Immediate() {
       // assigning the callback here can cause optimize/deoptimize thrashing
       // so have caller annotate the object (node v6.0.0, v8 5.0.71.35)
@@ -3915,13 +4007,16 @@ A new Immediate will be created in `createImmediate` which looks like this:
       this._onImmediate = null;
       this.domain = process.domain;
     }
+```
 
 The following check will then be done:
 
+```javascript
     if (!process._needImmediateCallback) {
       process._needImmediateCallback = true;
       process._immediateCallback = processImmediate;
     }
+```
 
 In this case `process._needImmediateCallback` is false so we'll enter the above block and set process._needImmediateCallback
 to `true`. 
@@ -3929,16 +4024,18 @@ to `true`.
 Also, notice that we are setting the processImmediate instance as a member of the process object. 
 `processImmediate` is a function defined in timer.js. There is a V8 accessor for the field `_immediateCallback` on the process object which is set up in node.cc (SetupProcessObject function):
 
+```javascript
     auto need_immediate_callback_string =
         FIXED_ONE_BYTE_STRING(env->isolate(), "_needImmediateCallback");
     CHECK(process->SetAccessor(env->context(), need_immediate_callback_string,
                                NeedImmediateCallbackGetter,
                                NeedImmediateCallbackSetter,
                                env->as_external()).FromJust());
-
+```
 So when we do `process_.immediateCallback` `NeedImmediateCallbackSetter` will be invoked.
 Looking closer at this function and comparing it with a [libuv check example](https://github.com/danbev/learning-libuv/blob/master/check.c) we should see some similarties.
 
+```c++
     uv_check_t* immediate_check_handle = env->immediate_check_handle();
 
     uv_idle_t* immediate_idle_handle = env->immediate_idle_handle();
@@ -3946,11 +4043,12 @@ Looking closer at this function and comparing it with a [libuv check example](ht
     uv_check_start(immediate_check_handle, CheckImmediate);
     // Idle handle is needed only to stop the event loop from blocking in poll.
     uv_idle_start(immediate_idle_handle, IdleImmediateDummy);
+```
 
 So we can see that when this setter is called it will set up check handle (if the value
 was true as in `process._needImmediateCallback = true`).
 When the check phase is reached the `CheckImmediate` callback will be invoked. Lets set a breakpoint in that function and verify this:
-
+```console
     (lldb) breakpoint set --file node.cc --line 286 
 
     static void CheckImmediate(uv_check_t* handle) {
@@ -3959,60 +4057,80 @@ When the check phase is reached the `CheckImmediate` callback will be invoked. L
       Context::Scope context_scope(env->context());
       MakeCallback(env, env->process_object(), env->immediate_callback_string());
     }
+```
 
 Following `MakeCallback` will will find ourselves in timers.js and its `processImmediate` function which you might recall that we set:
 
+```javascript
      process._immediateCallback = processImmediate;
 
      immediate._callback = immediate._onImmediate;
+```
 
 `immediate._onImmediate` will be our callback function (anonymous in setimmediate.js)
 
+```javascript
     tryOnImmediate(immediate, tail);
+```
 
 will call:
 
+```javascript
     runCallback(immediate);
+```
 
 will call:
 
+```javascript
     return timer._callback();
+```
 
 And the callback is:
 
+```javascript
     function () {
        console.log('bajja');
     }
+```
 
 And there we have how setImmediate works in Node.js.
 
 ### process._nextTick
 The very simple JavaScript looks like this:
 
+```javascript
     process.nextTick(function () {
       console.log('bajja');
     });
+```
 
 `nextTick` is defined in `lib/internal/process/next_tick.js`.
 After a few checks what happens is that the callback is added to the nextTickQueue:
 
+```javascript
     nextTickQueue.push({
       callback,
       domain: process.domain || null,
       args
     });
+```
 
 `nextTickQueue` is an array:
 
+```javascript
     var nextTickQueue = [];
+```
 
 And we are pushing an object with the callback as a function named callback, domain
 and args. So for every nextTick called an entry will be added to the queue. 
 
+```javascript
     tickInfo[kLength]++;
+```
 
 Recall that TickInfo is an inner class of Environment. Lets back up a little. `bootstrap_node.js` will call next_tick's setup() function from its start function:
 
+```javascript
     NativeModule.require('internal/process/next_tick').setup();
 
     exports.setup = setupNextTick;
@@ -4035,32 +4153,41 @@ Recall that TickInfo is an inner class of Environment. Lets back up a little. `b
     // can have easy access to our nextTick state, and avoid unnecessary
     // calls into JS land.
     const tickInfo = process._setupNextTick(_tickCallback, _runMicrotasks);
+```
 
 `process._setupNextTick` is initialized in `SetupProcessObject` in src/node.cc:
 
+```c++
     env->SetMethod(process, "_setupNextTick", SetupNextTick);
+```
 
 Lets take a look at what SetupNextTick does...
 
+```c++
     env->set_tick_callback_function(args[0].As<Function>());
 
     env->SetMethod(args[1].As<Object>(), "runMicrotasks", RunMicrotasks);
+```
 
 So, here we are setting a method named `runMicrotasks` on the `_runMicrotasks` object
 passed to `_setupNextTick`.
 
+```c++
     // Do a little housekeeping.
     env->process_object()->Delete(
         env->context(),
         FIXED_ONE_BYTE_STRING(args.GetIsolate(), "_setupNextTick")).FromJust();
+```
 
 Looks like this removes the _setupNextTick function from the process object.
 
+```c++
     uint32_t* const fields = env->tick_info()->fields();
     uint32_t const fields_count = env->tick_info()->fields_count();
+```
 
 What are 'fields'? What are 'fields_count'?  
-
+```console
     (lldb) p fields_count
     (uint32_t) $23 = 2
 
@@ -4068,28 +4195,37 @@ What are 'fields'? What are 'fields_count'?
         ArrayBuffer::New(env->isolate(), fields, sizeof(*fields) * fields_count);
 
     args.GetReturnValue().Set(Uint32Array::New(array_buffer, 0, fields_count));
+```
 
 So `tickInfo` returned will be an ArrayBuffer:
 
+```javascript
     const tickInfo = process._setupNextTick(_tickCallback, _runMicrotasks);
+```
 
 Next we assign the `RunMicroTasks` callback to the `_runMicrotasks` variable:
 
+```javascript
     _runMicrotasks = _runMicrotasks.runMicrotasks;
+```
 
 After this we are done in bootstrap_node.js and the setup of next_tick.
 So, lets continue and break in our script and follow process.setNextTick.
 
+```javascript
     nextTickQueue.push({
       callback,
       domain: process.domain || null,
       args
     });
+```
 
 So we are again showing that we add callback info to the nextTickQueue (after a few checks)
 Then we do the following:
 
+```javascript
     tickInfo[kLength]++;
+```
 
 For each object added to the nextTickQueue we will increment the second element of the tickInfo
 array.
@@ -4097,6 +4233,7 @@ array.
 And that is it, the stack frames will start returning and be poped off the call stack. What we
 are interested in is in module.js and `Module.runMain`:
   
+```javascript
     process._tickCallback();
 
 
@@ -4109,13 +4246,15 @@ are interested in is in module.js and `Module.runMain`:
            tickDone();
       }
     } while (tickInfo[kLength] !== 0);
+```
 
 The check is to see if tickInfo[kIndex] (is this the index of being processed?) is less than
 the number of tick callbacks in the `nextTickQueue`.
 Next tickInfo[kIndex] is retrieved from the nextTickQueue and then tickInfo[kIndex] is incremented.
 
-`tickDone()`  
+`tickDone()`:
 
+```javascript
     function tickDone() {
       if (tickInfo[kLength] !== 0) {
         if (tickInfo[kLength] <= tickInfo[kIndex]) {
@@ -4128,10 +4267,13 @@ Next tickInfo[kIndex] is retrieved from the nextTickQueue and then tickInfo[kInd
       }
       tickInfo[kIndex] = 0;
      }
+```
 
 Lets take a look at:
 
+```javascript
     if (tickInfo[kLength] <= tickInfo[kIndex]) {
+```
 
 If the number of callbacks added is less than or equal to the just processed callbacks index this would mean
 that all of the callbacks in the queue have been processed and the following clause will make nextTickQueue 
@@ -4139,8 +4281,10 @@ point to an empty array and reset tickInfo[kLength] to zero.
 But if there are more callback in the queue than the just processed callbacks index the else clause will be 
 taken:
 
+```javascript
     nextTickQueue.splice(0, tickInfo[kIndex]);
     tickInfo[kLength] = nextTickQueue.length;
+```
 
 splice will remove all elements from 0 to tickInfo[kIndex], which is removing all the processed callbacks.
 The new length is set as tickInfo[kLength]. This is done so that the nextTickQueue array does not become
@@ -4150,15 +4294,17 @@ happening.
 #### Compiling with a different version of libuv
 What I'd like to do is use my local fork of libuv instead of the one in the deps
 directory. I think the way to do this is to `make install` and then run configure with the following options:
-
+```console
     $ ./configure --debug --shared-libuv --shared-libuv-includes=/usr/local/include
+```
 
 The location of the library is `/usr/local/lib`, and `/usr/local/include` for the headers on my machine.
 
 ### Updating addons test
 Some of the addons tests are not version controlled but instead generate using:
-
+```console
    $ ./node tools/doc/addon-verify.js doc/api/addons.md
+```
 
 The source for these tests can be found in `doc/api/addons.md` and these might need to be updated if a 
 change to all tests is required, for a concrete example we wanted to update the build/Release/addon directory
@@ -4167,11 +4313,12 @@ to be different depending on the build type (Debug/Release) and I forgot to upda
 
 ### Using nvm with Node.js source
 Install to the nvm versions directory:
-
+```console
     $ make install DESTDIR=~/.nvm/versions/node/ PREFIX=v8.0.0
+```
 
 You can then use nvm to list that version and versions:
-  
+```console
    $ nvm ls 
          v6.5.0
          v7.0.0
@@ -4179,18 +4326,21 @@ You can then use nvm to list that version and versions:
          v8.0.0
 
    $ nvm use 8
+```
 
 ### lldb
 There is a [.lldbinit](./.lldbinit) which contains a number of useful alias to 
 print out various V8 objects. This are most of the aliases defined in [gdbinit](https://github.com/v8/v8/blob/master/tools/gdbinit).
 
 For example, you can print a v8::Local<v8::Function> using the builtin print command:
+```console
 
     (lldb) p init_fn
     (v8::Local<v8::Function>) $3 = (val_ = 0x000000010484f900)
+```
 
 This does not give much, but if we instead use jlh:
-
+```console
     (lldb) jlh init_fn
     0x19417e265ba9: [Function]
      - map = 0x382d7ba86ea9 [FastProperties]
@@ -4208,11 +4358,13 @@ This does not give much, but if we instead use jlh:
        #name: 0x18ede4850c49 <AccessorInfo> (accessor constant)
        #prototype: 0x18ede4850cb9 <AccessorInfo> (accessor constant)
      }
+```
 
 So that gives us more information, but lets say you'd like to see the name of the function:
-
+```console
     (lldb) jlh init_fn->GetName()
     #init
+```
 
 ### Promise builtin
 For debug the builtin promise we are going to disable V8 snapshots:
@@ -4295,49 +4447,61 @@ Just example commands that I use in different projects to run the debugger with
 different test suites.
 
 #### Mocha
-
+```console
     $ mocha --inspect --debug-brk  -u exports --recursive -t 10000 ./test/setup.js  test/sync/test_index.js
+```
 
 ### crypto
 The current version of openssl is 1.0.2k (run process.versions.openssl). So this is major version 1, minor 0
 and patch 2k I guess.
 To investigate lets take a look what happens when one requires crypto:
-
+```javascript
     const crypto = require('crypto');
-
+```
+```console
     $ lldb -- ./out/Debug/node crypto.js
+```
     
 src/node_crypto.cc is a builtin:
 
+```c++
     NODE_MODULE_CONTEXT_AWARE_BUILTIN(crypto, node::crypto::InitCrypto)
+```
 
 So, lets set a breakpoint in `InitCrypto`:
-
+```console
     (lldb) breakpoint set -f node_crypto.cc -l 6007
     (lldb) breakpoint set -f node_crypto.cc -l 5880
+```
 
 First things that happens is that libcrypto must be initializes. My understanding is that OpenSSL has two libraries which are 
 libssl which used libcrypto. Node is using libcrypto in this case.
 
 From InitCryptOnce:
-
+```c++
     SSL_load_error_strings();
     OPENSSL_no_config();
+```
 
 OPENSSL_no_config() marks OpenSSL as configured. It seems that if this is not done to avoid some of OpenSSLs standard init functions
 that automatically call the configuration to just return hence do nothing.
 
+```c++
    if (!openssl_config.empty())
+```
 This path would be taken if a openssl config had been passed using `--openssl-config`.
 
 Next, we have:
 
+```c++
     SSL_library_init();
+```
 
 This function can be found in `deps/openssl/openssl/ssl/ssl_algs.c`
 
+```c++
     EVP_add_cipher(EVP_des_cbc());
-
+```
 
 EVP I think stands for envelope and has a number of high level cryptographic functions.
 
@@ -4351,21 +4515,25 @@ removed. The intention was to create client side certificates
 
 #### Building with shared openssl
 Building an [locally built version](https://github.com/danbev/learning-libcrypto#building-openssl) of OpenSSL.
-
+```console
     $ ./configure --debug --shared-openssl --shared-openssl-libpath=/Users/danielbevenius/work/security/build_1_1_0g/lib --prefix=/Users/danielbevenius/work/nodejs/build --shared-openssl-includes=/Users/danielbevenius/work/security/build_1_1_0g/include
+```
 
 #### Building OpenSSL without elliptic curve support
-
+```console
     $ ./Configure no-ec --debug --prefix=/Users/danielbevenius/work/security/openssl/build  --libdir="openssl" darwin64-x86_64-cc
+```
 
 Then building Node against that version:
-
+```console
     $ ./configure --debug --shared-openssl --shared-openssl-libpath=/Users/danielbevenius/work/security/openssl/build/openssl --prefix=/Users/danielbevenius/work/nodejs/build --shared-openssl-includes=/Users/danielbevenius/work/security/openssl/build/include
+```
 
 This will not compile are the headers for ec will not exist in the `--shared-openssl-includes` directory. You'll have to use the source
 include directory instead so that all the headers can be found. 
-
+```console
     $ ./configure --debug --shared-openssl --shared-openssl-libpath=/Users/danielbevenius/work/security/openssl/build/openssl --prefix=/Users/danielbevenius/work/nodejs/build --shared-openssl-includes=/Users/danielbevenius/work/security/openssl/include
+```
 
 There will instead be a runtime error if you try to call functions that require EC but you'll be able to build.
 
@@ -4378,44 +4546,52 @@ install libraries in the system. For my system this will be:
 
 ### Building on Solaris
 I used VirtualBox to build and run the test suite on Solaris
-
+```console
     $ uname -a
     SunOS solaris 5.11 11.3 i86pc i386 i86pc
+```
 
 #### Setup
-
+```console
     $ sudo pkgadd -d http://get.opencsw.org/now
+```
 
 Install git:
-  
+```console
     $ sudo /opt/csw/bin/pkgutil -y -i git
     $ export PATH=/opt/csw/bin:$PATH      // added to ~/.bashrc
+```
 
 Install binutils:
-
+```console
     $ sudo pkgutil -y -i binutils
     $ export PATH=/opt/csw/bin:/opt/csw/gnu:$PATH
+```
 
 Set GNU Make as the default:
-
+```console
     $ sudo ln -s /usr/bin/gmake /usr/bin/make
+```
 
 Clone node:
-
+```console
     $ git clone https://github.com/nodejs/node.git
+```
 
 Install gcc 49:
-
+```console
     $ sudo pkg install --accept --license gcc-49
-
     $ gmake CXXFLAGS+="--function-sections -fdata-sections"
+```
 
 Install stdc++6:
-
+```console
     $ sudo pkgchk -L CSWlibstdc++6
     $ export LD_LIBRARY_PATH=/opt/csw/lib/:$LD_LIBRARY_PATH
+```
 
 Patches:
+```console
 danbev@solaris:~/work/node$ git show 8ff7afd
 commit 8ff7afd2aba1cc13348e5d639f292b2fbb3b86d0
 Author: Daniel Bevenius <daniel.bevenius@gmail.com>
@@ -4442,7 +4618,8 @@ index 2407844..4bd3769 100644
        ]
      }
    ], # end targets
-
+```
+```console
 danbev@solaris:~/work/node$ git show 68c396b
 commit 68c396be00896801bb92b5705da240d9aef30890
 Author: Daniel Bevenius <daniel.bevenius@gmail.com>
@@ -4473,22 +4650,25 @@ index 3aad8e7..e001a1d 100644
              'cflags': [ '-pthreads' ],
              'ldflags': [ '-pthreads' ],
              'cflags!': [ '-pthread' ],
+```
 
 
 
 Build and run node tests:
-
+```console
     $ gmake cctest
+```
 
 
 ### Building on Windows
 I used VirtualBox to build and run the test suite on Windows
-
+```console
     $ .\vcbuild test
+```
 
 
 ### Debugging 
-
+```console
     $ lldb -- out/Debug/cctest
     (lldb) r
     [ RUN      ] EnvironmentTest.MultipleEnvironmentsPerIsolate
@@ -4518,21 +4698,24 @@ libsystem_kernel.dylib`__pthread_kill:
  - hash: 171677908
  - name: 0x1e9a8f728211 <String[15]: node:alpnBuffer>
  - private: 1
+```
 
 
 ### Switching between clang and gcc
-
+```console
     CXX=g++ CXX.host=g++ && ./configure -- -Dclang=0.
-
+```
 
 ### [Ninja](https://ninja-build.org/)
 
 Macosx:
+```console
  
     $ ./configure --ninja
     $ ninja -C out/Release
 
     $ ./configure && tools/gyp_node.py -f ninja && ninja -C out/Release && ln -fs out/Release/node node
+```
 
 This will generate object files in `out/Release/src/` but the names will be `obj/src/node.node.o` instead of `obj/src/node/node.o`. This matters
 as we generete object files for different operating systems. 
@@ -4543,29 +4726,30 @@ If you take a look in out/Release/ninja.build you'll find a bunch of subninja co
     subninja obj/node.ninja
 
 #### Building with Ninja linux
-
+```console
     $ dnf install ninja-build
     $ ./configure --debug --ninja
     $ ninja-build -C out/Release
     $ out/Release/cctest
+```
 
 #### Building with Ninja on windows
 You'll need to install Visual Studion 2015 and make sure you select Common Tools for C++.
 
 Open cmd with administrator priveliges (Start -> Search for cmd ->CTRL+SHIFT+ENTER):
-
+```console
     > python configure --debug --ninja --dest-cpu=x86 --without-intl
     > tools\gyp_node.py -f ninja
     > ninja -C out\Release
     > out\Release\cctest.exe
-
+```
 
 ### Linux getauxval
 A good description of this can be found here:
 https://lwn.net/Articles/519085/
 
 The getauxval is a function that was added in glibc 2.16
-
+```c
     #if defined(__linux__) && defined(__GLIBC__) && defined(__GLIBC_PREREQ)
     # if __GLIBC_PREREQ(2, 16)
     #   define HAS_GETAUXVAL 1
@@ -4592,52 +4776,60 @@ The getauxval is a function that was added in glibc 2.16
     AT_RANDOM:       0x7fff503dddc9
     AT_EXECFN:       ./node
     AT_PLATFORM:     x86_64
+```
 
 To force the setting of AT_SECURE:
+```console
 
     $ setcap cap_net_raw+ep out/Release/node
     $ getcap out/Release/node
     $ useradd beve
     $ su beve
     $ ./out/Release/node
+```
 
 #### Show all v8 exceptions
-
+```console
     $ out/Release/node --print_all_exceptions /work/node/test/parallel/test-process-setuid-setgid.js
+```
 
 #### Creating patches
 I've found that I need to create patches from old patches that worked with a previous version. At work we 
 apply patches to node sources and when new versions are released these patches might not apply cleanly making
 it a manual task to make updates to that tag and then generating the patches to be applied.
+```console
 
    $ patch -p1 < 000x-something.patch
    $ git diff --patch-with-stat > patch.out
+```
 Then I just copy this and replace the original patch section, but keeping the rest of the original patch.
 Then try to apply the patch again to make sure it applied cleanly
 
 
 #### Cherry pick a V8 commit
-
+```console
     $ git format-patch -1 --stdout f5fad6d > out.patch
     $ git am --directory deps/v8  ~/work/google/javascript/v8/verbose.patch
+```
 
 Don't forget to bump the patch version in deps/v8/include/v8-version.h
 Also common common.gypi needs to be updated as well:
 ```console
 'v8_embedder_string': '-node.5',
 ```
-
-
 #### HTTP/2
-
+```javascript
     const server = h2.createServer();
+```
 
-createServer is defined in lib/internal/http2/core.js and it returns a 
+`createServer` is defined in `lib/internal/http2/core.js` and it returns a 
 new Http2Server.
 Http2Server extends Server in net.js. After calling the super classes constructor
 the following call is performed:
 
+```javascript
     this.on('newListener', setupCompat);
+```
 
 setupCompat is a event listener callback which only handles 'request' events, 
 in which case it 
@@ -4646,73 +4838,93 @@ in which case it
 ### Messages/Exceptions with V8
 Each V8 Isolate allows listeners to be added for various error messages/exceptions.
 
+```c++
     isolate->AddMessageListener(OnMessage);
     isolate->SetFatalErrorHandler(OnFatalError);
     isolate->SetAbortOnUncaughtExceptionCallback(ShouldAbortOnUncaughtException);
+```
 
 `AddMessageListener` is a callback that will be called when an error occurs. How does this work then?
 
 When a script is run, for example:
-
+```javascript
     const char *js = "age = ajj40";  // intentionally trigger an exception
     Local<String> source = String::NewFromUtf8(isolate, js, NewStringType::kNormal).ToLocalChecked();
     Local<Script> script = Script::Compile(context, source).ToLocalChecked();
     Local<Value> result = script->Run(context).ToLocalChecked();
+```
 
 Script::Run can be found in api.cc 
-
+```console
     (lldb) br s -f api.cc -l 2017
+```
 
+```c++
     has_pending_exception = !ToLocal<Value>(i::Execution::Call(isolate, fun, receiver, 0, nullptr), &result);
+```
 
 See the returned value is a bool indicating if there was an error. 
 `i::Execution::Call` will call:
 
+```c++
     return CallInternal(isolate, callable, receiver, argc, argv, MessageHandling::kReport)
+```
 
 Notice that in the MessageHandling::kReport being passed in. CallInternal looks like this (in our case):
 
+```c++
     return Invoke(isolate, false, callable, receiver, argc, argv, isolate->factory()->undefined_value(), message_handling);
 
     MUST_USE_RESULT MaybeHandle<Object> Invoke(
         Isolate* isolate, bool is_construct, Handle<Object> target,
         Handle<Object> receiver, int argc, Handle<Object> args[],
         Handle<Object> new_target, Execution::MessageHandling message_handling)
+```
 
 In our case the target is a JavaScript Function which can be checked by:
-
+```console
     (lldb) p target->IsJSFunction()
     (bool) $58 = true
+```
 
 This will cause us to enter the following block in the Invoke function:
 
+```c++
     if (target->IsJSFunction()) {
       Handle<JSFunction> function = Handle<JSFunction>::cast(target);
+```
      
 But there is a check:
 
+```c++
    if ((!is_construct || function->IsConstructor()) &&
         function->shared()->IsApiFunction()) {
+```
  
 which causes us to exit the block.
 
+```c++
     // Placeholder for return value.
     Object* value = NULL;
 
     typedef Object* (*JSEntryFunction)(Object* new_target, Object* target,
                                       Object* receiver, int argc,
                                       Object*** args);
+```
 
 So we are declaring a JSEntryFunction which is of type pointer to function that returns a pointer to Object
 and takes the arguments listed.
     
+```c++
     Handle<Code> code = is_construct
       ? isolate->factory()->js_construct_entry_code()
       : isolate->factory()->js_entry_code();
+```
 
 How are js_entry_code() set? 
 See `Heap objects` for details.
 
+```c++
     JSEntryFunction stub_entry = FUNCTION_CAST<JSEntryFunction>(code->entry());
 
     if (FLAG_clear_exceptions_on_js_entry) isolate->clear_pending_exception();
@@ -4727,21 +4939,27 @@ See `Heap objects` for details.
     }
     RuntimeCallTimerScope timer(isolate, &RuntimeCallStats::JS_Execution);
     value = CALL_GENERATED_CODE(isolate, stub_entry, orig_func, func, recv, argc, argv);
-
+```
+```console
     (lldb) br s -f execution.cc -l 145
+```
 
 CALL_GENERETED_CODE is a macro which is used to call code generated by one of the compilers. 
 I'm on a x64 some guessing that src/x64/simulator-x64.h is getting called which does:
 
+```c++
     // TODO(X64): Don't pass p0, since it isn't used?
    #define CALL_GENERATED_CODE(isolate, entry, p0, p1, p2, p3, p4) \
    (entry(p0, p1, p2, p3, p4))
+```
 
 Setting a breakpoint after this call we can inspect the value returned:
-
+```console
     (lldb) job value
     #exception
+```
 
+```c++
     // Update the pending exception flag and return the value.
     bool has_exception = value->IsException(isolate);
     DCHECK(has_exception == isolate->has_pending_exception());
@@ -4753,18 +4971,23 @@ Setting a breakpoint after this call we can inspect the value returned:
     } else {
       isolate->clear_pending_message();
     }
+```
 
 Remember that we passed Execution::MessageHandling::kReport earlier so we will call isolate-ReportPendingMessages()
 
+```c++
     void Isolate::ReportPendingMessages() {
       DCHECK(AllowExceptions::IsAllowed(this));
 
       Object* exception = pending_exception();
+```
 
 pending_exception() performs some checks and then returns:
 
+```c++
     return thread_local_top_.pending_exception_;
-
+```
+```console
     (lldb) job exception
     0x94c7c108af1: [JS_ERROR_TYPE]
     - map = 0xcc576b8e179 [FastProperties]
@@ -4774,23 +4997,29 @@ pending_exception() performs some checks and then returns:
      #stack: 0x3aeec9e69bf1 <AccessorInfo> (const accessor descriptor)
      #message: 0x94c7c108ac9 <String[20]: ajj40 is not defined> (data field 0)
      0x37d706604d71 <Symbol: stack_trace_symbol>: 0x94c7c109099 <JSArray[6]> (data field 1)
+```
 
+```c++
 
     // Try to propagate the exception to an external v8::TryCatch handler. If
     // propagation was unsuccessful, then we will get another chance at reporting
     // the pending message if the exception is re-thrown.
     bool has_been_propagated = PropagatePendingExceptionToExternalTryCatch();
     if (!has_been_propagated) return;
+```
 
 Looking into PropagatePendingExceptionToExternalTryCatch:
 
+```c++
     bool Isolate::PropagatePendingExceptionToExternalTryCatch() {
       Object* exception = pending_exception();
+```
 
 The first thing it does is again call pending_exceptions() invoking the same checks are before
 which should really be the same. I wonder if there might be use for an overloaded function taking
 a pointer to exception?
 
+```c++
     HandleScope scope(this);
     Handle<JSMessageObject> message(JSMessageObject::cast(message_obj), this);
     Handle<JSValue> script_wrapper(JSValue::cast(message->script()), this);
@@ -4799,9 +5028,11 @@ a pointer to exception?
     int end_pos = message->end_position();
     MessageLocation location(script, start_pos, end_pos);
     MessageHandler::ReportMessage(this, &location, message);
+```
 
 `MessageHandler::ReportMessage` prepares the error message (very simplified) and ends up calling:
 
+```c++
     ReportMessageNoExceptions(isolate, loc, message, api_exception_obj);
 
 
@@ -4812,11 +5043,13 @@ a pointer to exception?
       v8::TryCatch try_catch(reinterpret_cast<v8::Isolate*>(isolate));
       callback(api_message_obj, callback_data->IsUndefined(isolate) ? api_exception_obj : v8::Utils::ToLocal(callback_data));
     }
+```
 
 This is the call that invokes are message callback. After this we will back out of the frame stacks. On thing I notice that there
 was an ExceptionScope which the deconstructor sets the exception object. Need to look into why this is done.
 So we will eventually end up back where in v8::Script::Run:
 
+```c++
     has_pending_exception = !ToLocal<Value>(i::Execution::Call(isolate, fun, receiver, 0, nullptr), &result);
 
     (lldb) p has_pending_exception
@@ -4824,9 +5057,11 @@ So we will eventually end up back where in v8::Script::Run:
 
      RETURN_ON_FAILED_EXECUTION(Value);
      RETURN_ESCAPED(result);
+```
 
 Lets take a closer look at RETURN_ON_FAILED_EXECUTION(Value):
 
+```c++
 #define RETURN_ON_FAILED_EXECUTION(T) \
   EXCEPTION_BAILOUT_CHECK_SCOPED(isolate, MaybeLocal<T>())
 
@@ -4839,14 +5074,18 @@ So that will be EXCEPTION_BAILOUT_CHECK_SCOPED(isolate, MaybeLocal<Value>()) whi
           return value;                                    \
         }                                                  \
      } while (false)
+```
 
 So in our case the value returned will be a MaybeLocal<Value> object.
 This is what gets returned here:
 
+```c++
     Local<Value> result = script->Run(context).ToLocalChecked();
+```
 
 Now, notice that we are calling ToLocalChecked(), which 
 
+```c++
     if (V8_UNLIKELY(val_ == nullptr)) V8::ToLocalEmpty();
 
     Utils::ApiCheck(false, "v8::ToLocalChecked", "Empty MaybeLocal.");
@@ -4857,6 +5096,7 @@ Now, notice that we are calling ToLocalChecked(), which
     FatalErrorCallback callback = isolate->exception_behavior();
 
     callback(location, message);
+```
 
 And this is where our OnFatalError function is called.
 But without the ToLocalChecked our OnFatalError would not be called.
@@ -4869,21 +5109,25 @@ in `CALL_GENERATED_CODE`. Now, if we set a breakpoint in file = 'isolate.cc', li
 which is the Throw function we can backtrace and see how we ended up there.
 ic.cc:2395:
 
+```c++
     v8::internal::Runtime_LoadGlobalIC_Miss
     Handle<Object> result;
     ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, result, ic.Load(name));
     return *result;
 
     MaybeHandle<Object> LoadIC::Load(Handle<Object> object, Handle<Name> name)
+```
 This will throw an ReferenceError in our case:
 
+```c++
     return ReferenceError(name);
 
     THROW_NEW_ERROR(isolate(), NewReferenceError(MessageTemplate::kNotDefined, name), Object);
+```
 
 That call will bring us back to isolate.cc (1064) which is the Throw function we breaked in.
 This time we have a try_catch_handler:
-
+```console
     (lldb) p *try_catch_handler()
     (v8::TryCatch) $2 = {
       isolate_ = 0x0000000105000000
@@ -4897,9 +5141,11 @@ This time we have a try_catch_handler:
       rethrow_ = false
       has_terminated_ = false
     }
+```
 
 ReportPendingMessages:
 
+```c++
     // Determine whether the message needs to be reported to all message handlers
     // depending on whether and external v8::TryCatch or an internal JavaScript
     // handler is on top.
@@ -4911,6 +5157,7 @@ ReportPendingMessages:
       // Report the exception if it isn't caught by JavaScript code.
       should_report_exception = !IsJavaScriptHandlerOnTop(exception);
     }
+```
 
 Is this case we have a TryCatch RAII and have set verbose to true. There is no javascript
 try/catch so the MessageHandler we set by calling AddMessageHandler on the isolate should
@@ -4920,7 +5167,7 @@ be the target handler.
 `SetFatalErrorHandler`
 If this callback handler is not set then the default behaviour in V8 will be to  
 print a stactrace and exit, for example:
-
+```console
     $ ./exceptions
     OnMessage...
 
@@ -4946,15 +5193,19 @@ print a stactrace and exit, for example:
      [0x000000000001]
     [end of stack trace]
     Illegal instruction: 4
+```
 
 You can set a handler for this that does something before exiting of choose to not exit.
     
 When an exceptions is raised in V8 it will cause the function Throw in e
 
+```c++
     Object* Isolate::Throw(Object* exception, MessageLocation* location) {
+```
 
 #### TryCatch
 Is used to create a try/catch block in V8 which used RAII:
+```c++
     {
       TryCatch try_catch(isolate);
       try_catch.SetVerbose(true);
@@ -4964,23 +5215,27 @@ Is used to create a try/catch block in V8 which used RAII:
       if (try_catch.HasCaught()) {
         printf("Caught: %s\n", *String::Utf8Value(try_catch.Exception()));
       }
+```
 
 How does setting `verbose` affect things?
 In Isolate::Throw:
 Which can be called if there is a JavaScript error and if an external TryCatch exist and 
 verbose is true. If that is the case the Message will be created:
 
+```c++
     Handle<Object> message_obj = CreateMessage(exception_handle, location);
     thread_local_top()->pending_message_obj_ = *message_obj;
     ...
     set_pending_exception(*exception_handle);
     return heap()->exception();
+```
 
 So that is what throw does, sets the message_obj and the exception_handle and then returns.
 
 What if we set verbose to false:
-
+```console
     (lldb) expr try_catch.SetVerbose(false);
+```
 
 In this case the message will still be created and the exception set on the thread_local, but 
 when we get to ReportPendingMessages is_verbose_ will be false and the callback will be skipped.
@@ -5098,8 +5353,6 @@ external C++ function
 (v8::internal::Address) $8 = 0x0000000105813b50 <no value available>
 ```
 
-Movp(destination, Operand(kScratchRegister, 0));
-
 To understand how this works we can set a break point and run mkshnapshot:
 ```console
 $ $ lldb out.gn/learning/mksnapshot
@@ -5107,9 +5360,10 @@ $ $ lldb out.gn/learning/mksnapshot
 (lldb) expr StackFrame::TypeToMarker(type())
 (int32_t) $1 = 2                                            // pushq  $0x2
 ```
-
+```console
 0x3db66db84066  REX.W movq r10,0x104808790    ;; external reference (Isolate::context_address)
 0x3db66db84070: movq   (%r10), %r10
+```
 Notice that `0x104808790` is a pointer. This is then dereferenced and that value placed into r10:
 ```console
 (lldb) register read r10
@@ -5142,43 +5396,36 @@ generated functions to addess the exception handler.
 deps/v8/src/x64/macro-assembler-x64.cc `EnterFrame`. Just note that when Builtins::Generate_JSEntryTrampoline generates 
 code it calls `EnterFrame` which does more than store/set rbp. Remember this or the code will be hard to follow.
 
-
-Member functions of SSLWrap:
-void DestroySSL();
-void WaitForCertCb(CertCb cb, void* arg);
-void SetSNIContext(SecureContext* sc);
-int SetCACerts(SecureContext* sc);
-
-
-### Shared 
-You can configure node using `--shared` in which case
-
-
 ### Compiling on windows
 I looking into an issue on windows:
 https://github.com/nodejs/node/issues/12952
 
 The issue is a link error with the cctest target. In this particular case on windows it was built using:
+```console
 
     .\vcbuild.bat dll debug x64 vc2015
 
 This will result in the following options:
-
+```console
     configure --debug --shared --dest-cpu=x64 --tag=
+```
 
 So this is saying that node should be created as a shared library but
 not any of its dependencies. In this case the focus is on OpenSSL which
 will be a static library.
 The link error is:
-
+```console
     openssl.lib(err.obj) : error LINK2005: ERR_put_error already defined in node.lib(node.dll
+```
 
 We can find the exported symbols of Debug/node.dll using:
-
+```console
     dumpbin /EXPORTS Debug/node.dll > node-exports
+```
 
 We can find the ERR_put_error is indeed exported from node.dll
 This is done because in node.gyp we have:
+```
 
       [ 'OS=="win" and '
         'node_use_openssl=="true" and '
@@ -5187,8 +5434,10 @@ This is done because in node.gyp we have:
       }, {
         'use_openssl_def': 0,
       }],
+```
 
 In our case use_openssl_def will be 1 which is the used in node.gypi:
+```
 
       # openssl.def is based on zlib.def, zlib symbols
       # are always exported.
@@ -5197,12 +5446,14 @@ In our case use_openssl_def will be 1 which is the used in node.gypi:
       }],
       ['OS=="win" and use_openssl_def==0', {
         'sources': ['deps/zlib/win32/zlib.def'],
+```
 
 A .def file is a module definition file which describes attributes of a DLL. In our case openssl.def can be found in Debug\obj\global_intermediate:
-
+```
     EXPORTS
     ...
     ERR_put_error
+```
 
 So we can see this function is indeed exported, so if we link against openssl.lib 
 this symbol (and the others) will be duplicates.
@@ -5220,15 +5471,18 @@ This interface has a number of functions related to threading and running task o
 Node can be configured --without-v8-platform which will set environment variables that will be picked up by the pre-processor. For example, if you
 take a look in src/node.cc you will find:
 
+```c++
     #if NODE_USE_V8_PLATFORM
     #include "libplatform/libplatform.h"
     #endif  // NODE_USE_V8_PLATFORM
+```
 
 libplatform/libplatform.h is the interface for a default v8::Platform implementation in V8.
 Next, we have a v8_platform struct that will use the above default v8::Platform implementation is NODE_USE_V8_PLATFORM is set.
 But what does it mean to not use the default v8::Platform implementation?
 Basically this will just create noop functions or functions that throw an error:
 
+```c++
     #else  // !NODE_USE_V8_PLATFORM
     void Initialize(int thread_pool_size) {}
     void PumpMessageLoop(Isolate* isolate) {}
@@ -5244,10 +5498,11 @@ Basically this will just create noop functions or functions that throw an error:
                       "so event tracing is not available.\n");
     }
     void StopTracingAgent() {}
+```
 
 
 When trying to run a test --without-v8-platform I run into the following error:
-
+```console
 
     #
     # Fatal error in ../deps/v8/src/v8.cc, line 110
@@ -5273,22 +5528,27 @@ When trying to run a test --without-v8-platform I run into the following error:
 
     2644   compiler_dispatcher_ =
     2645       new CompilerDispatcher(this, V8::GetCurrentPlatform(), FLAG_stack_size);
+```
 
 v8::GetCurrentPlatform will perform the following:
 
+```c++
     v8::Platform* V8::GetCurrentPlatform() {
       DCHECK(platform_);
       return platform_;
    }
+```
 
 But since we have not set a platform, remember that would have been done if NODE_USE_V8_PLATFORM:
 
+```c++
     #if NODE_USE_V8_PLATFORM
     void Initialize(int thread_pool_size) {
       platform_ = v8::platform::CreateDefaultPlatform(thread_pool_size);
       V8::InitializePlatform(platform_);
       tracing::TraceEventHelper::SetCurrentPlatform(platform_);
     }
+```
 
 My understanding is that the in this code path the snapshot blob is being deserialized and when 
 this is done.
@@ -5297,6 +5557,7 @@ this is done.
 ### Upgrading OpenSSL
 
 Download and verify the download:
+```console
 
     $ gpg openssl-1.0.2l.tar.gz.asc
     gpg: Signature made Thu May 25 14:55:41 2017 CEST using RSA key ID 0E604491
@@ -5315,43 +5576,10 @@ Download and verify the download:
     gpg: WARNING: This key is not certified with a trusted signature!
     gpg:          There is no indication that the signature belongs to the owner.
     Primary key fingerprint: 8657 ABB2 60F0 56B1 E519  0839 D9C4 D26D 0E60 4491
+```
 
 
 Compare the changes to make see if you have to make changes to the
-
-
-### Supporting different Crypto versions/libraries
-I'm working on a solution for Node.js to be able to support multiple versions of OpenSSL and in 
-the long run hopefully be able to also support other crypto libraries like LibreSSL, BoringSSL etc.
-
-Currently, it is possible to specify that OpenSSL that is in the deps directory be used when building
-node. One can also specify --shared-openssl and the specify where the headers are etc. The issue with
-this is that the code still depends on a specific version of OpenSSL and to support multiple version
-one has to have macro guards and for Linux distributions it probably means patching Node crypto as 
-at least in our case (Red Hat Enterprise Linux (RHEL)) we do so. 
-
-
-Let's configure node to use 
-
-    $ ./configure --debug --shared-openssl --shared-openssl-libpath=/Users/danielbevenius/work/security/build_1_1_0f/lib --shared-openssl-includes=/Users/danielbevenius/work/security/build_1_1_0f/include
-
-This will result in a compilation error which is good in our case as this gives us something to verify that we can have different version of OpenSSL.
-
-Suggestion:
-Keep in mind I don't think we can just start over and change what is currently there. The idea is that we provide a similar configuration that 
-we have to day but make it more general and not tied to OpenSSL. We could add a crypto version that specifies the version of being used, which for
-OpenSSL (non-shared) would default to the current version of OpenSSL in the deps directory. 
-
-Specfic version could then be supported by adding concrete implementations in src/crypto. The goal is to extract types that are general enough to 
-allow us to extract an abstract class which specific providers/versions must implement. 
-
-Tactic:
-* Move all OpenSSL dependent crypto source files into a separate directory (src/crypto/openssl-1.0.x/)
-  - verify that the build and tests are successful
-* Implement a CryptoFactory that crypto libraries can register a specifiec version with. 
-  - How should these get registered?
-    We won't ever be using more than one crypto implementation.
-
 
 ### OpenSSL with FIPS
 When building the OpenSSL and specifying `--openssl-fips`, which is described as "Build OpenSSL using FIPS canister .o file in supplied folder", support for [Fipsld](https://wiki.openssl.org/index.php/Fipsld_and_C%2B%2B). The follwing can be seen on that page:
@@ -5375,13 +5603,14 @@ software and product development.
 
 After following the [instructions](https://github.com/danbev/learning-libcrypto#fips) to configure OpenSSL with FIPS support, building Node can be done using the following commands:
 
+```console
     $ ./configure --debug --shared-openssl --shared-openssl-libpath=/Users/danielbevenius/work/security/build_1_0_2k/lib --shared-openssl-includes=/Users/danielbevenius/work/security/build_1_0_2k/include --openssl-fips=/Users/danielbevenius/work/security/build_1_0_2k/
     $ make -j8 test
-
-
+```
 
 #### Crypto init
 
+```c++
     void InitCrypto(Local<Object> target,
                 Local<Value> unused,
                 Local<Context> context,
@@ -5391,43 +5620,55 @@ After following the [instructions](https://github.com/danbev/learning-libcrypto#
 
     Environment* env = Environment::GetCurrent(context);
     SecureContext::Initialize(env, target);
+```
 
 `SecureContext::Initialize`:
 
+```c++
     void CipherBase::Initialize(Environment* env, Local<Object> target) {
         Local<FunctionTemplate> t = env->NewFunctionTemplate(New);
+```
 
 Lets take a look what `New` does:
 
+```c++
     void SecureContext::New(const FunctionCallbackInfo<Value>& args) {
       Environment* env = Environment::GetCurrent(args);
       new SecureContext(env, args.This());
     }
+```
 
 Usage of tls would look like a normal require (though since this is an native module the loading will be done by `NativeModule.require(filename)`:
 
+```javascript
     const tls = require('tls');
+```
 
 This module exports (among other functions): 
 
+```javascript
     exports.createSecureContext = require('_tls_common').createSecureContext;
     exports.SecureContext = require('_tls_common').SecureContext;
     exports.TLSSocket = require('_tls_wrap').TLSSocket;
     exports.Server = require('_tls_wrap').Server;
     exports.createServer = require('_tls_wrap').createServer;
     exports.connect = require('_tls_wrap').connect;
+```
 
 So calling `tls.createSecureContext` will end up in `lib/_tls_common.js:
 
+```javascript
     exports.createSecureContext = function createSecureContext(options, context) {
     ...
       var c = new SecureContext(options.secureProtocol, secureOptions, context);
+```
 
 And here we find the call to `SecureContext` using `new`.
 
 In this walk through we have been taking a look at `New` but this was not called at this time. The
 next task in `SecureContext::Initialize(env, target)` is to set up functions on the 
 
+```c++
     Local<FunctionTemplate> t = env->NewFunctionTemplate(SecureContext::New);
     t->InstanceTemplate()->SetInternalFieldCount(1);
     t->SetClassName(FIXED_ONE_BYTE_STRING(env->isolate(), "SecureContext"));
@@ -5438,28 +5679,35 @@ next task in `SecureContext::Initialize(env, target)` is to set up functions on 
     env->SetProtoMethod(t, "addCACert", SecureContext::AddCACert);
     ...
     target->Set(FIXED_ONE_BYTE_STRING(env->isolate(), "SecureContext"), t->GetFunction());
+```
     
 Remember that these are prototype functions that are being setup on instance created when using
 `new SecureContext` which will be an instance of `CipherBase` since this is the type that the `New` function returned.
 
+```javascript
     const binding = process.binding('crypto');
+```
 
 Recall that binding is a function that is set on the process object when it is set up on node.cc. This 
 will be a call to Binding:
-
+```console
     (lldb) br s -f node.cc -l 2723
-
+```
+```c++
     static void Binding(const FunctionCallbackInfo<Value>& args) {
       Local<String> module = args[0]->ToString(env->isolate());
       node::Utf8Value module_v(env->isolate(), module);
       ...
     }
-
+```
+```console
     (lldb) jlh module
     #crypto
-
-
+```
+```c++
     Local<Array> modules = env->module_load_list_array();
+```
+```console
     (lldb) jlh modules
     0x16da0049c641: [JSArray]
      - map = 0x34afb7a04099 [FastProperties]
@@ -5541,15 +5789,23 @@ will be a call to Binding:
           68: 0xd6549a0f479 <String[16]: NativeModule url>
        69-81: 0x25494902351 <the hole>
     }
+```
 
 A `NativeModule` is a module which has access to the module property and implemented in JavaScript.
 A `Binding` is something that does not have a module and only set exports. 
 
+```c++
     modules->Set(l, OneByteString(env->isolate(), buf));
+```
+```console
     (lldb) p buf
     (char [1024]) $16 = "Binding crypto"
+```
 
+```c++
     node_module* mod = get_builtin_module(*module_v);
+```
+```console
     (lldb) p *mod
     (node::node_module) $24 = {
       nm_version = 55
@@ -5562,9 +5818,11 @@ A `Binding` is something that does not have a module and only set exports.
       nm_priv = 0x0000000000000000
       nm_link = 0x00000001027c54c0
    }
+```
 
 In this case I'm actually documenting and troubleshooting which is the reason for the strange path names to the source files.
 
+```c++
      if (mod != nullptr) {
        exports = Object::New(env->isolate());
        // Internal bindings don't have a "module" object, only exports.
@@ -5573,17 +5831,21 @@ In this case I'm actually documenting and troubleshooting which is the reason fo
        Local<Value> unused = Undefined(env->isolate());
        mod->nm_context_register_func(exports, unused, env->context(), mod->nm_priv);
        cache->Set(module, exports);
+```
 
 So we check that the `nm_register_func` is not set but we should have a context aware register node module function but set the `exports` instance to Undefined.
 Next `mod->nm_context_register_func` is called which was configured in node_crypto.cc:
 
+```c++
     NODE_MODULE_CONTEXT_AWARE_BUILTIN(crypto, node::crypto::InitCrypto)
+```
 
 So InitCrypto will be the function we end up in which has the call to `SecureContext::Initialize(env, target);` which I wanted to know how it ended up there.
 
 #### InitCrypto
 This will intialize the following:
 
+```c++
     SecureContext::Initialize(env, target);
     Connection::Initialize(env, target); // SSLConnection
     CipherBase::Initialize(env, target);
@@ -5593,19 +5855,23 @@ This will intialize the following:
     Hash::Initialize(env, target);
     Sign::Initialize(env, target);
     Verify::Initialize(env, target); 
+```
 
 Should the constructors for these be checking that they are called with new?
 Even if these are internal it might be possible to call them using:
 
+```c++
     const binding = process.binding('crypto');
     //const h = new binding.Hmac();
     const h = binding.Hmac();
+```
    
 ### Builtins/Constants/Natives
 Using process.binding you can load builtin modules, the constant module, or native modules.
 The builtin modules are those that are initialized by the loader, for example: 
-
+```c++
     NODE_MODULE_CONTEXT_AWARE_BUILTIN(config, node::InitConfig)
+```
 
 The above module would then be loaded using process.binding('config').
 If you look at the `Binding` function is src/node.cc you can see that there are two special cases if the module is not 
@@ -5614,18 +5880,23 @@ found as a builtin. One if the name passed in is `constants` and one if the name
 #### constants
 Just a note here about how src/node_constant.cc is loaded as there is no `NODE_MOUDULE_CONTEXT_AWARE_BUILTIN` macro or anything like that. Instead this will be loaded when:
 
+```c++
     process.binding('constants').
+```
 
 Which like mentioned earlier in this document this will invoke `Binding` (in node.cc) and there is a special clause for `constants`:
 
+```c++
     } else if (!strcmp(*module_v, "constants")) {
       exports = Object::New(env->isolate());
       CHECK(exports->SetPrototype(env->context(), Null(env->isolate())).FromJust());
       DefineConstants(env->isolate(), exports);
       cache->Set(module, exports);
+```
 
 `DefineConstants`: 
 
+```c++
     DefineErrnoConstants(err_constants);
     DefineWindowsErrorConstants(err_constants);
     DefineSignalConstants(sig_constants);
@@ -5641,23 +5912,26 @@ Which like mentioned earlier in this document this will invoke `Binding` (in nod
     target->Set(OneByteString(isolate, "fs"), fs_constants);
     target->Set(OneByteString(isolate, "crypto"), crypto_constants);
     target->Set(OneByteString(isolate, "zlib"), zlib_constants);
+```
     
 
 #### Natives
 When you see:
-
+```javascript
     NativeModule._source = process.binding('natives');
+```
 
 Similar to when `process.binding('constants')` is used there is a special clause in Binding for this:
-
+```c++
     } else if (!strcmp(*module_v, "natives")) {
       exports = Object::New(env->isolate());
       DefineJavaScript(env, exports);
       cache->Set(module, exports);
+```
 
 `DefineJavaScript` is declared in `src/node_javascript.h` but as you might recall there is no implementation in the source code tree for this header the source file is generated
 using the JavaScript source files and config.gypi that is generated by configure:
-
+```
     'action_name': 'node_js2c',
     'process_outputs_as_sources': 1,
     'inputs': [
@@ -5667,26 +5941,33 @@ using the JavaScript source files and config.gypi that is generated by configure
     'outputs': [
       '<(SHARED_INTERMEDIATE_DIR)/node_javascript.cc',
     ...
+```
 So we can see that the JavaScript library files are included and config.gypi.
 
 If you call `process.binding('config')` what will be returned will be a builtin module as there is one registered:
 
+```c++
     NODE_MODULE_CONTEXT_AWARE_BUILTIN(config, node::InitConfig)
+```
 
 But this does not populate the process objects config variables which you might think. Instead that is done in node_bootstrap.js:
 
+```javascript
     const _process = NativeModule.require('internal/process');
     _process.setupConfig(NativeModule._source);
+```
 
 
 When I was working on decoupling OpenSSL from node.cc I missed out the macros that are used to conditionally set various settings. For example in `GetFeatures` we have:
 
+```c++
     #ifdef SSL_CTRL_SET_TLSEXT_SERVERNAME_CB
       Local<Boolean> tls_sni = True(env->isolate());
     #else
       Local<Boolean> tls_sni = False(env->isolate());
     #endif
       obj->Set(FIXED_ONE_BYTE_STRING(env->isolate(), "tls_sni"), tls_sni);
+```
 
 
 Fix formatting in src/node_crypto.cc X509ToObject
@@ -5697,7 +5978,7 @@ I'm tryin to make test/parallel/test-tls-ecdh-disable.js to be used with both Op
 The issue is that the test successfully listens and the mustNotCall function is called which is the callback passed to the listener event handler registration.
 
 The cipher in use is `ECDHE-RSA-AES128-GCM-SHA256`. We can check what ciphers are supported by using the following command:
-
+```console
     $ ~/work/security/build_1_1_0f/bin/openssl ciphers -v 'ECDH+AESGCM:DH+AESGCM:ECDH+AES256:DH+AES256:ECDH+AES128:DH+AES:RSA+AESGCM:RSA+AES:!aNULL:!MD5:!DSS'
     ECDHE-ECDSA-AES256-GCM-SHA384 TLSv1.2 Kx=ECDH     Au=ECDSA Enc=AESGCM(256) Mac=AEAD
     ECDHE-RSA-AES256-GCM-SHA384 TLSv1.2 Kx=ECDH     Au=RSA  Enc=AESGCM(256) Mac=AEAD
@@ -5737,35 +6018,40 @@ The cipher in use is `ECDHE-RSA-AES128-GCM-SHA256`. We can check what ciphers ar
     AES128-SHA256           TLSv1.2 Kx=RSA      Au=RSA  Enc=AES(128)  Mac=SHA256
     AES256-SHA              SSLv3 Kx=RSA      Au=RSA  Enc=AES(256)  Mac=SHA1
     AES128-SHA              SSLv3 Kx=RSA      Au=RSA  Enc=AES(128)  Mac=SHA1
+```
 
 
 ### Zlib
 The version we are using on Fedora is:
-
+```console
      zlib: '1.2.8'
+```
 
 The version building locally is:
-
+```console
      zlib: '1.2.11',
+```
 
 The issue I'm seeing is that `test/parallel/test-zlib-failed-init.js` passes as expected when using version 1.2.11 but fails
 when using 1.2.8. 
 The change log for zlib can be found here: http://zlib.net/ChangeLog.txt
-
+```console
     Changes in 1.2.9 (31 Dec 2016)
     ...
     - Reject a window size of 256 bytes if not using the zlib wrapper
     ...
+````
 
 ### ICU
 We are currently building using --with-intl=system-icu which gives the following icu version:
-
+```console
     icu: '57.1'
+```
 
 When I build locally and without any icu flags the version is:
 
 The issue I'm seeing is that test/parallel/test-icu-data-dir.js is failing:
-
+```console
     assert.js:60
     throw new errors.AssertionError({
     ^
@@ -5776,18 +6062,19 @@ The issue I'm seeing is that test/parallel/test-icu-data-dir.js is failing:
 
     const child = spawnSync(process.execPath, ['--icu-data-dir=/', '-e', '0']);
     assert(child.stderr.toString().includes(expected));
+```
 
 
 ### Fips
 When using the bundled/deps version of OpenSSL and the just building without any configuration options, OpenSSL FIPS support is not enabled. 
 The test `test/parallel/test-crypto-fips.js` performs a number of checks and assumes the above default configuration. I'm running into an issue when configuring Node using --shared-openssl and the system version of OpenSSL supports FIPS (but I'm not setting anything FIPS related when configuring only the shared includes and shared lib directory. When I do this the mentioned test fails when trying to toggle fips_mode using a OpenSSL configuration file.
-
-
+```console
     [root@1b05bc2e415c node-v8.1.0]# openssl version
     OpenSSL 1.0.2k-fips  26 Jan 2017    
+```
 
     out/Release/node test/parallel/test-icu-data-dir.js:
-
+```console
     Spawned child [pid:9757] with cmd 'require("crypto").fips' expect 0 with args '--openssl-config=/root/rpmbuild/BUILD/node-v8.1.0/test/fixtures/openssl_fips_enabled.cnf' OPENSSL_CONF=undefined
     assert.js:60
       throw new errors.AssertionError({
@@ -5795,24 +6082,26 @@ The test `test/parallel/test-crypto-fips.js` performs a number of checks and ass
 
     AssertionError [ERR_ASSERTION]: 0 === 1
         at responseHandler (/root/rpmbuild/BUILD/node-v8.1.0/test/parallel/test-crypto-fips.js:56:14)
+````
 
 
 You might have to manually remove `config_fips.gypi` when you want to reconfigure fips.
 
 #### Building the bundled openssl with fips
-
+```console
     $ ./configure --openssl-fips=/Users/danielbevenius/work/security/build_1_0_2k/
     $ out/Release/node
     > process.versions.openssl
     '1.0.2l-fips'
+```
 
 ### Node N-API
 
 All JavaScript values are abstracted behind an opaque type named napi_value.
 
-
 ### FIXED_ONE_BYTE_STRING
 This is a macro which can be found in `src/util.h`:
+```c++
 
     #define FIXED_ONE_BYTE_STRING(isolate, string)                                \
     (node::OneByteString((isolate), (string), sizeof(string) - 1))
@@ -5825,6 +6114,7 @@ This is a macro which can be found in `src/util.h`:
                                      v8::NewStringType::kNormal,
                                      length).ToLocalChecked();
     }
+```
 So we are passing in the string which recieved as a const char* in the OneByteString function. This is then reinterpreted to const uint8_t*.
 
 OneByteString: the string's bytes are not UTF-8 encoded, can only contain characters in the first 256 unicode code points
@@ -5845,8 +6135,9 @@ Making a namespace change in C++ will generate a different mangled name so the s
 Verify that functions that return pointers have the pointer operator in the correct place (to the left).
 
 The rules can be found in 'tools/cpplint.py' and can be run using:
-
+```console
     tools/cpplint.py files
+```
 
 The script will run through the files and for each one call ProcessFile which does some checking and then calls
 ProcessFileData and later ProcessLine. Not that you can pass in extra_check_functions which might become handy.
@@ -5857,18 +6148,21 @@ I've seen this in couple of places in the node source code and did not know abou
 NDBUG is used to toggle/control whether the assert macro will expand into something that will perform a check or not.
 
 From `<assert.h>`:
-
+```c++
     #ifdef NDEBUG
     #define assert(condition) ((void)0)
     #else
     #define assert(condition) 
     #endif
+```
 
 ### assert
 This macro is disabled if, at the moment of including <assert.h>, a macro with the name NDEBUG has already been defined. 
 This allows for a coder to include as many assert calls as needed in a source code while debugging the program and then disable all of them for the production version by simply including a line like:
  
+```c++
     #define NDEBUG 
+```
 
 If the NDEBUG macro is defined when <assert.h> is included the assets are disabled. While looking into adding a addons test I noticed that at-exit undefined
 NDEBUG but not the other tests that use assert. As far as I can tell there is no need to undefine this and non of the other tests do. This commit removes
@@ -5876,21 +6170,24 @@ the undef for consistency.
 
 ### Building a addons
 Change to the directory of the addons and then you can rebuild using:
-
+```console
     $ out/Debug/node deps/npm/node_modules/node-gyp/bin/node-gyp.js rebuild --directory=test/addons/at-exit --nodedir=../../../
+```
 
 On windows you can just copy the command from the output from, for example:
-
+```console
     "C:\\Users\\danbev\\working\\node\\Release\\node.exe" "C:\\Users\\danbev\\working\\node\\deps\\npm\\node_modules\\node-gyp\\bin\\node-gyp" "rebuild" "--directory=test\\addons\\openssl-client-cert-engine" "--nodedir=C:\\Users\\danbev\\working\\node"
-
+```
 
 ### Run an a set of JavaScript tests
 You can specify the directory to run test, for example this would only run the async-hooks tests:
-
+```console
     $ python tools/test.py --mode=release -J async-hooks
+```
 
 ### Event Loop
 It all starts with the javascript file to be executed, which is you main program.
+```
 
     ------------> javascript.js ------+-----------------------------+ 
                                      /|\                            | setTimeout/SetInterval
@@ -5907,63 +6204,83 @@ It all starts with the javascript file to be executed, which is you main program
                                           \                         |
                                            \                        |
     <----------- process.exit (event) <-----------------------------+
-
+```
 
 Where is the first interaction with libuv in node?
 There very first call is (in node.cc):
 
+```c++
     argv = uv_setup_args(argc, argv);
+```
 
 But this does not do anything with the event loop. For that we have to look at `Init`:
 
+```c++
     prog_start_time = static_cast<double>(uv_now(uv_default_loop()));
+```
 
 This will land us in uv_common.c:
 
+```c++
     uv_loop_t* uv_default_loop(void) {
      if (default_loop_ptr != NULL)
        return default_loop_ptr;
    
      if (uv_loop_init(&default_loop_struct))
-
+```
+```console
     (lldb) p default_loop_ptr
     (uv_loop_t *) $4 = 0x0000000000000000
+```
 
 So we can see that this is the first call to `uv_default_loop` so lets take a closer look at `uv_loop_init` in src/unix/loop.c (in libuv that is):
 
+```c++
     uv__signal_global_once_init();
+```
 
 Which will call:
 
+```c++
     uv_once(&uv__signal_global_init_guard, uv__signal_global_init);
+```
 
 I just skimmed the code but this looks like setting up fork handlers to reset signals. uv_once uses [pthread_once](https://github.com/danbev/learning-c/blob/master/pthreads-once.c).
 After this we will be back in loop.c:
 
+```c++
     heap_init((struct heap*) &loop->timer_heap);
+```
 
 Where are initializing a min heap data structur for timers.
 
+```c++
     QUEUE_INIT(&loop->wq)
+```
 
 `wq` is a work queue (include/uv-threadpool.h):
 
+```c++
     void* wq[2];
+```
 
 What does the macro `QUEUE_INIT` do?
 It is defined in `src/queue.h` as:
 
+```c++
     QUEUE_NEXT(q) = (q);                                                      \
     QUEUE_PREV(q) = (q);
 
     typedef void *QUEUE[2];
     ...
     #define QUEUE_NEXT(q)       (*(QUEUE **) &((*(q))[0]))
+```
 
 This will set &loop->wp[0]
 
 And the same goes for handle_queue and active_reqs which will be initialized using QUEUE_INIT as well:
 
+```c++
     void* handle_queue[2];
     void* active_reqs[2];
 
@@ -5972,124 +6289,159 @@ And the same goes for handle_queue and active_reqs which will be initialized usi
 
     ...
     err = uv__platform_loop_init(loop);
+```
 
 
 `uv__platform_loop_init` can be found in src/unix/darwin.c:
 
+```c++
     if (uv__kqueue_init(loop)) 
+```
 
 `uv__kqueue_init` can be found in src/unix/kqueue.c:
 
+```c++
     loop->backend_fd = kqueue()
+```
 
-    
 #### Resolve promises
 After calling the callback provided by the user, a smaller loop will check if there are any resolved promises.
 
 Where is this done?
 If we take a look at lib/internal/bootstrap.js and the start function we find the following line:
-
+```javascript
     NativeModule.require('internal/process/next_tick').setup();
+```
 
 And lib/internal/process/next_tick.js: 
 
+```javascript
     exports.setup = setupNextTick;
+```
 
 `setupNextTick` then does:
 
+```javascript
     const promises = require('internal/process/promises');
     ...
     const emitPendingUnhandledRejections = promises.setup(scheduleMicrotasks);
+```
 
 promises.setup will call process._setupPromises:
 
+```javascript
       process._setupPromises(function(event, promise, reason) {
+```
 
 Notice that this call takes an anonymous function as its callback. `_setupPromises` is configured in node.cc in the SetupProcessObject function:
 
+```javascript
     env->SetMethod(process, "_setupPromises", SetupPromises);
+```
 
 Lets set a break point in SetupPromis and see what is going on:
-
+```console
     (lldb) br s -f node.cc -l 1278
     (lldb) r
+```
 
-
+```c++
     isolate->SetPromiseRejectCallback(PromiseRejectCallback);
+```
 
 So an isolate has a `promise_reject_callback_` which is being set here to `PromiseRejectCallback`. This is what V8 will call if a promise is rejected.
 
+```c++
     env->set_promise_reject_function(args[0].As<Function>());
+```
 
 Remember `_setupPromises` was passed an anonymous function as its callback argument which is what is being set as the
 set_promise_reject_function on the evnvironment instance. This will then be used by `PromiseRejectCallback`:
 
+```c++
     Local<Function> callback = env->promise_reject_function();
     ...
     callback->Call(process, arraysize(args), args);
+```
 
 Next things that happens in `SetupPromises` is that `_setupPromises` is deleted from the process object:
 
+```c++
     env->process_object()->Delete(
       env->context(),
       FIXED_ONE_BYTE_STRING(args.GetIsolate(), "_setupPromises")).FromJust();
+```
 
 This way it cannot be called again.
 
 Back in JavaScript (setupNextTick) now we have:
 
+```javascript
     var _runMicrotasks = {};
     ...
     const tickInfo = process._setupNextTick(_tickCallback, _runMicrotasks);
+```
 
 `process._setupNextTick` is also configured in node.cc:
 
+```c++
     env->SetMethod(process, "_setupNextTick", SetupNextTick);
+```
 
 The arguments to SetupNextTick will be:
 
+```c++
     CHECK(args[0]->IsFunction());  // _tickCallback
     CHECK(args[1]->IsObject());    // _runMicrotasks which is just an empty object at this point.
 
     env->set_tick_callback_function(args[0].As<Function>());
     env->SetMethod(args[1].As<Object>(), "runMicrotasks", RunMicrotasks);
+```
 
 RunMicroTasks does:
  
+```c++
     void RunMicrotasks(const FunctionCallbackInfo<Value>& args) {
       args.GetIsolate()->RunMicrotasks();
     }
+```
     
 So we are setting a method on the _runMicrotasks object named runMicrotasks.
 Next `_setupNextTick` is removed from the process object. Then we have:
 
+```c++
     uint32_t* const fields = env->tick_info()->fields();
     uint32_t const fields_count = env->tick_info()->fields_count();
     Local<ArrayBuffer> array_buffer = ArrayBuffer::New(env->isolate(), fields, sizeof(*fields) * fields_count);
     args.GetReturnValue().Set(Uint32Array::New(array_buffer, 0, fields_count));
+```
 
-What are these? 
-
+```javascript
     const p = new Promise((resolve, reject) => {
       resolve('ok');
     });
+```
 
 So how are promises created in V8?
-
+```console
     (lldb) br s -f isolate.cc -l 1862
+```
 
 This will break in isolate.cc `PushPromise`:
 
+```c++
     void Isolate::PushPromise(Handle<JSObject> promise) {
       ThreadLocalTop* tltop = thread_local_top();
       PromiseOnStack* prev = tltop->promise_on_stack_;
       Handle<JSObject> global_promise = global_handles()->Create(*promise);
       tltop->promise_on_stack_ = new PromiseOnStack(global_promise, prev);
     }    
+```
 
 
 Lets take a closer look at `new PromiseOnStack`:
 
+```c++
     class PromiseOnStack {
      public:
       PromiseOnStack(Handle<JSObject> promise, PromiseOnStack* prev)
@@ -6101,6 +6453,7 @@ Lets take a closer look at `new PromiseOnStack`:
       Handle<JSObject> promise_;
       PromiseOnStack* prev_;
     }; 
+```
 
 So that looks simple enough, it has a promise and a pointer to the previous promise. The callback passed to Promise (which
 takes a resolve, reject), when is it called?
@@ -6109,6 +6462,7 @@ This is part of a constructor call so it would be executed straight way I think,
 
 ##### PromiseRejectCallback
 
+```c++
     void PromiseRejectCallback(PromiseRejectMessage message) {
       Local<Promise> promise = message.GetPromise();
       Isolate* isolate = promise->GetIsolate();
@@ -6126,6 +6480,7 @@ This is part of a constructor call so it would be executed straight way I think,
 
       callback->Call(process, arraysize(args), args);
   }
+```
 
 
 After a module has been loaded in Module.runMain, the process._tickCallback function will first process all the 
@@ -6134,6 +6489,7 @@ callbacks in the nextTickQueue and then call _runMicrotasks().
 #### nextTick
 After resolving all the promises and callbacks added using nextTick will be called. 
 
+```javascript
     // bootstrap main module.
     Module.runMain = function() {
       // Load the main module--the command line argument.
@@ -6141,6 +6497,7 @@ After resolving all the promises and callbacks added using nextTick will be call
       // Handle any nextTicks added in the first tick of the program
       process._tickCallback();
     };
+```
 
 ### Libuv Thread pool 
 The following modules use the thread pool:
@@ -6172,11 +6529,12 @@ null pointer or a pointer that was corrupted with a small integer value.
 
 #### core dump
 Make sure that you specified enough room for a core dump:
-
+```console
     $ ulimit -c unlimited
 
 If possible compile the executable with debugging options. The example I'm using for this is a case where
 cctest on arm7 produces a core dump:
+```console
     
     [----------] 2 tests from EnvironmentTest
     [ RUN      ] EnvironmentTest.AtExitWithEnvironment
@@ -6188,8 +6546,9 @@ cctest on arm7 produces a core dump:
 
     [end of stack trace]
     Segmentation fault (core dumped)
+```
     
-
+```console
     $ gdb out/Debug/cctest qemu_cctest_20170809-174708_18638.core
 
     Reading symbols from out/Release/cctest...done.
@@ -6213,33 +6572,35 @@ cctest on arm7 produces a core dump:
     #7  0x00eb15b0 in testing::internal::UnitTestImpl::RunAllTests() [clone .part.407] ()
     #8  0x00eb17e6 in testing::UnitTest::Run() ()
     #9  0x004302dc in main ()
+```
 
 I was not able to reproduce this issue when compiling with debugging symbols (./configure --debug). Possible reasons for this?
 The debugger puts more on the stack and if you overwrite an arrays capacity it migth cause a segment fault in release mode but
 not in debug mode.
 
 Trying to find out where v8::Context::Exit() is call when in node::Environment::Start. Upon entry there is the following:
-
+```c++
     Context::Scope context_scope(context());
+```
 
 This is the context scope used and this is using RAII, and the descructor that will be called when this instance goes out
 of scope looks like this (in v8.h):
 
+```c++
     V8_INLINE ~Scope() { context_->Exit(); }
+```
 
 
 ### Workaround issue with test/async-hooks/init-hooks.js
-
+```console
     $ launchctl unload -w /System/Library/LaunchAgents/com.apple.ReportCrash.plist
     $ sudo launchctl unload -w /System/Library/LaunchDaemons/com.apple.ReportCrash.Root.plist
-
-
-### node-gyp
-How does node-gyp work?
+```
 
 
 ### LIKELY/UNLIKELY
 If you take a look at the CHECK macro you will se that it is defined like this:
+```c++
    
     #define CHECK(expr)                                                         \
     do {                                                                        \
@@ -6249,10 +6610,13 @@ If you take a look at the CHECK macro you will se that it is defined like this:
         node::Assert(&args);                                                    \
       }                                                                         \
     } while (0)
+```
 
 And UNLIKELY is defined as:
 
+```c++
     #define UNLIKELY(expr) __builtin_expect(!!(expr), 0)
+```
 
 This is done to give the compiler a hint that we expect the value to be true so it 
 can optimise for that case and not the opposite case. 
@@ -6281,13 +6645,15 @@ A target is like a procedure. A target can contain properties in a PropertiesGro
 A task is like a builtin function that performs an action, compiles, links, prints a message etc.
 A project is what hooks tasks together. A task can have a `DefaultTargets` attribute which are the targets
 that will be run if you specify the project file on the command line for msbuild.
+```console
 
     msbuild sample.vcxproj 
 
 The target can also be specified on the command line:
-
+```console
     msbuild sample.vcxproj /t:something
     msbuild sample.vcxproj /t:Clean;Build
+```
     
 In the xml you might come across something like: %(AdditionalOptions). This an iterate directive.
 
@@ -6301,19 +6667,24 @@ Options:
 
 ### vcbuild.bat
 This is the Windows batch script that is used on Windows systems.
-
+```console
     vcbuild.bat /help
+```
 
+```
 %var%   replaced with the environment variable named 'var'.
 %n      where n is a number from 0-9 and gives access to the n argument passed on the command line.
 %*      all the arguments specified on the command line
+```
 
 You can place quotation marks around a string to avoid escaping.
 You can place caret (^), an escape character, immediately before the special characters
 The special characters that need quoting or escaping are usually <, >, |, &, and ^
+```console
 echo "You & me"
 echo You ^& me
-
+```
+```
 cd %~dp0        this will to %~dp (the directory of) on %0 (the first command line argument). 
                 So if this is run from a diferent directory this will switch to the directory where
                 this script is.
@@ -6321,33 +6692,34 @@ cd %~dp0        this will to %~dp (the directory of) on %0 (the first command li
 if /i           case-insensitive, for example:
 
      if /i "%1"=="help" goto help
+```
 
 
 Configuring on windows:
-
+```console
     python configure --openssl-system-ca-path=PATH
     vcbuild noprojgen
+```
 
 #### Compiler
 `cl.exe` is the the compiler.
-
+```console
     cl -help 
+```
 
 #### Scripting
+```
 `%~1`          removes quotes from the first command line argument
+```
 
 Use `NUL` to discard out put, as in comman > NUL
-
+```console
     IF "%var%"=="" (SET var=something)
-
-of 
-
     IF NOT DEFINED var (SET var=something)
-
-
     IF /I "%ERRORLEVEL%" NEQ "0" (
       echo "failed to execute something"
     )
+```
 
 
 ### Performace counters
@@ -6374,6 +6746,7 @@ is then available to event consumers which are applications that read the log fi
 to realtime events and process them.
 
 There is a condition in node.gypi that depends on `node_etw` which looks like this:
+```
 
     [ 'node_use_etw=="true"', {
       'defines': [ 'HAVE_ETW=1' ],
@@ -6387,9 +6760,10 @@ There is a condition in node.gypi that depends on `node_etw` which looks like th
         'tools/msvs/genfiles/node_etw_provider.rc',
       ]
     } ],
+```
 
 So remember that `node_etw` will be run first so lets take a look at it first.
-
+```
     # generate ETW header and resource files
     {
       'target_name': 'node_etw',
@@ -6411,6 +6785,7 @@ So remember that `node_etw` will be run first so lets take a look at it first.
         } ]
       ]
     },
+```
 
 `mc` is the [Message Compiler](https://msdn.microsoft.com/en-us/library/windows/desktop/aa385638(v=vs.85).aspx).  
 `-h` is where you want the generated header files to be placed.  
@@ -6419,34 +6794,37 @@ The node_etw_providerTEMP.bin is a binary resource file that contains the provid
 template resource, which is signified by the TEMP suffix of the base name of the file.
 
 And the input is the manifest file (.man). The manifest registers an event producer named `NodeJS-ETW-provider`:
-
+```
     <provider name="NodeJS-ETW-provider"
         guid="{77754E9B-264B-4D8D-B981-E4135C1ECB0C}"
         symbol="NODE_ETW_PROVIDER"
         message="$(string.NodeJS-ETW-provider.name)"
         resourceFileName="node.exe"
         messageFileName="node.exe">
+```
 
 Notice the `message` attribute which is used for localization which will be matched with :
-
+```
     <localization>
         <resources culture="en-US">
             <stringTable>
                 <string id="NodeJS-ETW-provider.name" value="Node.js ETW Provider"/>
+```
 
 
 Tasks are typically used to identify major components of the provider, some form of grouping.
 In node there is one task:
-
+```
     <task name="MethodRuntime" value="1" symbol="JSCRIPT_METHOD_RUNTIME_TASK">
         <opcodes>
             <opcode name="MethodLoad" value="10" symbol="JSCRIPT_METHOD_METHODLOAD_OPCODE"/>
         </opcodes>
     </task> 
+```
 
 This grouping enables consumers to query only for specific tasks and opcode combinations. The opcodes
 are specific to the task `MethodRuntime`. But there are also global opcodes:
-
+```
     <opcodes>
         <opcode name="NODE_HTTP_SERVER_REQUEST" value="10"/>
         <opcode name="NODE_HTTP_SERVER_RESPONSE" value="11"/>
@@ -6460,25 +6838,28 @@ are specific to the task `MethodRuntime`. But there are also global opcodes:
         <opcode name="NODE_V8SYMBOL_MOVE" value="22"/>
         <opcode name="NODE_V8SYMBOL_RESET" value="23"/>
     </opcodes>
+```
 
 Templates are used to define event specific data that the provider includes with an event. For example in
 node one template looks like this:
-
+```
     <template tid="node_connection">
       <data name="fd" inType="win:UInt32" />
       <data name="port" inType="win:UInt32" />
       <data name="remote" inType="win:AnsiString" />
       <data name="buffered" inType="win:UInt32" />
    </template>
+```
 
 Events have to be defined and can refer to template like the following:
-
+```
     <event value="2" 
       opcode="NODE_HTTP_SERVER_RESPONSE"
       template="node_connection"
       symbol="NODE_HTTP_SERVER_RESPONSE_EVENT"
       message="$(string.NodeJS-ETW-provider.event.2.message)"
       level="win:Informational"/>
+```
 
 Ok, so we can see how the provider and events are configured. This information is used by the `mc` tool
 to generate headers and a binary file.
@@ -6490,7 +6871,7 @@ the generated `node_etw_provider.h` which is located in 'tools/msvs/genfiles/nod
 ### Performace counters 
 Are used to provide information how node is performing.
 There is condition in node.gypi that depends on `node_perfctr` which looks like this:
-
+```
     [ 'node_use_perfctr=="true"', {
       'defines': [ 'HAVE_PERFCTR=1' ],
       'dependencies': [ 'node_perfctr' ],
@@ -6502,10 +6883,11 @@ There is condition in node.gypi that depends on `node_perfctr` which looks like 
         'tools/msvs/genfiles/node_perfctr_provider.rc',
       ]
     } ],
+```
 
 This file is used in the `node_perfctr` (node performance counter) target and it is an action target that invokes `ctrpp`
 The input to ctrpp is src/res/node_perfctr_provider.man
-
+```
     {
       'action_name': 'node_perfctr_man',
       'inputs': [ 'src/res/node_perfctr_provider.man' ],
@@ -6519,6 +6901,7 @@ The input to ctrpp is src/res/node_perfctr_provider.man
         '-rc tools/msvs/genfiles/node_perfctr_provider.rc'
       ]
     },
+```
 
 `-o`  specifies the header that will be generated.
 `-rc` specifies the file that will be generated.
@@ -6530,8 +6913,9 @@ The MSG00001.BIN file is a binary resource file for each language you specify (o
 
 But when is the actual .res file created?  
 I can see these are part of the statically linked library:
-
+```console
     dumpbin /archivemembers Release/lib/node.lib
+```
 
 I can see that path is Release\obj\node\node_etw_provider.res and Release\obj\node\node_perfctr_provider.res. 
 Do these files somehow refer to node.lib causing /WHOLEARCHIVE to fail?
@@ -6547,8 +6931,9 @@ you might come across an issue on windows where the last things that is logged i
 not be something that the tracker would report, so you'll need to look further back in the console output. 
 
 ### Inspecting a .lib on windows
-
+```console
     DUMPBIN /ARCHIVEMEMBERS Release\lib\node.lib
+```
 
 ### Linux Trace Toolkit: next generation (lttng)
 LTTng is an open source tracing framework for Linux.
@@ -6563,24 +6948,27 @@ Resources (as far as I can tell) are intended to be linked to the exe or a dynam
 
 ### Node executable linking
 By default, just building node using ./configure && make -j8 the node executable will be statically linked:
-
+```console
     $ otool -L out/Debug/node
     out/Debug/node:
       /System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 1259.11.0)
       /usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1226.10.1)
       /usr/lib/libc++.1.dylib (compatibility version 1.0.0, current version 120.1.0)
+```
 
 ### GYP
 For addon tests in node there can be the need to link against a library in the root directory. The problem is that you cannot use <(PRODUCT_DIR) as
 that is the product dir for the addon itself. There is also the issue that the output directory is different on windows, it is not `out` but instead
 the `Release` and `Debug` directories are in the root of the project. But there are variables available by the respective node-gyp evironments, 
 for example on Window you can use:
+```
 
     ['OS=="win"', {
       'libraries': ['../../../../$(Configuration)/lib/zlib.lib'],
     }, {
       'libraries': ['../../../../out/$(BUILDTYPE)/libzlib.a'],
     }],
+```
 
 
 ### serdes
@@ -6590,7 +6978,7 @@ which an algorithm for copying complex JavaScript objects and used internally fo
 
 
 ### Failing test without network connection
-```
+```console
 make[1]: Leaving directory `/root/rpmbuild/BUILD/node-v8.7.0'
 /usr/bin/python2.7 tools/test.py --mode=release -J \
 async-hooks \
@@ -6654,6 +7042,7 @@ the DNS service not to be available but if it is available the answer it returns
 
 
 Regarding test/parallel/test-net-connect-immediate-finish.js and test/parallel/test-net-better-error-messages-port-hostname.js the and the error:
+```console
 Path: parallel/test-net-connect-immediate-finish
 assert.js:41
   throw new errors.AssertionError({
@@ -6668,6 +7057,7 @@ AssertionError [ERR_ASSERTION]: 'EAI_AGAIN' === 'ENOTFOUND'
     at _combinedTickCallback (internal/process/next_tick.js:138:11)
     at process._tickCallback (internal/process/next_tick.js:180:9)
 Command: out/Release/node /builddir/build/BUILD/node-v8.6.0/test/parallel/test-net-connect-immediate-finish.js
+```
 
 This only occurs when there is no available dns (you might need to comment it out in /etc/resolve.conf to reproduce this), I manually update /etc/nsswitch.conf and the update the hosts entry:
 
@@ -6680,25 +7070,6 @@ hosts:      files dns myhostname
 
 Since this is an external configuration that could be different for different installations I think the best option is to update the test to be able to handle this situation. 
 I'll create a pull request and see what people think.
-
-
-
-$ networksetup -listallnetworkservices
-$ networksetup -getinfo "Thunderbolt Ethernet"
-DHCP Configuration
-IP address: 10.0.0.2
-Subnet mask: 255.255.255.0
-Router: 10.0.0.1
-Client ID:
-IPv6: Automatic
-IPv6 IP address: none
-IPv6 Router: none
-Ethernet Address: 68:5b:35:84:c8:9c
-
-What is this test about?:
-test/parallel/test-regress-GH-819.js
-
-### Modules
 
 
 ### Inspector console
@@ -6715,7 +7086,7 @@ It does so with the help of a builtin module 'inspector' which can be found in s
                                            config);
 
 The above will create a new function which has its `this` set to wrappedConsole
-
+```console
     $ out/Debug/node
     [Function: log] [Function: bound log] {}
     [Function: info] [Function: bound log] {}
@@ -6731,55 +7102,60 @@ The above will create a new function which has its `this` set to wrappedConsole
     [Function: group] [Function: bound group] {}
     [Function: groupCollapsed] [Function: bound group] {}
     [Function: groupEnd] [Function: bound groupEnd] {}
+```
 
 So for all of the above functions they will now got through the ConsoleCall function in inspector_agent.cc which will check if the inspector is enabled, which is done by passing --inspect,  for this process:
+```console
 
     if (env->inspector_agent()->enabled()) {
       ...
     }
+```
 
 In this case the writing to stdout will be performed twice, once to the inspector using:
 
+```c++
     inspector_method.As<Function>()->Call(context,
                                           info.Holder(),
                                           call_args.size(),
                                           call_args.data()).IsEmpty());
+```
 
 For example you'll seen the output in both stdout and in chrome's console.
 
 
-
-The test that I'm currently looking at uses fork so there will be two processes. This means that you might
-not hit a break point if you just use lldb on the command line. Instead you have to:
-
-    (lldb)
-
 ### ccache
-
+```console
     $ git clone https://github.com/ccache/ccache.git
     $ cd ccache
     $ ./autogen.sh
     $ ./configure && make 
+```
 
 Add ccache to your PATH. 
-
+```console
     export CC="ccache clang -Qunused-arguments"
     export CXX="ccache clang++ -Qunused-arguments"
+```
 
 Now you can configure and build as normal.
 
 To see what is in the cache:
-
+```console
    $ ccache -s
+```
 
 To clear the cache:
-
+```console
    $ ccache -C 
+```
 
 
 ### GetPeerCertificate
 
+```c++
     STACK_OF(X509)* ssl_certs = SSL_get_peer_cert_chain(w->ssl_);
+```
 
 STACK_OF is a macro defined in `deps/openssl/openssl/crypto/stack/safestack.h` and will expand to:
 ```c++
@@ -6790,6 +7166,7 @@ A Local<Object> instance holds a pointer to an Object. If you pass this instance
 object will be created. But both instances will point to the same object (the pointer is copied). 
 
 For example:
+```c++
 
     static void AddIssuer(X509** cert,
                           const STACK_OF(X509)* const peer_certs,
@@ -6799,46 +7176,49 @@ For example:
     ...
     Local<Object> ca_info = X509ToObject(env, ca);
     // Now we want to update what info points to so that is points to the value of ca_info instead.
-
-
-           Local<Object>
-
+```
+```console
     (lldb) expr info
     (v8::Local<v8::Object>) $4 = (val_ = 0x0000000106014b08)
     (lldb) expr *info
     (v8::Object *) $6 = 0x0000000106014b08
+```
 
 
 The copy constructor for Local<> will copy the value, which includes the pointer so these are separate
 objects:
-
+```console
     (lldb) p &result
     (v8::Local<v8::Object> *) $86 = 0x00007fff5fbf04b0
     (lldb) p &info
     (v8::Local<v8::Object> *) $87 = 0x00007fff5fbf04a8
+```
 
 But what is info supposed to represent?
 Well they both initially point to the same thing as we can see but as mentioned they are separate objects. So the following will update what they both (result and info) point to:
-
+```c++
     Local<Object> ca_info = X509ToObject(env, ca);
     info->Set(env->issuercert_string(), ca_info);
+```
 
 But the following will cause info to copy constructed (I think) to ca_info so the connection with result is lost here. That is incorrect!
 What is happening is that the first time info == result so the issuer is set on it, and it contains the ca_info instance. So result can get to it. Next when info is set to ca_info:
 
+```c++
     info = ca_info;
+```
 
 This is for the next iteration and if there are more they will be chained to ca_info using the info->Set(env->issuercert_string(), ca_info), which remember can be accessed from result via its issuercert_string property. 
-
+```console
 result -> #issuercertificate -> ca_info -> #issuercerficate -> ca_info
+```
 
 If this is not done result will not be linked to them all and the chain broken.
 
 
-
-
 ### Crypto SetKey
 
+```c++
     void DiffieHellman::SetPublicKey(const FunctionCallbackInfo<Value>& args) {
       SetKey(args, [](DH* dh, BIGNUM* num) { DH_set0_key(dh, num, nullptr); },
          "Public key");
@@ -6857,14 +7237,18 @@ If this is not done result will not be linked to them all and the chain broken.
     void DiffieHellman::SetKey(const v8::FunctionCallbackInfo<v8::Value>& args,
                            void (*set_field)(DH*, BIGNUM*), const char* what) {
       ...
+```
 
 Notice that the second paramenter to SetKey is a function pointer:
 
+```c++
      void function_name(DH* dh, BIGHUM* n);
+```
 
 I noticed that DH_set0_key returns one and wondering why as the function pointer is declared as returning
 void:
 
+```c++
     static int DH_set0_key(DH* dh, BIGNUM* pub_key, BIGNUM* priv_key) {
       if (pub_key != nullptr) {
         BN_free(dh->pub_key);
@@ -6876,17 +7260,20 @@ void:
       }
       return 1;
     }
+```
 
 And the call looks like this in `SetKey`:
 
+```c++
     set_field(dh->dh, num);
+```
 
 
 ### Object Set
 The `Set` functions in include/v8.h for Object are deprecated. The ones that should be used are the ones that
 return a MayBe<bool> result instead. This means that you also have to call either FromJust() or ToChecked()
 before using/retrieving the value.
-
+```console
      3109 class V8_EXPORT Object : public Value {
      3110  public:
      3111   V8_DEPRECATE_SOON("Use maybe version",
@@ -6898,40 +7285,33 @@ before using/retrieving the value.
      3117                     bool Set(uint32_t index, Local<Value> value));
      3118   V8_WARN_UNUSED_RESULT Maybe<bool> Set(Local<Context> context, uint32_t index,
      3119                                         Local<Value> value);
+```
 
 
 ### Unqualified name lookup
+```c++
     void SecureContext::Initialize(Environment* env, Local<Object> target) {
       ...
       env->SetProtoMethod(t, "init", SecureContext::Init);
+```
 
 Even without the `SecureContext` namespace `Init` will be resolved correctly as resolution will 
 look in class of the member funtion which is SecureContext.
 
-
-require('tls)';
-
-
-const script = new ContextifyScript(code, options);
-`code` is the wrapped tls.js file.
-return script.runInThisContext();
-
-fn(this.exports, requireFn, this, internalBinding, process);
-
-Bindings in node.cc:
-exports = InitModule(env, mod, module);
-`
-
-
+```c++
     const binding = process.binding('crypto');
+```
 
 This will invoke SecureContext::Initialize.
 
+```javascript
 const server = tls.Server(options, function(socket) {
 
 exports.Server = require('_tls_wrap').Server;
+```
 
 _tls_common.js:
+```javascript
 const binding = process.binding('crypto');
 const NativeSecureContext = binding.SecureContext;
 
@@ -6939,11 +7319,13 @@ function SecureContext(secureProtocol, secureOptions, context) {
   ... 
   this.context = new NativeSecureContext();
 }
+```
 So we can see that SecureContext::New is bound to NativeSecureContext.
 
 
 ### node_crypto_bio
 
+```c++
     static const BIO_METHOD method = {
       BIO_TYPE_MEM,
       "node.js SSL buffer",
@@ -6971,22 +7353,29 @@ BIO* NodeBIO::NewFixed(const char* data, size_t len) {
 
   return bio;
 }
+```
 
 `BIO_set_mem_eof_return` is a macro defined as:
 
+```c++
     # define BIO_set_mem_eof_return(b,v) BIO_ctrl(b,BIO_C_SET_BUF_MEM_EOF_RETURN,v,NULL)
+```
 
 which in our case would give:
 
+```c++
     BIO_strl(bio, BIO_C_SET_BUF_MEM_EOF_RETURN, 0, NULL)
+```
 
 This call will end up in bio_lib.c and its BIO_ctrl function:
 
+```c++
     ret = b->method->ctrl(b, cmd, larg, parg);
+```
 
 Now, b is the BIO we passed in, cmd is BIO_C_SET_BUF_MEM_EOF_RETURN (130), larg is 0, and parg is NULL.
 The interesting thing here is that b->method will be the method defined in node_crypto_bio.cc:
-
+```console
     (lldb) p *b->method
     (BIO_METHOD) $12 = {
       type = 1025
@@ -7000,32 +7389,42 @@ The interesting thing here is that b->method will be the method defined in node_
       destroy = 0x000000010192e830 (node`node::crypto::NodeBIO::Free(bio_st*) at node_crypto_bio.cc:77)
       callback_ctrl = 0x0000000000000000
     }
+```
 
 So b->method->ctrl will call NodeBIO::Ctrl:
 The first things that is done is that the NodeBIO instance is retrieved from the bio:
 
+```c++
     NodeBIO* nbio = FromBIO(bio);
+```
 
 
 'FromBIO': 
 
+```c++
     CHECK_NE(BIO_get_data(bio), nullptr);
     return static_cast<NodeBIO*>(BIO_get_data(bio));
+```
 
 BIO_get_data is a macro for OPENSSL versions greater than 1.0.1:
 
+```c++
     #define BIO_get_data(bio) bio->ptr
+```
 
 So we can see that the BIO's ponter is a pointer to the NodeBIO instance.
 
+```c++
     case BIO_C_SET_BUF_MEM_EOF_RETURN
       nbio->set_eof_return(num);
       break;
+```
 
 So we are calling 'set_eof_return' with 
-
+```console
     (lldb) p num
     (long) $14 = 0
+```
 
 ### Node Crypto BIO Buffer
 node_crypto_bio.h has a private Buffer class.
@@ -7033,15 +7432,20 @@ node_crypto_bio.h has a private Buffer class.
 To understand what this buffer does and how it works lets take a look at a usage of it...
 SecureContext::AddCACert:
 
+```c++
     ...
     BIO* bio = LoadBIO(env, args[0]);
+```
     
 In this case args[0] is a certificate (a string) so the following path in LoadBIO will be taken:
 
+```c++
     return NodeBIO::NewFixed(*s, s.length());
+```
 
 NodeBIO::NewFixed will call:
 
+```c++
     if (bio == nullptr ||
       len > INT_MAX ||
       BIO_write(bio, data, len) != static_cast<int>(len) ||
@@ -7049,9 +7453,11 @@ NodeBIO::NewFixed will call:
       BIO_free(bio);
       return nullptr;
     }
+```
 
 We are interested in the BIO_write call which will call Write on the bio's method which is NodeBIO::Write:
 
+```c++
     void NodeBIO::Write(const char* data, size_t size) {
     ...
     // Allocate initial buffer if the ring is empty
@@ -7079,9 +7485,10 @@ We are interested in the BIO_write call which will call Write on the bio's metho
         }
       }
     }
+```
 
 First time entering this function w and r will be null as write_head_ and read_head_ will be null:
-
+```console
     (lldb) expr w
     (node::crypto::NodeBIO::Buffer *) $24 = 0x0000000000000000
     (lldb) expr r
@@ -7106,26 +7513,30 @@ First time entering this function w and r will be null as write_head_ and read_h
       write_head_ = next;
       read_head_ = next;
     }
+```
 So initially there is only a single entry all pointing to this first one.
 Next, we are back in NodeBIO::Write:
 
+```c++
     while (left > 0) { // first time left is == 1224
     ....
     memcpy(write_head_->data_ + write_head_->write_pos_, data + offset, to_write);
+```
 
 void* memcpy( void* dest, const void* src, std::size_t count ) so the destination in our case is
 write_head_data_ + write_head_write_pos_, the data to be copied is data + 0, and to_write is 1224.
  
-
-
 ### ClientHelloParser
 node_crypto.h has a class member that is declared like:
 
+```c++
   ClientHelloParser hello_parser_;
+```
 
 So when a new SSLWrap is created constructor of ClientHelloParser will be called. Looking at the constructor for ClientHelloParser
 it first initilizes its fields and then calls Reset():
 
+```c++
       ClientHelloParser() : state_(kEnded),
                         onhello_cb_(nullptr),
                         onend_cb_(nullptr),
@@ -7152,38 +7563,49 @@ it first initilizes its fields and then calls Reset():
       servername_ = nullptr;
       ocsp_request_ = 0;  // added by me
     }
+```
 
 I can't find a reason for not resetting ocsp_request_ here. I'll create a PR to get some feedback.
 
 ### v8::Object::Set and exceptions
 This section goes through a call to Set and the possible exceptions that might be throws and 
 how they can be handled.
-
+```console
     $ lldb -- out/Debug/node --inspect-brk test/parallel/test-tls-legacy-onselect.js
+```
 
+```c++
     env->SetProtoMethod(t, "setSNICallback",  Connection::SetSNICallback);
-
+```
+```console
     (lldb) br s -f node_crypto.cc -l 3594
     (lldb) r
+```
 
 Open chrome://inspect and set a break point on this line:
 
+```c++
     const pair = tls.createSecurePair(null, true, false, false);
+```
 
 A `SecurePair` is a pair of streams to do encrypted communication with.
 
+```c++
     Local<Object> obj = Object::New(env->isolate());
     obj->Set(env->context(), env->onselect_string(), args[0]).FromJust();
+```
 
 We are creating a new Local<v8::Object> and setting a property on that object. The 
 property name is taken from the Environment function onselect_string(). This function
 is generated by a macro and by:
 
+```c++
     V(onselect_string, "onselect")
+```
 
 Now, `obj->Set` is only setting a property to be a function and here is a check in this 
 specific code path that arg[0] exists and is a function. 
-
+```console
     (lldb) jlh obj
     0x10583e1675b9: [JS_OBJECT_TYPE]
     - map = 0x105859b5fe79 [FastProperties]
@@ -7192,17 +7614,20 @@ specific code path that arg[0] exists and is a function.
     - properties = 0x1058b5982241 <FixedArray[0]> {
       #onselect: 0x10583e167571 <JSFunction (sfi = 0x1058fc5f3969)> (const data descriptor)
     }
+```
 
 
 But, there is a chance where an exception might be thrown and that is if there is a setter for `onselect'. This
 migth look like:
 
+```c++
     Object.defineProperty(Object.prototype, 'onselect', {
       set: function(f) {
         console.log('throw error from setter...');
         throw Error('dummy setter error');
       }
     });
+```
 
 Calling `obj->Set(env->context(), env->onselect_string(), args[0]).FromJust();` would cause an exception to be
 thrown:
@@ -7243,9 +7668,11 @@ return GetReturnValue<Object>(isolate);
 return a Handle to it or an empty Handle.
 After returning from `v8::internal::FunctionCallbackArguments::Call` we are the builtins-api.cc HandleApiCallHelper:
 
+```c++
     Handle<Object> result = custom.Call(callback); // this was our call to SetSNICallback
  
     RETURN_EXCEPTION_IF_SCHEDULED_EXCEPTION(isolate, Object);
+```
 
 `RETURN_EXCEPTION_IF_SCHEDULED_EXCEPTION` is a macro:
 
@@ -7253,6 +7680,7 @@ After returning from `v8::internal::FunctionCallbackArguments::Call` we are the 
       RETURN_VALUE_IF_SCHEDULED_EXCEPTION(isolate, MaybeHandle<T>())
 
 Which will expend to
+```c++
       RETURN_VALUE_IF_SCHEDULED_EXCEPTION(isolate, MaybeHandle<Object>())
 
 
@@ -7265,15 +7693,18 @@ Which will expend to
           return value;                                         \
         }                                                       \
       } while (false)
+```
 
 So this will expand to (which will be places in HandleApiCallHelper replacing RETURN_EXCEPTION_IF_SCHEDULED_EXCEPTION) as:
 
+```c++
         Isolate* __isolate__ = (isolate);            
         DCHECK(!__isolate__->has_pending_exception());
         if (__isolate__->has_scheduled_exception()) {
           __isolate__->PromoteScheduledException(); 
           return MaybeHandle<Object(); 
         }                             
+```
 
 In this case there will be a pending exception so __isolate__->PromoteScheduledException will be called.
 
@@ -7427,13 +7858,16 @@ pair.ssl.setSNICallback(common.mustCall(function() {
 
 `ENTER_V8` is a macro which is defined as:
 
+```c++
     #define ENTER_V8(isolate, context, class_name, function_name, bailout_value, \
                      HandleScopeClass)                                           \
       ENTER_V8_HELPER_DO_NOT_USE(isolate, context, class_name, function_name,    \
                              bailout_value, HandleScopeClass, true)
+```
 
 So `ENTER_V8(isolate, context, Object, Set, Nothing<bool>(), i::HandleScope);` would expend to:
 
+```c++
     ENTER_V8_HELPER_DO_NOT_USE(isolate, context, Object, Set, Nothing<bool>(), i::HandleScope, true)
 
     #define ENTER_V8_HELPER_DO_NOT_USE(isolate, context, Object,      \
@@ -7447,9 +7881,11 @@ So `ENTER_V8(isolate, context, Object, Set, Nothing<bool>(), i::HandleScope);` w
       LOG_API(isolate, class_name, function_name);                    \
       i::VMState<v8::OTHER> __state__((isolate));                     \
       bool has_pending_exception = false
+```
 
 So back in our v8::Object::Set function these macros would expend to:
 
+```c++
     Maybe<bool> v8::Object::Set(v8::Local<v8::Context> context, v8::Local<Value> key, v8::Local<Value> value) {
       auto isolate = reinterpret_cast<i::Isolate*>(context->GetIsolate());
       if (IsExecutionTerminatingCheck(isolate)) {                     
@@ -7472,10 +7908,12 @@ So back in our v8::Object::Set function these macros would expend to:
      RETURN_ON_FAILED_EXECUTION_PRIMITIVE(bool);
      return Just(true);
     }
+```
 
 So, lets take a closer look at i::Runtime::SetObjectProperty (`i` is V8's internal namespace) which we can find in
 src/runtime/runtime-object.cc.
 
+```c++
     // Check if the given key is an array index.
     bool success = false;
     LookupIterator it = LookupIterator::PropertyOrElement(isolate, object, key, &success);
@@ -7484,23 +7922,29 @@ src/runtime/runtime-object.cc.
     MAYBE_RETURN_NULL(Object::SetProperty(&it, value, language_mode,
                                           Object::MAY_BE_STORE_FROM_KEYED));
     return value;
+```
 
 `MAYBE_RETURN_NULL` macro :
 
+```c++
     #define MAYBE_RETURN_NULL(call) MAYBE_RETURN(call, MaybeHandle<Object>())
 
     #define MAYBE_RETURN(call, value)         \
       do {                                    \
         if ((call).IsNothing()) return value; \
       } while (false)
+```
     
 So, in this case our call will expend to:
 
+```c++
     if (Object::SetProperty(&it, value, language_mode, Object::MAY_BE_STORE_FROM_KEYED).IsNothing())
        return MaybeHandle<Object>();
+```
 
 Lets follow `SetProperty` (in src/objects.cc line 4753) and see what it does:
 
+```c++
     Maybe<bool> Object::SetProperty(LookupIterator* it, Handle<Object> value,
                                 LanguageMode language_mode,
                                 StoreFromKeyed store_mode) {
@@ -7524,9 +7968,11 @@ Lets follow `SetProperty` (in src/objects.cc line 4753) and see what it does:
       is_sloppy(language_mode) ? kDontThrow : kThrowOnError;
   return AddDataProperty(it, value, NONE, should_throw, store_mode);
 }
+```
 
 `SetPropertyInternal` (in src/objects.cc):
 
+```c++
     ShouldThrow should_throw = is_sloppy(language_mode) ? DONT_THROW : THROW_ON_ERROR;
 
     switch (it->state()) {
@@ -7540,13 +7986,16 @@ Lets follow `SetProperty` (in src/objects.cc line 4753) and see what it does:
 
     ....
     return SetPropertyWithAccessor(it, value, should_throw);
+```
 
 `SetPropertyWithAccessors`:
+```c++
 
     Handle<Object> structure = it->GetAccessors();
     Handle<Object> receiver = it->GetReceiver();
     ...
     Handle<Object> setter(AccessorPair::cast(*structure)->setter(), isolate);
+```
 
 ```console
 (lldb) job *setter
@@ -7624,8 +8073,10 @@ MUST_USE_RESULT MaybeHandle<Object> Invoke(
        ? isolate->factory()->js_construct_entry_code()
        : isolate->factory()->js_entry_code();
 ```
+```console
     (lldb) p is_construct
     (bool) $74 = false
+```
 
 So `isolate->factory()->js_entry_code() will be called. Lets take a look at this code. To do this we have to
 take the address from code->entry()
@@ -7708,6 +8159,7 @@ RelocInfo (size = 23)
 0x6b17cf04130  external reference (Isolate::c_entry_fp_address)  (0x1060019e8)
 ```
 
+```c++
     Object* orig_func = *new_target;
     Object* func = *target;
     Object* recv = *receiver;
@@ -7717,35 +8169,39 @@ RelocInfo (size = 23)
     }
     RuntimeCallTimerScope timer(isolate, &RuntimeCallStats::JS_Execution);
     value = CALL_GENERATED_CODE(isolate, stub_entry, orig_func, func, recv, argc, argv);
-
 ```
-
-value = CALL_GENERATED_CODE(isolate, stub_entry, orig_func, func, recv, argc, argv);
-
 `CALL_GENEREATED_CODE` is defined in `src/x64/simulator-x64.h`:
+```c++
 #define CALL_GENERATED_CODE(isolate, entry, p0, p1, p2, p3, p4) \
   (entry(p0, p1, p2, p3, p4))
+```
 
 
 Now, `stub_entry is of type `JSEntryFunction` which is a typedef 
+```c++
     typedef Object* (*JSEntryFunction)(Object* new_target, Object* target,
                                       Object* receiver, int argc,
                                       Object*** args);
     stub_entry(orig_func, func, recv, argc, argv)
 
     JSEntryFunction stub_entry = FUNCTION_CAST<JSEntryFunction>(code->entry());
+```
 
 From the comments about FUNCTION_CAST it is used to invoke generated code from within C:
+```c++
 // FUNCTION_CAST<F>(addr) casts an address into a function
 // of type F. Used to invoke generated code from within C.
 template <typename F>
 F FUNCTION_CAST(Address addr) {
   return reinterpret_cast<F>(reinterpret_cast<intptr_t>(addr));
 }
+```
 
 Lets take a look at the arguments to entry which are:
 
+```c++
     stub_entry(orig_func, func, recv, argc, argv)
+```
 
 
 To follow the code in `stub_entry` we need to step-inst (instruction level step) but there is not debug information
@@ -7813,13 +8269,13 @@ And the first in the STACK_FRAME_LIST is:
   ...
 ```
 
-movq r10,0x106001978 matches:
+`movq r10,0x106001978` matches:
 ```c++
 ExternalReference context_address(IsolateAddressId::kContextAddress, isolate());
 __ Load(kScratchRegister, context_address);
 ```
 `kScratchRegister` is r10 and we are moving `0x106001978` (the context_address) into register r10.  
-
+```
 `movq r10,[r10]`   __ Load(kScratchRegister, context_address);  // get the pointer
 `push r10`         __ Push(kScratchRegister);  // push the pointer onto the stack
 `push r12`         __ pushq(r12);  
@@ -7832,10 +8288,13 @@ __ Load(kScratchRegister, context_address);
 `addq r13,0x80`          __ Push(c_entry_fp_operand); 
 
 `movq r10,0x1060019e8`   __ Load(rax, js_entry_sp);   ;; external reference (Isolate::c_entry_fp_address)
+```
+```console
 0x6b17cf04099    39  41ff32         push [r10]
 0x6b17cf0409c    3c  48a1081a000601000000 REX.W movq rax,(0x106001a08)    ;; external reference (Isolate::js_entry_sp_address)
 0x6b17cf040a6    46  4885c0         REX.W testq rax,rax
 0x6b17cf040a9    49  0f8514000000   jnz 0x6b17cf040c3  <+0x63>
+```
 
 You might be wondering what that `__` is, well it is a macro:
 ```c++
@@ -7845,8 +8304,7 @@ You might be wondering what that `__` is, well it is a macro:
 ```
 So `__` will get expanded to masm->pushq(rbp) for example. I think this is done so that it look more like assembly and 
 not so much as C++/C.
-
-
+```console
 0x6b17cf04060     0  55             push rbp                                 // prologue
 0x6b17cf04061     1  4889e5         REX.W movq rbp,rsp                       // prologue
 0x6b17cf04064     4  6a02           push 0x2                                 // Stack frame type = Context Address type
@@ -7904,6 +8362,7 @@ not so much as C++/C.
 0x6b17cf04149    e9  c3             retl
 
 0x6b17cf040fd  code target (BUILTIN)  (0x6b17cf041c0)
+```
 
 If we set a break point after CALL_GENERATED_CODE we will see that this code does return and a value is
 provided:
@@ -7915,12 +8374,11 @@ isolate->clear_pending_message();
 return Handle<Object>(value, isolate);
 ```  
 
-
-deps/v8/src/builtins/builtins-api.cc
-
+```c++
 Handle<Object> result = custom.Call(callback);
 
 RETURN_EXCEPTION_IF_SCHEDULED_EXCEPTION(isolate, Object);
+```
 which will expend to :
 ```c++
 Isolate* __isolate__ = (isolate);                       
@@ -7932,12 +8390,15 @@ if (__isolate__->has_scheduled_exception()) {
 ```
 In this case there will be a scheduled_exception.
 
+```c++
 Object* Isolate::PromoteScheduledException() {
   Object* thrown = scheduled_exception();
   clear_scheduled_exception();
   // Re-throw the exception to avoid getting repeated error reporting.
   return ReThrow(thrown);
 }
+```
+```console
 (lldb) job thrown
 0x136bbb969d61: [JS_ERROR_TYPE]
  - map = 0x136bd865de81 [FastProperties]
@@ -7948,13 +8409,13 @@ Object* Isolate::PromoteScheduledException() {
     #message: 0x136b27c6e981 <String[18]: dummy setter error> (data field 0) properties[0]
     0x136ba4c87069 <Symbol: stack_trace_symbol>: 0x136bbb969f49 <JSArray[26]> (data field 1) properties[1]
  }
+```
 
 `ReThrow` will:
 ```c++
 set_pending_exception(exception);
 return heap()->exception();
 ``
-
 
 Notes:
 ```c++
@@ -8574,12 +9035,19 @@ a compile time we can put a break point in it (you can debug mksnapshot though w
      rdi = 0x00001d6417d30669
 (lldb) expr func
 (v8::internal::Object *) $280 = 0x00001d6417d30669
-// Now I think that func is/was of type JSFunction (deps/v8/src/objects.h) as it was cast to Object* by:
-// auto fun = i::Handle<i::JSFunction>::cast(Utils::OpenHandle(this));
-// class JSFunction: public JSObject {
+```
+Now I think that func is/was of type JSFunction (deps/v8/src/objects.h) as it was cast to Object* by:
+```c++
+auto fun = i::Handle<i::JSFunction>::cast(Utils::OpenHandle(this));
+```
+
+```c++
+class JSFunction: public JSObject {
  public:
   // [prototype_or_initial_map]:
   DECL_ACCESSORS(prototype_or_initial_map, Object)
+```
+```console
     0x302f3413c40a: movq   -0x1(%rdi), %rcx                      // move the map into rcx. CmpObjectType(rdi, JS_FUNCTION_TYPE, rcx). HeapObject::kMapOffset which is the first field in JSFunction:
 (lldb) memory read -f x -c 1 -s 8 `$rdi - 1`
 0x1d6417d30668: 0x00001d6433c82521
@@ -8695,6 +9163,7 @@ Instructions (size = 1004)
     0x302f341442ef: jne    0x302f34144486                      // JumpIfNotSmi -> Assembler::j 
     0x302f341442f5: testb  $0x1, %cl                           // test again but this time from MacroAssembler::SmiCompare and its call to AssertSmi which calls CheckSmi
     0x302f341442f8: je     0x302f3414430a                      // SmiCompare -> AssertSmi -> Check
+```
 
 
 Look into static inline Code* GetCodeFromTargetAddress(Address address); which could possible be
@@ -8747,6 +9216,7 @@ if (!create_heap_objects) des->DeserializeInto(this);
 ```
 
 `PrepareAndExecuteUnoptimizedCompileJob` `deps/v8/src/compiler.cc` 
+```console
 0x169cbdb41e04  external reference (Runtime::StackGuard)  (0x101440100)
 0x169cbdb41e0d  code target (STUB)  (0x169cbda84740)
 ```
@@ -9103,10 +9573,8 @@ For `isolate_addresses_` which are pointers we can inspect them like this:
 
 ```c++
 Local<Value> result = script.ToLocalChecked()->Run();
-
 ```
 
-```
 If we back down through the call frame again, we will be in `execution.cc` and see this now familar code:
 ```c++
     typedef Object* (*JSEntryFunction)(Object* new_target, Object* target,
@@ -10194,22 +10662,12 @@ if (__builtin_expect(!!(false == try_catch.IsVerbose()), 0)) {
 }
 ```
 `__builtin_expect` expects its parameters to be of type long and not bool, so there is a need to cast.
-
+```console
 (lldb) expr !!(false == try_catch.IsVerbose())
 (bool) $122 = true 
+```
 This is already bool but the macro can be used with other types. 
 
-
-
-
-
--> 191   generator()->GenerateBytecode(stack_limit());
-
-bytecode-generator.cc:968
-
-builder()->StackCheck(info()->literal()->start_position());
-
-src/interpreter/bytecode-array-builder.cc
 
 OutputStackCheck();
 `OutputStackCheck` is generated using a macro:
@@ -10283,15 +10741,19 @@ the BytecodeNode and then call `Write(&node)`
 ```
 
 compiler.cc:803
+```c++
  Handle<SharedFunctionInfo> shared_info =
    801       isolate->factory()->NewSharedFunctionInfoForLiteral(parse_info->literal(),
    802                                                           parse_info->script());
-
+```
+```console
 (lldb) job *shared_info
+```
 
 I'm not showing the whole output but this is the contents of node_bootstrap.js
 
 interpreter.cc:211
+```console
  Handle<BytecodeArray> bytecodes =
 211       generator()->FinalizeBytecode(isolate(), parse_info()->script());
 
@@ -10300,6 +10762,7 @@ interpreter.cc:211
    226   compilation_info()->SetCode(
    227       BUILTIN_CODE(compilation_info()->isolate(), InterpreterEntryTrampoline));
    228   return SUCCEEDED;
+```
 
 So `BUILTIN_CODE` will expand to:
 ```c++
@@ -10630,7 +11093,7 @@ Once again we will be back in `Invoke` and this following line:
 ```c++
 Handle<Code> code = is_construct ? isolate->factory()->js_construct_entry_code() : isolate->factory()->js_entry_code();
 ```
-In this case `is_construct` is false so Handle<Code> will be what ever `isolate->factory()->js_entry_code()` returns. And it
+In this case `is_construct` is false so Handle\<Code\> will be what ever `isolate->factory()->js_entry_code()` returns. And it
 returns:
 ```console
 (lldb) job *code
@@ -11129,10 +11592,7 @@ which will delegate to `Generate_Call`
 ```
 
 
-### CompileLazy
-`Builtins::Generate_CompileLazy(MacroAssembler* masm)` in `src/builtins/x64/builtins-x64.cc`
-
-### Assembler:j(Condition cc, Handle<Code> target, RelocInfo::Mode rmode) 
+### Assembler:j(Condition cc, Handle\<Code\> target, RelocInfo::Mode rmode) 
 Can be found in `src/x64/assembler-x64.cc` (line 1367):
 ```c++
 void Assembler::j(Condition cc, Handle<Code> target, RelocInfo::Mode rmode) {
@@ -11342,6 +11802,7 @@ i::MaybeHandle<i::SharedFunctionInfo> maybe_function_info = i::Compiler::GetShar
   ...
   std::unique_ptr<CompilationJob> outer_function_job(GenerateUnoptimizedCode(parse_info, isolate, &inner_function_jobs));
 ...
+```
 
 ### GenerateUnoptimizedCode
 `src/compiler.cc`
@@ -11416,9 +11877,8 @@ Now we are getting closer to figuring out how the bytecode is generated. This wi
   ContextScope incoming_context(this, closure_scope());
   RegisterAllocationScope register_scope(this);
   AllocateTopLevelRegisters();
-...
+  ...
   GenerateBytecodeBody();
-
 ```
 
 GenerateBytecodeBody:
@@ -11431,6 +11891,7 @@ GenerateBytecodeBody:
   VisitStatements(info()->literal()->body());
   ...
 ```
+
 This will later call `OutputStackCheck();`
 ```console
 (lldb) p *node
