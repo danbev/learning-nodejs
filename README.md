@@ -8081,7 +8081,7 @@ MUST_USE_RESULT MaybeHandle<Object> Invoke(
     (bool) $74 = false
 ```
 
-So `isolate->factory()->js_entry_code() will be called. Lets take a look at this code. To do this we have to
+So `isolate->factory()->js_entry_code()` will be called. Lets take a look at this code. To do this we have to
 take the address from code->entry()
 
 
