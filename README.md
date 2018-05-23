@@ -11454,6 +11454,7 @@ Bytecode bytecode = node->bytecode();
 OperandScale operand_scale = node->operand_scale();
 ```
 In this case bytecode is kStackCheck. Now, kStackCheck is an index into builtins_ array of the isolate:
+
 ```console
 (lldb) job *isolate->builtins()->builtin_handle(Builtins::Name::kStackCheck)
 0x2a9270441da1: [Code]
@@ -11529,7 +11530,6 @@ Now that we know this we can disassemble the complete function using:
 (lldb) dis -n v8::internal::Runtime_StackGuard
 ```
 As well as any other runtime function we might be interested in later.
-
 
 
 Next, the body will be visited (BytecodeGenerator::VisitStatements():
@@ -11736,13 +11736,14 @@ Next vars are:
 builder()->StackCheck(info()->literal()->start_position());
 VisitStatements(info()->literal()->body());
 
-
+```console
 (lldb) expr stmt->Print()
 BLOCK NOCOMPLETIONS at -1
 . EXPRESSION STATEMENT at 326
 . . INIT at 326
 . . . VAR PROXY context[5] (0x1048808a0) (mode = LET) "internalBinding"
 . . . LITERAL undefined
+```
 
 After all the AST nodes have been visisted and compiled into bytecode we will be back in GenerateUnoptimizedCode
 where we were compiling all the inner statments of the outer code. The outer_function_job is then returned to `CompileToLevel`:
@@ -13196,7 +13197,7 @@ $ lldb -- out/Debug/node --inspect-brk test/parallel/test-fs-read-stream.js
 ```
 If we back up the frame stack a little we can see that this is called from GetBinding with a string
 value of:
-````console
+```console
 (lldb) up 2
 (lldb) jlh module
 #stream_wrap
