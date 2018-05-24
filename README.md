@@ -2002,7 +2002,6 @@ not during this debugging session) but later when `PromiseWrap::New` is called:
 ```c++
 wrap = PromiseWrap::New(env, promise, nullptr, silent);
 ```
-```
 So, lets take a closer look at `PromiseWrap::New`:
 ```c++
   Local<Object> object = env->promise_wrap_template()->NewInstance(env->context()).ToLocalChecked();
