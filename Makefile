@@ -140,6 +140,9 @@ test/base-object_test: test/base-object_test.cc
 test/environment_test: test/environment_test.cc
 	$ $(node_cc) -o test/environment_test
 
+src/import.wasm: src/import.wat
+	wat2wasm $< -o $@
+
 .PHONY: clean
 
 clean: 
