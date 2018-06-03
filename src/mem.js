@@ -1,5 +1,5 @@
 const fs = require('fs');
-const buffer = fs.readFileSync('./mem.wasm');
+const buffer = fs.readFileSync('./src/mem.wasm');
 
 const memory = new WebAssembly.Memory({initial:1});
 

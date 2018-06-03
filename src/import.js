@@ -1,5 +1,5 @@
 const fs = require('fs');
-const buffer = fs.readFileSync('import.wasm');
+const buffer = fs.readFileSync('src/import.wasm');
 
 WebAssembly.validate(buffer);
 
