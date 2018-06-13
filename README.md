@@ -71,9 +71,13 @@ There is also nothing about a event loop in V8, this is also something that is p
     |                                                                                          |
     |                                                                                          |
     | +---------------------+     +---------------------------------------+                    |
-    | |     Event loop      |     |          Callback queue               |                    |
+    | |     Event loop      |     |          Render task queue            |                    |
     | |                     |     |                                       |                    |
     | +---------------------+     +---------------------------------------+                    |
+    |                             +---------------------------------------+                    |
+    |                             |          Callback/task queue          |                    |
+    |                             |                                       |                    |
+    |                             +---------------------------------------+                    |
     |                                                                                          |
     |                                                                                          |
     +------------------------------------------------------------------------------------------+
@@ -89,6 +93,8 @@ Aychnronous work can be done by calling into the WebAPIs, for example calling se
 WebAPI and then return. The functionality for setTimeout is provided by the WebAPI and when the timer is due the
 WebAPI will push the callback onto the callback queue. Items from the callback queue will be picked up by the event
 loop and pushed onto the stack for execution.
+
+TODO: Is the microtask queue considered part of V8 or part of chrome?
 
 Now lets compare this with Node.js:
 
@@ -110,9 +116,13 @@ Now lets compare this with Node.js:
     |                                                                                          |
     |                                                                                          |
     | +---------------------+     +---------------------------------------+                    |
-    | | libuv               |     |          Callback queue               |                    |
+    | | libuv               |     |          Microtask queue              |                    |
     | |     Event Loop      |     |                                       |                    |
     | +---------------------+     +---------------------------------------+                    |
+    |                             +---------------------------------------+                    |
+    |                             |          Callback queue               |                    |
+    |                             |                                       |                    |
+    |                             +---------------------------------------+                    |
     |                                                                                          |
     |                                                                                          |
     +------------------------------------------------------------------------------------------+
@@ -122,6 +132,7 @@ the function will return. When the timer expires Node Core API will push the cal
 callback queue.
 The event loop in Node is provided by libuv, whereas in chrome this is provided by the browser
 (chromium I believe)
+TODO: Is the microtask queue considered part of V8 or part of node?
 
 ### Starting Node
 To start and stop at first line in a js program use:
@@ -4130,7 +4141,7 @@ and args. So for every nextTick called an entry will be added to the queue.
     tickInfo[kLength]++;
 ```
 
-Recall that TickInfo is an inner class of Environment. Lets back up a little. `bootstrap_node.js` will call next_tick's setup() function from its start function:
+Recall that TickInfo is an inner class of Environment. Lets back up a little. `bootstrap/node.js` will call next_tick's setup() function from its start function:
 
 ```javascript
     NativeModule.require('internal/process/next_tick').setup();
@@ -4181,7 +4192,7 @@ passed to `_setupNextTick`.
         FIXED_ONE_BYTE_STRING(args.GetIsolate(), "_setupNextTick")).FromJust();
 ```
 
-Looks like this removes the _setupNextTick function from the process object.
+Looks like this removes the _setupNextTick function from the process object afterwards.
 
 ```c++
     uint32_t* const fields = env->tick_info()->fields();
@@ -4211,7 +4222,7 @@ Next we assign the `RunMicroTasks` callback to the `_runMicrotasks` variable:
     _runMicrotasks = _runMicrotasks.runMicrotasks;
 ```
 
-After this we are done in bootstrap_node.js and the setup of next_tick.
+After this we are done in bootstrap/node.js and the setup of next_tick.
 So, lets continue and break in our script and follow process.setNextTick.
 
 ```javascript
@@ -4369,8 +4380,10 @@ So that gives us more information, but lets say you'd like to see the name of th
 ```
 
 ### Promise builtin
-For debug the builtin promise we are going to disable V8 snapshots:
+For debugging the builtin promise we are going to disable V8 snapshots:
 ```console
+$ ./configure --without-snapshot --debug
+$ lldb -- out/Debug/node ../scripts/promise.js
 (lldb) br s -f bootstrapper.cc -l 2321
 ```
 It takes a while before the breakpoint is hit but it will be.
@@ -4379,10 +4392,6 @@ And we are going to look at the following js:
 const p = new Promise((resolve, reject) => {
   resolve('ok');
 });
-```
-```console
-$ lldb -- out/Debug/node ../scripts/promise.js
-$ ./configure --without-snapshot --debug
 ```
 
 ```c++
@@ -4436,7 +4445,6 @@ So we can see that the Promise function is set up as a global. The `then` functi
   Handle<JSFunction> promise_then = SimpleInstallFunction(prototype, isolate->factory()->then_string(), Builtins::kPromisePrototypeThen, 2, true);
   native_context()->set_promise_then(*promise_then);
 ```
-
 
 `deps/v8/src/builtins/builtins-definitions.h`:
 ```c++
@@ -10548,7 +10556,7 @@ In isolate.cc when an Isolate is initialized by `bool Isolate::Init(StartupDeser
 ```c++
 isolate_addresses_[IsolateAddressId::HandlerAddress] = reinterpret_cast<Address>(handler_address());
 ```
-`isolate_addresses` can be found in isolate.h:
+`isolate_addresses_` can be found in isolate.h:
 ```c++
 Address isolate_addresses_[kIsolateAddressCount + 1];
 ```
@@ -10577,6 +10585,7 @@ Context* pending_handler_context_address() { return &thread_local_top_.pending_h
 
 When is `Isolate::Init` called?  
 It is called from node::Start
+
 ```console
 Isolate* const isolate = Isolate::New(params);
 ```
@@ -15370,6 +15379,7 @@ The body is a list of instructions for the fuction.
   (export "add" (func $add))
 )
 ```
+Notice that a wasm "program" is simply named a module as the intention is to have it included and run by another program. 
 The body is stack based so `get_local` will push $first onto the stack. `i32.add` will take two values from the stack, add then and push
 the result onto the stack. 
 Notice the `$add` in the function. This is much like the parameters that are index based but can be named to make the code
@@ -15397,7 +15407,590 @@ promise.then((result) => {
   const addTwo = instance.exports.addTwo;
   console.log(addTwo(1, 2));
 });
+Lets take a closer look at the WebAssembly API.
+
+`WebAssembly` is the how the api is exposed.
+WebAssembly.instantiate:
+compiles and instanciates wasm code and returns both an object with two
+members `module` and `instance`.
+
 
 `WebAssembly.Memory` is used to deal with more complex objects like strings. Is just a large array of bytes which can grow. You can read/write
 using i32.load and i32.store. 
+Memory is specified using WebAssembly.Memory{}:
+```javascript
+const memory = new WebAssembly.Memory({initial:10, maximum:100});
 ```
+`10` and `100` are specified in pages which are fixed to 64KiB. So here we are saying that we want an initial size of 640KiB.
+
+
+```
+
+`WebAssembly` is a builtin object in V8 (I think, still have to verify this).
+
+To inspect the .wasm you can use wasm-objdump:
+```console
+$ wasm-objdump -x src/add.wasm
+
+add.wasm:file format wasm 0x1
+
+Section Details:
+
+Type:
+ - type[0] (i32, i32) -> i32
+Function:
+ - func[0] sig=0 <add>
+ - func[1] sig=0 <addTwo>
+Export:
+ - func[0] <add> -> "add"
+ - func[1] <addTwo> -> "addTwo"
+```
+When 
+
+```javascript
+const buffer = fs.readFileSync('../scripts/helloworld.wasm');
+WebAssembly.validate(buffer);
+```
+From reading some docs/spec I read that validate compiles the wasm, remember that it is in 
+binary format and in our case we transformed it from text format (wat) to binary format (wasm).
+This set is compiling and returns true or false depending on if it was successful. TODO: where is this done in V8?
+`WebAssembly.validate(buffer)` is a builtin 
+
+
+`src/wasm/wasm-objects.h`:
+```c++
+class WasmInstanceObject : public JSObject {
+ public:
+  DECL_CAST(WasmInstanceObject)
+  ...
+  // Layout description.
+#define WASM_INSTANCE_OBJECT_FIELDS(V)                                  \
+  V(kCompiledModuleOffset, kPointerSize)                                \
+  V(kExportsObjectOffset, kPointerSize)                                 \
+  V(kMemoryObjectOffset, kPointerSize)                                  \
+  V(kGlobalsBufferOffset, kPointerSize)                                 \
+  V(kDebugInfoOffset, kPointerSize)                                     \
+  V(kTableObjectOffset, kPointerSize)                                   \
+  V(kFunctionTablesOffset, kPointerSize)                                \
+  V(kImportedFunctionInstancesOffset, kPointerSize)                     \
+  V(kImportedFunctionCallablesOffset, kPointerSize)                     \
+  V(kIndirectFunctionTableInstancesOffset, kPointerSize)                \
+  V(kManagedNativeAllocationsOffset, kPointerSize)                      \
+  V(kManagedIndirectPatcherOffset, kPointerSize)                        \
+  V(kFirstUntaggedOffset, 0)                             /* marker */   \
+  V(kMemoryStartOffset, kPointerSize)                    /* untagged */ \
+  V(kMemorySizeOffset, kUInt32Size)                      /* untagged */ \
+  V(kMemoryMaskOffset, kUInt32Size)                      /* untagged */ \
+  V(kImportedFunctionTargetsOffset, kPointerSize)        /* untagged */ \
+  V(kGlobalsStartOffset, kPointerSize)                   /* untagged */ \
+  V(kIndirectFunctionTableSigIdsOffset, kPointerSize)    /* untagged */ \
+  V(kIndirectFunctionTableTargetsOffset, kPointerSize)   /* untagged */ \
+  V(kIndirectFunctionTableSizeOffset, kUInt32Size)       /* untagged */ \
+  V(k64BitArchPaddingOffset, kPointerSize - kUInt32Size) /* padding */  \
+  V(kSize, 0)
+
+  DEFINE_FIELD_OFFSET_CONSTANTS(JSObject::kHeaderSize,
+                                WASM_INSTANCE_OBJECT_FIELDS)
+#undef WASM_INSTANCE_OBJECT_FIELDS
+```
+```c++
+#define DEFINE_FIELD_OFFSET_CONSTANTS(StartOffset, LIST_MACRO) \
+  enum {                                                       \
+    LIST_MACRO##_StartOffset = StartOffset - 1,                \
+    LIST_MACRO(DEFINE_ONE_FIELD_OFFSET)                        \
+  };
+```
+Lets take a look at the what one for these expand to:
+```c++
+  enum {
+    WASM_INSTANCE_OBJECT_FIELDS_StartOffset = JSObject::kHeaderSize - 1,
+    kCompiledModuleOffset, kCompiledModuleOffsetEnd = kCompiledModuleOffset + kPointerSize - 1,
+    ExportsObjectOffset, ExportsObjectOffset = kCompiledModuleOffset + kPointerSize - 1,
+    
+  }
+  V(kCompiledModuleOffset, kPointerSize)                                \
+
+```
+
+Node native wasm modules
+========================
+The idea is to allow wasm to be loaded natively, similar to a native module, without having to go 
+view the JavaScript API.
+
+Currently, to do any system calls in WASM the options we have are to call out to javascript. 
+This would be done using an import in wasm:
+```lisp
+(module
+  (func $imported (import "imports" "imported_func") (param i32))
+  ...
+```
+In this case `imported_func` will have to passed to the wasm module by using the importObject:
+```javascript
+var importObject = {
+  imports: {
+    imported_func: function(nr) {
+      console.log(nr);
+    }
+  }
+};
+```
+Now, as we can see `imported_func` is implemented in JavaScript but it could have been a native binding function written in C++ too.
+
+What we are trying to accomplish is to be able to specify an import function what is not passed in from outside, but instead node will 
+try to bind the name to a native function by using the import name in the wasm. For this we would need to be able to register some 
+kind of callback with V8 does it's look up on the importsObject. 
+For example:
+```lisp
+(module
+  (func (import "fopen" "nodejs") (param i32) (param i32))
+)
+```
+
+```console
+$ lldb -- out/Debug/node --trace-wasm-compiler test/parallel/test-wasm-builtin.js
+(lldb) settings set target.non-stop-mode true
+(lldb) br s -n LookupImport
+```
+
+Stepping through the code I think that perhaps if there was a way to have a callback for `InstanceBuilder::LookupImport`
+we should be able to check the `module_name` is equal to `nodejs` and then do something.
+
+If we take a look at `InstantiateToInstanceObject` in `deps/v8/src/wasm/module-compiler`:
+```c++
+  InstanceBuilder builder(isolate, thrower, module_object, imports, memory);
+  auto instance = builder.Build();
+```
+`Build` will build a WasmInstanceeObject. Notice `imports' which will be set as `ffi_` in the builder instance.
+In our case the imports object could be null.
+```console
+(lldb) expr imports.ToHandleChecked()->Print()
+0x312eb5a75191: [JS_OBJECT_TYPE]
+ - map: 0x312eb3ad6f79 <Map(HOLEY_ELEMENTS)> [FastProperties]
+ - prototype: 0x312ed17043a1 <Object map = 0x312eb3a822b1>
+ - elements: 0x312eef982251 <FixedArray[0]> [HOLEY_ELEMENTS]
+ - properties: 0x312eef982251 <FixedArray[0]> {
+    #imports: 0x312eb5a751e9 <Object map = 0x312eb3ad6fd1> (data field 0)
+ }
+```
+But this is because we have passed in an `importObject` with a property named `imports`. What happens if we don't have 
+pass in an imports object?
+There will be an exception in this case. Just for testing and investigation I've [added](https://github.com/danbev/node/tree/wasm-builtin) a callback on the V8 isolate
+to allow an empty import object to be passed.
+
+```c++
+isolate->SetAllowWasmEmptyImportObjectCallback(AllowWasmEmptyImportObjectCallback);
+```
+
+With this implace we get further but run into the following:
+```console
+# Fatal error in ../deps/v8/src/wasm/module-compiler.cc, line 1738
+# Debug check failed: !ffi_.is_null().
+#
+#
+#
+#FailureMessage Object: 0x7fff5fbf9f40Illegal instruction: 4
+```
+Lets back up a little. When we call `WebAssembly.validate(buffer)` the function that we land in 
+is `WebAssemblyInstantiateCallback` (`deps/v8/src/wasm/wasm-js.cc`):
+```console
+(lldb) br s -n WebAssemblyInstantiateCallback
+```
+```c++
+Local<Value> module = args[0];
+```
+Intersting that the module is passed in to this function:
+```console
+(lldb) jlh module
+0x3137f054b099: [WASM_MODULE_TYPE]
+ - map: 0x313775888871 <Map(HOLEY_ELEMENTS)> [FastProperties]
+ - prototype: 0x3137d4eee691 <Object map = 0x313775888ce9>
+ - elements: 0x31375c282251 <FixedArray[0]> [HOLEY_ELEMENTS]
+ - properties: 0x31375c282251 <FixedArray[0]> {}
+```
+Next, we have:
+```c++
+  Local<Value> instance;
+  if (!WebAssemblyInstantiateImpl(isolate, module, args.Data()).ToLocal(&instance)) {
+    return;
+  }
+```
+`WebAssemblyInstantiateImpl` does:
+```c++
+instance_object = i_isolate->wasm_engine()->SyncInstantiate(
+        i_isolate, &thrower, i::Handle<i::WasmModuleObject>::cast(module_obj),
+        maybe_imports, i::MaybeHandle<i::JSArrayBuffer>());
+```
+`SyncInstantiate` can be found in `deps/v8/src/wasm/wasm-engine.cc` which delegates to `InstantiateToInstanceObject`
+in `deps/v8/src/wasm/module-compiler.cc`.
+```c++
+  InstanceBuilder builder(isolate, thrower, module_object, imports, memory);
+  auto instance = builder.Build();
+```
+In `build()` we find the check we added:
+```c++
+if (!module_->import_table.empty() && ffi_.is_null() &&
+      !isolate_->allow_wasm_empty_import_object_callback()) {
+    thrower_->TypeError( "Imports argument must be present and must be an object");
+    return {};
+```
+So we will then proceed with `  SanitizeImports()`:
+```c++
+  for (size_t index = 0; index < module_->import_table.size(); ++index) {
+    WasmImport& import = module_->import_table[index];
+
+```
+```console
+(lldb) frame var module_->import_table[0]
+(v8::internal::wasm::WasmImport) module_->import_table[0] = {
+  module_name = (offset_ = 25, length_ = 5)
+  field_name = (offset_ = 31, length_ = 6)
+  kind = kExternalFunction
+  index = 0
+}
+(lldb) frame var module_->import_table[0].module_name
+(v8::internal::wasm::WireBytesRef) module_->import_table[0].module_name = (offset_ = 25, length_ = 5)
+(lldb) frame var module_->import_table[0].field_name
+(v8::internal::wasm::WireBytesRef) module_->import_table[0].field_name = (offset_ = 31, length_ = 6)
+```
+Lets take a look at the `module_`:
+```console
+(lldb) expr *module_
+(v8::internal::wasm::WasmModule) $40 = {
+  signature_zone = {
+    __ptr_ = {
+      std::__1::__libcpp_compressed_pair_imp<v8::internal::Zone *, std::__1::default_delete<v8::internal::Zone>, 2> = {
+        __first_ = 0x0000000105a02060
+      }
+    }
+  }
+  initial_pages = 0
+  maximum_pages = 0
+  has_shared_memory = false
+  has_maximum_pages = false
+  has_memory = false
+  mem_export = false
+  start_function_index = -1
+  globals = size=0 {}
+  globals_size = 0
+  num_imported_functions = 1
+  num_declared_functions = 1
+  num_exported_functions = 1
+  name = (offset_ = 0, length_ = 0)
+  signatures = size=2 {
+    [0] = 0x0000000107006a20
+    [1] = 0x0000000107006a40
+  }
+  signature_ids = size=2 {
+    [0] = 0
+    [1] = 1
+  }
+  functions = size=2 {
+    [0] = {
+      sig = 0x0000000107006a20
+      func_index = 0
+      sig_index = 0
+      code = (offset_ = 0, length_ = 0)
+      imported = true
+      exported = false
+    }
+    [1] = {
+      sig = 0x0000000107006a40
+      func_index = 1
+      sig_index = 1
+      code = (offset_ = 58, length_ = 8)
+      imported = false
+      exported = true
+    }
+  }
+  data_segments = size=0 {}
+  function_tables = size=0 {}
+  import_table = size=1 {
+    [0] = {
+      module_name = (offset_ = 25, length_ = 5)
+      field_name = (offset_ = 31, length_ = 6)
+      kind = kExternalFunction
+      index = 0
+    }
+  }
+  export_table = size=1 {
+    [0] = {
+      name = (offset_ = 47, length_ = 5)
+      kind = kExternalFunction
+      index = 1
+    }
+  }
+  exceptions = size=0 {}
+  table_inits = size=0 {}
+  signature_map = {
+    next_ = 2
+    frozen_ = true
+    map_ = size=2 {
+      [0] = {
+        first = 0x0000000107006a40
+        second = 1
+      }
+      [1] = {
+        first = 0x0000000107006a20
+        second = 0
+      }
+    }
+  }
+  origin_ = kWasmOrigin
+  names_ = {
+    __ptr_ = {
+      std::__1::__libcpp_compressed_pair_imp<std::__1::unordered_map<unsigned int, v8::internal::wasm::WireBytesRef, std::__1::hash<unsigned int>, std::__1::equal_to<unsigned int>, std::__1::allocator<std::__1::pair<const unsigned int, v8::internal::wasm::WireBytesRef> > > *, std::__1::default_delete<std::__1::unordered_map<unsigned int, v8::internal::wasm::WireBytesRef, std::__1::hash<unsigned int>, std::__1::equal_to<unsigned int>, std::__1::allocator<std::__1::pair<const unsigned int, v8::internal::wasm::WireBytesRef> > > >, 2> = {
+        __first_ = 0x0000000105904ab0 size=0
+      }
+    }
+  }
+}
+```
+Next we have:
+```c++
+MaybeHandle<Object> result = module_->is_asm_js()
+            ? LookupImportAsm(int_index, import_name)
+            : LookupImport(int_index, module_name, import_name);
+```
+This will land us in 
+```c++
+MaybeHandle<Object> InstanceBuilder::LookupImport(uint32_t index,
+                                                  Handle<String> module_name,
+                                                  Handle<String> import_name) {
+```
+```console
+(lldb) job *module_name
+"fopen"
+(lldb) job *import_name
+"nodejs"
+```
+```c++
+  DCHECK(!ffi_.is_null());
+```
+This will then abort (I'm using a debug build of V8).
+
+The following is the code that retrieves the module from the import.
+```c++
+result = Object::GetPropertyOrElement(ffi_.ToHandleChecked(), module_name);
+```
+`ffi_` is the importObject passed in to validate, and module_name is the name of the property
+to look up. In our case this would be `fopen`.
+```console
+(lldb) job *name
+"fopen"
+```
+How about we pass the `ffi_` to the callback and it can add the object to it, and if the import object
+is null then create a new instance?
+
+So we would add the ffi as a parameter to our callback. This leads me to an issue since ffi_ is of type
+MaybeHandle<Receiver> which is an internal type. How to I pass this to the callback propertly without violating
+the API. Would it be alright to consider this an extension of the internal V8 API and there for it might
+be alright to include `src/objects.h` in the callbacks source file?
+
+The proposal for this can be found in this [branch](https://github.com/danbev/node/tree/wasm-native)
+
+
+### v8::Object vs v8::internal::Object
+v8::Object is part of the public api declared in include/v8.h. v8::internal::Object is declared in the 
+interal api in src/.
+It look like ToApiHandle does what I'm looking for. But what exactly does it do?
+
+
+
+
+
+
+n-api
+=====
+This is a C API to allow for ABI compatability between Node versions. So a native app does not have to be recompiled
+to work with a different version of node.
+
+Lets take a look `test/addons-napi/1_hello_world/binding.c` as an example:
+```c
+NAPI_MODULE_INIT() {
+  napi_property_descriptor desc = DECLARE_NAPI_PROPERTY("hello", Method);
+  NAPI_CALL(env, napi_define_properties(env, exports, 1, &desc));
+  return exports;
+}
+```
+This macro can be found in src/node_api.h:
+```c
+#define NAPI_MODULE_INIT()                                            \
+  EXTERN_C_START                                                      \
+  NAPI_MODULE_EXPORT napi_value                                       \
+  NAPI_MODULE_INITIALIZER(napi_env env, napi_value exports);          \
+  EXTERN_C_END                                                        \
+  NAPI_MODULE(NODE_GYP_MODULE_NAME, NAPI_MODULE_INITIALIZER)          \
+  napi_value NAPI_MODULE_INITIALIZER(napi_env env,                    \
+                                     napi_value exports)
+```
+This expands to:
+```console
+$ clang -E test/addons-napi/1_hello_world/binding.c  -Isrc
+```
+```c
+ __attribute__((visibility("default"))) napi_value napi_register_module_v1(napi_env env, napi_value exports); 
+static napi_module _module = 
+{ 1, 
+  0, 
+  "test/addons-napi/1_hello_world/binding.c", 
+  napi_register_module_v1, 
+  "NODE_GYP_MODULE_NAME", 
+  ((void*)0), 
+  {0}, 
+}; 
+static void _register_NODE_GYP_MODULE_NAME(void) __attribute__((constructor)); 
+static void _register_NODE_GYP_MODULE_NAME(void) { 
+  napi_module_register(&_module); 
+} 
+napi_value napi_register_module_v1(napi_env env, napi_value exports) {
+  napi_property_descriptor desc = { ("hello"), 0, (Method), 0, 0, 0, napi_default, 0 };
+  do { 
+    if ((napi_define_properties(env, exports, 1, &desc)) != napi_ok) { 
+      do { 
+        const napi_extended_error_info *error_info; 
+        napi_get_last_error_info(((env)), &error_info); 
+        _Bool is_pending; 
+        napi_is_exception_pending(((env)), &is_pending); 
+        if (!is_pending) { 
+          const char* error_message = error_info->error_message != ((void*)0) ? error_info->error_message : "empty error message"; 
+          napi_throw_error(((env)), ((void*)0), error_message); 
+        } 
+      } while (0); return ((void*)0); 
+    } 
+  } while (0);
+  return exports;
+```
+
+
+### wasm c-api
+The following repo, git@github.com:rossberg/wasm-c-api.git a c api to allow you to use function defined 
+in wasm from C/C++.
+
+Make sure you configure V8 to have the following configuration options:
+```console
+$ gn args out.gn/x64.release/
+is_debug = false
+target_cpu = "x64"
+is_component_build = false
+v8_static_library = true
+```
+
+V8 is quite large and I looks like wasm-c-api expects v8 to be cloned in the 
+same directory. I just updated the Makefile to allow the V8 dir to be configured
+to allow building using:
+```console
+$ make V8_DIR="/Users/danielbevenius/work/google/javascript" CFLAGS="-g"
+```
+
+
+Lets take a look at the example in `example/hello.c`:
+```c++
+int main(int argc, const char* argv[]) {
+  // Initialize.
+  printf("Initializing...\n");
+  wasm_init(argc, argv);
+  wasm_store_t* store = wasm_store_new();
+....
+}
+One thing to notice is that there are no dependencies to any JavaScript engine. `wasm.h` is the only
+included header (apart from standard headers).
+`wasm_store_t` represents the [store](https://webassembly.github.io/spec/core/exec/runtime.html#store) in
+the spec (I think) which
+```
+What does `wasm_init` do?
+This function can be found in `src/wasm-v8.cc`:
+```c++
+void wasm_init(int argc, const char *const argv[]) {
+  wasm_init_with_config(argc, argv, nullptr);
+}
+```
+`wasm_init_with_config`:
+```c++
+void wasm_init_with_config(int argc, const char *const argv[], wasm_config_t* config) {
+  v8::V8::InitializeExternalStartupData(argv[0]);
+  static std::unique_ptr<v8::Platform> platform = v8::platform::NewDefaultPlatform();
+  v8::V8::InitializePlatform(platform.get());
+  v8::V8::Initialize();
+}
+```
+We can recogniize this and the V8 initialization/setup. So this will create a V8 environment
+to allow execution.
+Next, we have `wasm_store_new`:
+```c++
+  std::unique_ptr<wasm_store_t> store(new wasm_store_t);
+  if (store.get() == nullptr) return nullptr;
+  store->create_params_.array_buffer_allocator = v8::ArrayBuffer::Allocator::NewDefaultAllocator();
+```
+`wasm_store_t` is a class which has the following private members:
+```c++
+  v8::Isolate::CreateParams create_params_;
+  v8::Isolate *isolate_;
+  v8::Eternal<v8::Context> context_;
+  v8::Eternal<v8::ObjectTemplate> callback_data_template_;
+  v8::Eternal<v8::String> strings_[V8_S_COUNT];
+  v8::Eternal<v8::Function> functions_[V8_F_COUNT];
+  v8::Eternal<v8::Object> cache_;
+```
+Next in wasm_store_new a new Isolate is created:
+```c++
+  auto isolate = v8::Isolate::New(store->create_params_);
+  ...
+  v8::Isolate::Scope isolate_scope(isolate);
+    v8::HandleScope handle_scope(isolate);
+
+    auto context = v8::Context::New(isolate);
+    if (context.IsEmpty()) return nullptr;
+    v8::Context::Scope context_scope(context);
+
+    auto callback_data_template = v8::ObjectTemplate::New(isolate);
+    if (callback_data_template.IsEmpty()) return nullptr;
+    callback_data_template->SetInternalFieldCount(1);
+
+    store->isolate_ = isolate;
+    store->context_ = v8::Eternal<v8::Context>(isolate, context);
+    store->callback_data_template_ = v8::Eternal<v8::ObjectTemplate>(isolate, callback_data_template);
+```
+
+Next,
+```c++
+  static const char* const raw_strings[V8_S_COUNT] = {
+      "function", "global", "table", "memory",
+      "module", "name", "kind", "exports",
+      "i32", "i64", "f32", "f64", "anyref", "anyfunc",
+      "value", "mutable", "element", "initial", "maximum",
+      "buffer"
+    };
+  for (int i = 0; i < V8_S_COUNT; ++i) {
+    auto maybe = v8::String::NewFromUtf8(isolate, raw_strings[i], v8::NewStringType::kNormal);
+    if (maybe.IsEmpty()) return nullptr;
+    auto string = maybe.ToLocalChecked();
+    store->strings_[i] = v8::Eternal<v8::String>(isolate, string);
+  }
+```
+The above is creating V8 strings that will persiste for the life time of the isolate.
+
+```c++
+  auto global = context->Global();
+  auto maybe_wasm_name = v8::String::NewFromUtf8(isolate, "WebAssembly", v8::NewStringType::kNormal);
+  if (maybe_wasm_name.IsEmpty()) return nullptr;
+  auto wasm_name = maybe_wasm_name.ToLocalChecked();
+  auto maybe_wasm = global->Get(context, wasm_name);
+  if (maybe_wasm.IsEmpty()) return nullptr;
+  auto wasm = v8::Local<v8::Object>::Cast(maybe_wasm.ToLocalChecked());
+```
+Next, `wasm` is set to the `WebAssembly` builtin (Verify this when debugging):
+```console
+(lldb) expr wasm
+(v8::Local<v8::Object>) $25 = (val_ = 0x00000001028020c8)
+```
+
+Next in main the wasm file is read and loaded.
+```c++
+  printf("Creating callbacks...\n");
+  own wasm_functype_t* print_type1 = wasm_functype_new_1_1(wasm_valtype_new_i32(), wasm_valtype_new_i32());
+  own wasm_func_t* print_func1 = wasm_func_new(store, print_type1, print_wasm);
+```
+Notice that `print_wasm` is a function in hello.c. 
+
+
+
