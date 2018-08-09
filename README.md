@@ -16065,3 +16065,120 @@ t
 ```
 `EmbedderGraph` is a graph that contains node object (embedder) and V8 objects
 
+### CodeCache
+There is a new feature in node where a code cache can be utilized for builtins. Note that these are the builtins that node provides, that is
+the one located in the lib directory.
+
+To build using the code cache there is a make target named `with-code-cache` which performs the steps required. Note that we want to 
+debug this and have to specify a `BUILDTYPE` so that the `--debug` flag is passed to `./configure`:
+```console
+$ make BUILDTYPE=Debug with-code-cache
+```
+This target will first run configure, then call:
+```console
+$ out/Debug/node --expose-internals tools/generate_code_cache.js out/Debug/obj/gen/node_code_cache.cc
+```
+Lets take a closer look at `node_code_cache.cc`.
+```console
+$ out/Debug/node --inspect-brk --expose-internals tools/generate_code_cache.js out/Debug/obj/gen/node_code_cache.cc
+```
+
+So when we hit the following line:
+```javascript
+const {
+  getCodeCache,
+  cachableBuiltins
+} = require('internal/bootstrap/cache');
+```
+This will try to load the module named `internal/bootstrap/cache` which will go through the normal process of getting the source
+by calling `NativeModule.prototype.compile`. 
+```javascript
+ if (!codeCache[this.id] || script.cachedDataRejected) {
+        compiledWithoutCache.push(this.id);
+      } else {
+        compiledWithCache.push(this.id);
+      }
+```
+In our case compiledWithCache will be called and this id `internal/bootstrap/cache` will be added to the cache.
+What is placed in the code cache?
+Well in NativeModule.prototype.compile we have:
+```javascript
+  let source = NativeModule.getSource(this.id);
+  source = NativeModule.wrap(source);
+
+  const script = new ContextifyScript(source, this.filename, 0, 0, codeCache[this.id], false, undefined);
+```
+Notice that we are passing `codeCache[this.id]` into ContextifyScript. This is the compiled script:
+```console
+codeCache[this.id]
+Uint8Array(3816) [180, 3, 222, 192, 116, 162, 238, 172, 211, 6, 0, 0, 255, 3, 0, 0, 41, 164, 235, 155, 6, 0, 0, 0, 0, 0, 0, 0, 168, 14, 0, 0, 182, 249, 193, 71, 250, 171, 47, 48, 0, 0, 0, 128, 72, 2, 0, 128, 48, 18, 0, 128, 0, 0, 0, 128, 0, 0, 0, 128, 0, 0, 0, 128, 2, 48, 147, 2, 36, 22, 200, 192, 0, 0, 0, 0, 8, 0, 0, 0, 2, 12, 140, 192, 0, 0, 0, 0, 1, 0, 0, 0, 2, 48, 147, 2, 168, 240, 192, 0, …]
+```
+This is the entry in the codeCache which will later be used by `tools/generate_code_cache.js` when it iterates over these entries and populates `out/Debug/obj/gen/node_code_cache.cc`:
+```c++
+static uint8_t internal_bootstrap_cache_raw[] = {
+180,3,222,192,116,162,238,172,211,6,0,0,255,3,0,0,41,164,235,155,6,0,0,0,0,0,0,0,168,14,0,0,187,44,142,148,255,195,113,114,0,0,0,128,72,2,0,128,48,18,0,128,0,0,0,128,0,0,0,128,     0,0,0,128,2,48,147,2,36,22,200,192,0,0,0,0,8,0,0,0,2,12,140,192,0,0,0,0,1,0,0,0,2,48,147,2,168,240,192,0...
+```
+
+Back now in `tools/generate_code_cache.js we have:
+```javascript
+for (const key of cachableBuiltins) {
+  const cachedData = getCodeCache(key);
+  if (!cachedData.length) {
+    console.error(`Failed to generate code cache for '${key}'`);
+    process.exit(1);
+  }
+
+  const length = cachedData.length;
+  totalCacheSize += length;
+  const { definition, initializer } = getInitalizer(key, cachedData);
+  cacheDefinitions.push(definition);
+  cacheInitializers.push(initializer);
+  console.log(`Generated cache for '${key}', size = ${formatSize(length)}` +
+              `, total = ${formatSize(totalCacheSize)}`);
+}
+```
+We are iterating through all the cacheableBuiltins which are defined in `lib/internal/bootstrap/cache.js` (well really the ones that 
+are excluded are shown in there).
+
+Take the following example:
+```javascript
+const f = process.binding('fs');
+console.log(f);
+```
+```console
+$ lldb -- out/Debug/node --inspect-brk --inspect-brk-node testing.js
+(lldb) br s -f node.cc -l 1722
+Breakpoint 1: where = node`node::GetInternalBinding(v8::FunctionCallbackInfo<v8::Value> const&) + 448 at node.cc:1722, address = 0x00000001000c1e80
+(lldb) r
+```
+The `--inspect-brk-node` flag will allow us to break in node's bootstrap javascript code.
+When we run this we don't need to compile the `fs` module as bindingObj will already contain that module. 
+
+`bindingObj` is created in `lib/internal/bootstrap/loaders.js`: 
+```javascript
+  const bindingObj = ObjectCreate(null);
+  ...
+  const codeCache = getInternalBinding('code_cache');
+  ...
+``` 
+The result of calling `getInternalBinding` is what `DefineCodeCache` returns in `GetInternalBinding` in node.cc:
+```c++
+  if (mod != nullptr) {
+    exports = InitModule(env, mod, module);
+  } else if (!strcmp(*module_v, "code_cache")) {
+    // internalBinding('code_cache')
+    exports = Object::New(env->isolate());
+    DefineCodeCache(env, exports);
+  } else {
+  ...
+```
+`DefineCodeCache` can be found in `out/Debug/obj/gen/node_code_cache.cc` and that function will populate the exports object with the compiled
+modules code.
+
+An entry from `codeCache` is later in loader.js and passed into the ContextifyScript constructor:
+```javascript
+    const script = new ContextifyScript(
+      source, this.filename, 0, 0,
+      codeCache[this.id], false, undefined
+    );
+```
