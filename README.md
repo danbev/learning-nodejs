@@ -14845,7 +14845,7 @@ The `provider_type_` in our case is:
 (lldb) expr provider_type_
 (const node::AsyncWrap::ProviderType) $436 = PROVIDER_TCPSERVERWRAP
 ```
-Now, the the wrapper class id is used V8's `RetainedObjectInfo` which enables us to provide information
+Now, the wrapper class id is used V8's `RetainedObjectInfo` which enables us to provide information
 about native objects for heap snapshots.
 In `Environment::Start` in  `env.cc` we have:
 ```c++
@@ -14875,20 +14875,20 @@ void LoadAsyncWrapperInfo(Environment* env) {
 This binds the callback `WrapperInfo` to the class id:
 ```c++
   RetainedObjectInfo* WrapperInfo(uint16_t class_id, Local<Value> wrapper) {
-  // No class_id should be the provider type of NONE.
-  CHECK_GT(class_id, NODE_ASYNC_ID_OFFSET);
-  // And make sure the class_id doesn't extend past the last provider.
-  CHECK_LE(class_id - NODE_ASYNC_ID_OFFSET, AsyncWrap::PROVIDERS_LENGTH);
-  CHECK(wrapper->IsObject());
-  CHECK(!wrapper.IsEmpty());
+    // No class_id should be the provider type of NONE.
+    CHECK_GT(class_id, NODE_ASYNC_ID_OFFSET);
+    // And make sure the class_id doesn't extend past the last provider.
+    CHECK_LE(class_id - NODE_ASYNC_ID_OFFSET, AsyncWrap::PROVIDERS_LENGTH);
+    CHECK(wrapper->IsObject());
+    CHECK(!wrapper.IsEmpty());
 
-  Local<Object> object = wrapper.As<Object>();
-  CHECK_GT(object->InternalFieldCount(), 0);
+    Local<Object> object = wrapper.As<Object>();
+    CHECK_GT(object->InternalFieldCount(), 0);
 
-  AsyncWrap* wrap;
-  ASSIGN_OR_RETURN_UNWRAP(&wrap, object, nullptr);
+    AsyncWrap* wrap;
+    ASSIGN_OR_RETURN_UNWRAP(&wrap, object, nullptr);
 
-  return new RetainedAsyncInfo(class_id, wrap);
+    return new RetainedAsyncInfo(class_id, wrap);
 }
 ```
 `WrapperInfo` will be called by `HeapProfiler::ExecuteWrapperClassCallback` which is called
@@ -15788,6 +15788,37 @@ be alright to include `src/objects.h` in the callbacks source file?
 
 The proposal for this can be found in this [branch](https://github.com/danbev/node/tree/wasm-native)
 
+There are callback such as:
+```c++ 
+isolate->SetWasmModuleCallback(NodeWasm::WasmModuleCallback);
+```
+These callbacks will be called by `WebAssemblyModule` and `WebAssemblyInstance` in `deps/v8/src/wasm/wasm-js.cc`.
+Those functions are called when:
+```javascript
+const fs = require('fs');
+const buffer = fs.readFileSync('import.wasm');
+WebAssembly.validate(buffer);
+
+const m = new WebAssembly.Module(buffer);
+var importObject = {
+    imports: {
+      imported_func: arg => console.log('imported_func:', arg)
+    }
+};
+const instance = new WebAssembly.Instance(m, importObject);
+console.log(instance.exports.exported_func());
+const m = new WebAssembly.Module(buffer);
+```
+In this case both of the callback will be called. But if we use `WebAssembly.instantiate` the won't get
+called:
+```javascript
+WebAssembly.instantiate(buffer).then((results) => {
+  const fd = results.instance.exports.fopen();
+  assert.strictEqual(fd, 22);
+});
+
+
+```
 
 ### v8::Object vs v8::internal::Object
 v8::Object is part of the public api declared in include/v8.h. v8::internal::Object is declared in the 
@@ -15993,4 +16024,44 @@ Next in main the wasm file is read and loaded.
 Notice that `print_wasm` is a function in hello.c. 
 
 
+
+### SetClassId
+```console
+./src/async_wrap.cc:611:29: warning: 'SetWrapperClassInfoProvider' is deprecated [-Wdeprecated-declarations]
+  NODE_ASYNC_PROVIDER_TYPES(V)
+```
+In `deps/v8/include/v8-profiler.h`:
+```c++
+V8_DEPRECATED(
+      "Use SetBuildEmbedderGraphCallback to provide info about embedder nodes",
+      void SetWrapperClassInfoProvider(uint16_t class_id,
+                                       WrapperInfoCallback callback));
+```
+
+In src/async_wrap.cc we have:
+```c++
+void LoadAsyncWrapperInfo(Environment* env) {
+  HeapProfiler* heap_profiler = env->isolate()->GetHeapProfiler();
+#define V(PROVIDER)                                                           \
+  heap_profiler->SetWrapperClassInfoProvider(                                 \
+      (NODE_ASYNC_ID_OFFSET + AsyncWrap::PROVIDER_ ## PROVIDER), WrapperInfo);
+  NODE_ASYNC_PROVIDER_TYPES(V)
+#undef V
+}
+`LoadAsyncWrapperInfo` is called from Environment::Start:
+```c++
+  SetupProcessObject(this, argc, argv, exec_argc, exec_argv);
+  LoadAsyncWrapperInfo(this);
+```
+So the preprocessor will generate calls for all the NODE_ASYNC_PROVIDER_TYPES:
+```c++
+  heap_profiler->SetWrapperClassInfoProvider(NODE_ASYNC_ID_OFFSET + AsyncWrap::PROVIDER_TCP, WrapperInfo);
+```
+
+
+Lets figure out how this works and add a break point:
+```console
+t
+```
+`EmbedderGraph` is a graph that contains node object (embedder) and V8 objects
 
