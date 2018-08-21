@@ -498,6 +498,94 @@ Notice that `bootstrapped_loaders` is passed as an argument:
 - source code: (process, { internalBinding, NativeModule }) {
 ```
 
+So we have `GetBinding`, `GetLinkedBinding`, and `GetInternalBinding` which are all passed to the bootstrap function.
+A native module can be created using using one of the following types ('src/node_internals.h'):
+```c++
+enum {
+  NM_F_BUILTIN  = 1 << 0,
+  NM_F_LINKED   = 1 << 1,
+  NM_F_INTERNAL = 1 << 2,
+};
+```
+For example, the crypto module (`src/node_crypto.cc`) is registered using the macro:
+```c++
+NODE_BUILTIN_MODULE_CONTEXT_AWARE(crypto, node::crypto::Initialize)
+
+#define NODE_BUILTIN_MODULE_CONTEXT_AWARE(modname, regfunc)                   \
+  NODE_MODULE_CONTEXT_AWARE_CPP(modname, regfunc, nullptr, NM_F_BUILTIN)
+```
+Modules that use `NF_F_BUILTIN`:
+```c++
+NODE_BUILTIN_MODULE_CONTEXT_AWARE(inspector, node::inspector::Initialize);
+NODE_BUILTIN_MODULE_CONTEXT_AWARE(util, node::util::Initialize)
+NODE_BUILTIN_MODULE_CONTEXT_AWARE(tcp_wrap, node::TCPWrap::Initialize)
+NODE_BUILTIN_MODULE_CONTEXT_AWARE(url, node::url::Initialize)
+NODE_BUILTIN_MODULE_CONTEXT_AWARE(udp_wrap, node::UDPWrap::Initialize)
+NODE_BUILTIN_MODULE_CONTEXT_AWARE(inspector, Initialize)
+NODE_BUILTIN_MODULE_CONTEXT_AWARE(process_wrap, node::ProcessWrap::Initialize)
+NODE_BUILTIN_MODULE_CONTEXT_AWARE(buffer, node::Buffer::Initialize)
+NODE_BUILTIN_MODULE_CONTEXT_AWARE(contextify, node::contextify::Initialize)
+NODE_BUILTIN_MODULE_CONTEXT_AWARE(os, node::os::Initialize)
+NODE_BUILTIN_MODULE_CONTEXT_AWARE(async_wrap, node::AsyncWrap::Initialize)
+NODE_BUILTIN_MODULE_CONTEXT_AWARE(fs_event_wrap, node::FSEventWrap::Initialize)
+NODE_BUILTIN_MODULE_CONTEXT_AWARE(spawn_sync, node::SyncProcessRunner::Initialize)
+NODE_BUILTIN_MODULE_CONTEXT_AWARE(js_stream, node::JSStream::Initialize)
+NODE_BUILTIN_MODULE_CONTEXT_AWARE(pipe_wrap, node::PipeWrap::Initialize)
+NODE_BUILTIN_MODULE_CONTEXT_AWARE(tty_wrap, node::TTYWrap::Initialize)
+NODE_BUILTIN_MODULE_CONTEXT_AWARE(crypto, node::crypto::Initialize)
+NODE_BUILTIN_MODULE_CONTEXT_AWARE(tls_wrap, node::TLSWrap::Initialize)
+NODE_BUILTIN_MODULE_CONTEXT_AWARE(config, node::Initialize)
+NODE_BUILTIN_MODULE_CONTEXT_AWARE(zlib, node::Initialize)
+NODE_BUILTIN_MODULE_CONTEXT_AWARE(fs, node::fs::Initialize)
+NODE_BUILTIN_MODULE_CONTEXT_AWARE(icu, node::i18n::Initialize)
+NODE_BUILTIN_MODULE_CONTEXT_AWARE(cares_wrap, node::cares_wrap::Initialize)
+```
+There is [work](https://github.com/nodejs/node/issues/22160) in progress to make the above internal.
+
+If a module uses `NODE_MODULE_CONTEXT_AWARE_INTERNAL` it will use `NM_F_INTERNAL which is used by:
+```c++
+NODE_MODULE_CONTEXT_AWARE_INTERNAL(heap_utils, node::heap::Initialize)
+NODE_MODULE_CONTEXT_AWARE_INTERNAL(types, node::InitializeTypes)
+NODE_MODULE_CONTEXT_AWARE_INTERNAL(timers, node::Initialize)
+NODE_MODULE_CONTEXT_AWARE_INTERNAL(http2, node::http2::Initialize)
+NODE_MODULE_CONTEXT_AWARE_INTERNAL(string_decoder, node::InitializeStringDecoder)
+NODE_MODULE_CONTEXT_AWARE_INTERNAL(http_parser, node::Initialize)
+NODE_MODULE_CONTEXT_AWARE_INTERNAL(performance, node::performance::Initialize)
+NODE_MODULE_CONTEXT_AWARE_INTERNAL(uv, node::Initialize)
+NODE_MODULE_CONTEXT_AWARE_INTERNAL(messaging, node::worker::InitMessaging)
+NODE_MODULE_CONTEXT_AWARE_INTERNAL(trace_events, node::Initialize)
+NODE_MODULE_CONTEXT_AWARE_INTERNAL(serdes, node::Initialize)
+NODE_MODULE_CONTEXT_AWARE_INTERNAL(v8, node::Initialize)
+NODE_MODULE_CONTEXT_AWARE_INTERNAL(stream_pipe, node::InitializeStreamPipe)
+NODE_MODULE_CONTEXT_AWARE_INTERNAL(domain, node::domain::Initialize)
+NODE_MODULE_CONTEXT_AWARE_INTERNAL(module_wrap, node::loader::ModuleWrap::Initialize)
+NODE_MODULE_CONTEXT_AWARE_INTERNAL(worker, node::worker::InitWorker)
+NODE_MODULE_CONTEXT_AWARE_INTERNAL(symbols, node::symbols::Initialize)
+NODE_MODULE_CONTEXT_AWARE_INTERNAL(signal_wrap, node::SignalWrap::Initialize)
+NODE_MODULE_CONTEXT_AWARE_INTERNAL(stream_wrap, node::LibuvStreamWrap::Initialize)
+```
+
+
+So how about `NM_F_LINKED`? 
+```
+// - process._linkedBinding(): intended to be used by embedders to add
+//   additional C++ bindings in their applications. These C++ bindings
+//   can be created using NODE_MODULE_CONTEXT_AWARE_CPP() with the flag
+```
+
+
+#### GetBinding
+Will be bound to `process.binding`. This function will try to find a builtin module with the passed in module name.
+
+#### GetLinkedBinding
+Will be bound to process._linkedBinding.
+
+#### GetInternalBinding
+Will be bound to process.internalBinding.
+
+
+
+
 #### lib/internal/bootstrap_node.js
 This is the file that is loaded by `LoadEnvironment` as "bootstrap_node.js". 
 I read that this file is actually precompiled, where/how?
@@ -16181,4 +16269,80 @@ An entry from `codeCache` is later in loader.js and passed into the ContextifySc
       source, this.filename, 0, 0,
       codeCache[this.id], false, undefined
     );
+```
+
+
+### WASM InstantiateStreaming
+So the 
+
+```c++
+isolate->SetWasmCompileStreamingCallback(WasmInstantiateStreamingCallback);
+```
+Does this allow us to inspect the first value passed to instantiateStreaming:
+```javascript
+WebAssembly.instantiateStreaming(promise, {}).then((results) => {
+  assert.strictEqual(
+    results.instance.exports.addTwo(10, 20),
+    30,
+    'Exported function should add two numbers.',
+  );
+});
+```
+If we pass in a string it will be the value or `args` in the callback:
+```c++
+void WasmInstantiateStreamingCallback(const FunctionCallbackInfo<Value>& args) {
+  std::cout << "WasmInstantiateStreamingCallback..." << '\n';
+  auto value = args[0];
+}
+```
+So this would allow us to check the type of the value and make sure that it is a promise which is the only
+thing that would be supported in node (there is no support for a Response object in node).
+
+We should resolve this promise to get the source and then set that as the result.
+
+
+`deps/v8/src/wasm/wasm-js.cc`:
+```c++
+ASSIGN(Promise::Resolver, resolver, Promise::Resolver::New(context));
+```
+```c++
+#define ASSIGN(type, var, expr)                      \
+  Local<type> var;                                   \
+  do {                                               \
+    if (!expr.ToLocal(&var)) {                       \
+      DCHECK(i_isolate->has_scheduled_exception());  \
+      return;                                        \
+    } else {                                         \
+      DCHECK(!i_isolate->has_scheduled_exception()); \
+    }                                                \
+  } while (false)
+```
+So that will be expanded by the preprocessor to:
+```c++
+  Local<Promise::Resolver> resolver;
+  if (Promise::Resolver::New(context).ToLocal(&resolver)) {
+      DCHECK(i_isolate->has_scheduled_exception());
+      return;
+  } else {
+      DCHECK(!i_isolate->has_scheduled_exception());
+  }
+```
+
+### Node/V8 build
+I've noticed that even if nothing is changed (really nothing) then V8 will rebuild it's snapshot in some cases which 
+causes the build time to increase. 
+I'm using the following command to build:
+```shell
+$ make -C out BUILDTYPE=Debug -j8
+```
+When run like this without a target the `all` target will be executed as it is the first target in the makefile:
+```console
+all: out/Makefile $(NODE_EXE)
+```
+`NODE_EXE` is a phony target and will always be run.
+
+
+```console
+$ make builddir="$(PWD)/Release" obj="$(PWD)/Release/obj" -f deps/v8/gypfiles/mksnapshot.target.mk
+make: Nothing to be done for `/Users/danielbevenius/work/nodejs/node/out/Release/obj.target/mksnapshot/deps/v8/src/snapshot/mksnapshot.o'.
 ```
