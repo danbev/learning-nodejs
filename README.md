@@ -16346,3 +16346,10 @@ all: out/Makefile $(NODE_EXE)
 $ make builddir="$(PWD)/Release" obj="$(PWD)/Release/obj" -f deps/v8/gypfiles/mksnapshot.target.mk
 make: Nothing to be done for `/Users/danielbevenius/work/nodejs/node/out/Release/obj.target/mksnapshot/deps/v8/src/snapshot/mksnapshot.o'.
 ```
+
+### Run single JS test
+To run a single JavaScript test through using python:
+```shell
+$ python tools/test.py --mode=release test/pseudo-tty/test-async-wrap-getasyncid-tty.js
+```
+This can be useful when you have a test that fails but passes when run with the node executable.
