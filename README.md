@@ -16353,3 +16353,113 @@ To run a single JavaScript test through using python:
 $ python tools/test.py --mode=release test/pseudo-tty/test-async-wrap-getasyncid-tty.js
 ```
 This can be useful when you have a test that fails but passes when run with the node executable.
+
+
+### ARM
+aarch64 is a 64-bit state
+
+```shell
+[root@7dd51277f95b node-v10.9.0-rh]# uname -m
+aarch64
+```
+
+On a `aarch64` system I can run the complete build with tests without specifying the Makefile variable `DESTCPU`. 
+In the configure script there is a matching of '__aarch64__' to 'arm64':
+```shell
+[root@7dd51277f95b node-v10.9.0-rh]# python -c 'from configure import host_arch_cc; print host_arch_cc()'
+arm64
+```
+
+But when running the `tar-headers` target the `DESTCPU` is passed to configure:
+```shell
+    $(PYTHON) ./configure \
+               --prefix=/ \
+               --dest-cpu=$(DESTCPU) \
+               ...
+```
+The value of `DESTCPU` in this case will be 'aarch64' which will cause the configure to fail:
+```shell
+configure: error: option --dest-cpu: invalid choice: 'aarch64' (choose from 'arm', 'arm64', 'ia32', 'mips', 'mipsel', 'mips64el', 'ppc', 'ppc64', 'x32', 'x64', 'x86', 'x86_64', 's390', 's390x')
+```
+
+I'm not sure about the reason for this. In our case it would be nice to have consitent behaviour between running configure when running on `aarch64`.
+
+`DESTCPU` is used in `$(TARBALL)-headers` and in `$(BINARYTAR)`.
+I'm not sure how changing DISTCPU to arm64 when the host arch is aarch64 but opening this commit for feedback from others.
+
+
+### WebAssembly Google V8 Liftoff compiler
+Before Liftoff TurboFan was used to compile wasm. TurboFan will still be used as hot code will be recompiled by it but
+LiftOff will generate code as quickly as possible to avoid the time and memory overhead of constructing the intermediate representation.
+Wasm is supposed to provide predictable performace (once the module is loaded it should not stall. This was done by V8 by compiling ahead
+of time.
+
+
+### Web Hypertext Application Technology Working Group (WHATGW) Streams
+Streaming data: that is, data that is created, processed, and consumed in an incremental fashion, without ever reading all of it into memory. 
+The Streams Standard provides a common set of APIs for creating and interfacing with such streaming data, embodied in readable streams, 
+writable streams, and transform streams.
+Instead of reading all data into memory, data can be read piece by piece. There are two types of streams, readable and writable.
+
+
+### v8_extras
+https://v8project.blogspot.com/2016/02/v8-extras.html
+"Extras are embedder-provided JavaScript files which are compiled directly into the V8 snapshot."
+
+For this to work you have to specify the files to be compiled using `v8_extra_library_files` in common.gypi:
+```shell
+'v8_extra_library_files': [
+      '../scripts/v8_extras.js'
+    ],
+```
+These JavaScript files must follow a specific pattern:
+```js
+(function(global, binding, v8) {
+  'use strict';
+  const Object = global.Object;
+  const name = v8.createPrivateSymbol('name');
+  const age = v8.createPrivateSymbol('age');
+
+  class Something {
+    constructor(name, age) {
+      this[name] = name;
+      this[age] = age;
+    }
+  }
+
+  Object.defineProperty(global, 'Something', {
+    value: Something,
+    enumerable: false,
+    configurable: true,
+    writable: true
+  });
+
+  binding.Something = Something;
+});
+```
+These functions are compiled by `deps/v8/src/bootstrapper.cc`:
+```c++
+bool Bootstrapper::CompileExperimentalExtraBuiltin(Isolate* isolate, int index) {
+  HandleScope scope(isolate);
+  Vector<const char> name = ExperimentalExtraNatives::GetScriptName(index);
+  Handle<String> source_code = isolate->bootstrapper()->GetNativeSource(EXPERIMENTAL_EXTRAS, index);
+  Handle<Object> global = isolate->global_object();
+  Handle<Object> binding = isolate->extras_binding_object();
+  Handle<Object> extras_utils = isolate->extras_utils_object();
+  Handle<Object> args[] = {global, binding, extras_utils};
+  return Bootstrapper::CompileNative(isolate, name, source_code, arraysize(args), args, EXTENSION_CODE);
+}
+```
+Now, we can use anything we bind using:
+```javascript
+const s = new Something("Fletch", 43);
+console.log(s);
+```
+```console
+$ ./node ../scripts/extra.js
+Something { '43': 43, Fletch: 'Fletch' }
+```
+
+
+
+
