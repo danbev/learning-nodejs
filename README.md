@@ -3937,7 +3937,7 @@ Let's take the following example:
     }, 5000);
 ```
 ```console
-$ ./out/Debug/node --inspect --debug-brk settimeout.js
+$ ./out/Debug/node --inspect --inspect-brk settimeout.js
 ```
 
 In Node you can call setTimeout with out having a require. This is done by `lib/boostrap/node.js`:
@@ -16393,6 +16393,11 @@ Before Liftoff TurboFan was used to compile wasm. TurboFan will still be used as
 LiftOff will generate code as quickly as possible to avoid the time and memory overhead of constructing the intermediate representation.
 Wasm is supposed to provide predictable performace (once the module is loaded it should not stall. This was done by V8 by compiling ahead
 of time.
+For large WASM source files currently these will be read completly and compiled by V8. With the introduction of LiftOff
+in V8 the startup time will be reduced as LiftOff will take one pass over the bytecode of the WASM function.
+"the function body decoder does a single pass over the raw WebAssembly bytes and interacts with the subsequent 
+stage via callbacks, so code generation is performed while decoding and validating the function body."
+Together with WebAssembly’s streaming APIs, this allows V8 to compile WebAssembly code to machine code while downloading over the network.
 
 
 ### Web Hypertext Application Technology Working Group (WHATGW) Streams
@@ -16400,6 +16405,18 @@ Streaming data: that is, data that is created, processed, and consumed in an inc
 The Streams Standard provides a common set of APIs for creating and interfacing with such streaming data, embodied in readable streams, 
 writable streams, and transform streams.
 Instead of reading all data into memory, data can be read piece by piece. There are two types of streams, readable and writable.
+
+#### ReadableStream
+Represents a resource that can be read from.
+Readable stream               Consumer
+fs/net -> data, data, data -> Reader
+
+#### WritableStream
+Represents a resource that can be written to.
+
+#### Pipe chains
+ReadableStream.pipeThrough() is used for transformting.
+ReadableStream.pipeTo() pipes to a writable stream which is the endpoint of the chain.
 
 
 ### v8_extras
@@ -16461,5 +16478,148 @@ Something { '43': 43, Fletch: 'Fletch' }
 ```
 
 
+### Streams
+The highWaterMark represents the number of bytes that the internal buffer can hold. If the stream is in object mode this is instead
+the total number of objects.
 
+
+#### Readable
+Take the following example:
+```js
+var Readable = require('stream').Readable;
+var rs = new Readable();
+var c = 0;
+rs._read = function () {
+  if (c == 0) {
+    rs.push("bajja");
+    c++;
+  } else {
+    rs.push(null);
+  }
+};
+rs.on('readable', function() {
+  console.log('readable event [There is data in the stream to be read]');
+  rs.read();
+});
+```
+The `Readable` constructor can be found in `lib/_streams_readable.js`.
+```js
+function Readable(options) {
+  const isDuplex = (this instanceof Stream.Duplex);
+  this._readableState = new ReadableState(options, this, isDuplex);
+  // legacy
+  this.readable = true;
+
+  if (options) {
+    if (typeof options.read === 'function')
+      this._read = options.read;
+
+    if (typeof options.destroy === 'function')
+      this._destroy = options.destroy;
+  }
+
+  Stream.call(this);
+}
+```
+We can see that a new `ReadableState is created using the options passed in in addition to the newly created Readable instance.
+You can pass in overrides for `_read` and `_destroy` using the options object.
+The final call is Stream constructor using `Stream.call(this)`:
+```js
+const EE = require('events');
+const util = require('util');
+
+function Stream() {
+  EE.call(this);
+}
+```
+Next we have the call to `on` which registers a listener for the `readable` event. Note that this is an overloaded function
+in Readable that first delegates to Stream to do the registering of the listener and then has some logic. For a readable event
+this logic looks like this:
+```js
+  if (state.flowing !== false)
+    this.resume();
+  } else if (ev === 'readable') {
+    if (!state.endEmitted && !state.readableListening) {
+      state.readableListening = state.needReadable = true;
+      state.flowing = false;
+      state.emittedReadable = false;
+      debug('on readable', state.length, state.reading);
+      if (state.length) {
+        emitReadable(this);
+      } else if (!state.reading) {
+        process.nextTick(nReadingNextTick, this);
+      }
+    }
+  }
+```
+So what is this flowing mode?  
+When a ReadableStream is created it is in the paused state. It can be moved in to the flowing mode, where data is automatically read
+by calling the ReadableStream's `_read` function until this function pushes the null value inte to buffer to signal the end of data 
+which will cause `read` to return null.
+So, we we take a look at the ReadableStream above and call resume:
+```js
+function flow(stream) {
+  const state = stream._readableState;
+  debug('flow', state.flowing);
+  while (state.flowing && stream.read() !== null);
+}
+```
+When pushing null into the stream the `readableAddChunck` function will check if it is null and do:
+```js
+  if (chunk === null) {
+    state.reading = false;
+    onEofChunk(stream, state);
+  } else {
+    ...
+  }
+```
+When stepping through the code there are a number of callbacks added to the nexttick queue, multiple for the same event, for example
+endReadableNT. Where only the first one will actually do anything and the others. But I guess this is because the state of the stream
+could have been updated by another event.
+
+In our case endEmitted has not happend, nor is readableListening so both of these statement will be true. The current state.length is 0
+so there will not be an emittance of the readable event. And `state.reading` is false so we will add `nReadingNextTick` to as entry
+in the TickObject callback queue.
+```js
+function nReadingNextTick(self) {
+  debug('readable nexttick read 0');
+  self.read(0);
+}
+```
+The other `on` functions basically just register the event handlers specified. 
+
+Next, we have:
+```js
+rs.pipe(process.stdout);
+```
+Notice that `process.stdout` is a WriteStream and we are setting up a pipe from our readable to the writable using the pipe function.
+Now, if the state is not flowing the pipe function will call resume on our readable:
+```js
+if (!state.flowing) {
+    debug('pipe resume');
+    src.resume();
+}
+
+Readable.prototype.resume = function() {
+  var state = this._readableState;
+  if (!state.flowing) {
+    debug('resume');
+    // we flow only if there is no one listening
+    // for readable, but we still have to call
+    // resume()
+    state.flowing = !state.readableListening;
+    resume(this, state);
+  }
+  return this;
+};
+```
+In our case `resume` will not be called and instead we will return. Backing up the callstack will return us to `runMain` and:
+```js
+process._tickCallback();
+```
+This will call the `nReadingNextTick` function which we can see above will call `self.read(0)`.
+
+`_read()` is what would fetch data from some underlying resource and push it.
+`rs.push` will emit the `readable` event on the next tick. Unless we add an event listener for this event and call read() to consume
+the data nothing else will happen. The data will just stay in the buffer.
 
