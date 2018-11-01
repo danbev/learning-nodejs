@@ -1171,7 +1171,8 @@ This method is defined in stream_wrap.cc:
     env->SetProtoMethod(target, "setBlocking", SetBlocking);
     StreamBase::AddMethods<StreamWrap>(env, target, flags);
 
-I've been wondering about the class names that end with Wrap and what they are wrapping. My thinking now is that they are wrapping libuv things. For instance, take StreamWrap, in libuv src/unix/stream.c which is what SetBlocking calls:
+I've been wondering about the class names that end with Wrap and what they are wrapping. My thinking now is that they are wrapping libuv things. 
+For instance, take StreamWrap, in libuv src/unix/stream.c which is what SetBlocking calls:
 
      void StreamWrap::SetBlocking(const FunctionCallbackInfo<Value>& args) {
        StreamWrap* wrap;
@@ -1251,45 +1252,17 @@ which extends ConnectionWrap -> StreamWrap -> HandleWrap.
 Being a builtin module it follows the same initialization as others. So lets take a look at the initialization function and see
 what kind of functions are made available from JavaScript:
 
-    env->SetMethod(target, "setupHooks", SetupHooks);
-    env->SetMethod(target, "disable", DisableHooksJS);
-    env->SetMethod(target, "enable", EnableHooksJS);
+  env->SetMethod(target, "setupHooks", SetupHooks);
+  env->SetMethod(target, "pushAsyncIds", PushAsyncIds);
+  env->SetMethod(target, "popAsyncIds", PopAsyncIds);
+  env->SetMethod(target, "queueDestroyAsyncId", QueueDestroyAsyncId);
+  env->SetMethod(target, "enablePromiseHook", EnablePromiseHook);
+  env->SetMethod(target, "disablePromiseHook", DisablePromiseHook);
+  env->SetMethod(target, "registerDestroyHook", RegisterDestroyHook);
 
 You can confirm this by using:
 
-    > var aw = process.binding('async_wrap')
-    undefined
-    > aw
-    { setupHooks: [Function: setupHooks],
-      disable: [Function: disable],
-      enable: [Function: enable],
-      Providers:
-       { NONE: 0,
-         CRYPTO: 1,
-         FSEVENTWRAP: 2,
-         FSREQWRAP: 3,
-         GETADDRINFOREQWRAP: 4,
-         GETNAMEINFOREQWRAP: 5,
-         HTTPPARSER: 6,
-         JSSTREAM: 7,
-         PIPEWRAP: 8,
-         PIPECONNECTWRAP: 9,
-         PROCESSWRAP: 10,
-         QUERYWRAP: 11,
-         SHUTDOWNWRAP: 12,
-         SIGNALWRAP: 13,
-         STATWATCHER: 14,
-         TCPWRAP: 15,
-         TCPCONNECTWRAP: 16,
-         TIMERWRAP: 17,
-         TLSWRAP: 18,
-         TTYWRAP: 19,
-         UDPWRAP: 20,
-         UDPSENDWRAP: 21,
-         WRITEWRAP: 22,
-         ZLIB: 23 
-      } 
-    } 
+    $ ./node --expose-internals  -p "require('internal/test/binding').internalBinding('async_wrap')"
 
 
     env->set_async_hooks_init_function(init_v.As<Function>());
@@ -1400,7 +1373,7 @@ After these function have been set we also have the following code in `SetupHook
   promise_wrap_template->SetAccessor(FIXED_ONE_BYTE_STRING(env->isolate(), "isChainedPromise"), PromiseWrap::getIsChainedPromise);
   env->set_promise_wrap_template(promise_wrap_template);
 ```
-`PromiseWrap` is a class defined in async_wrap.cc. So we are setting up a constructor templeate for a PromiseWrap on the environment. 
+`PromiseWrap` is a class defined in async_wrap.cc. So we are setting up a constructor template for a PromiseWrap on the environment. 
 
 ```console
 (lldb) expr env->async_hooks_init_function()
@@ -1710,9 +1683,7 @@ async_id_ = execution_async_id == -1 ? env()->new_async_id() : execution_async_i
 In our case we will get a new async_id (double) from the environment instance:
 ```console
 inline double Environment::new_async_id() {
-  async_hooks()->async_id_fields()[AsyncHooks::kAsyncIdCounter] =
-    async_hooks()->async_id_fields()[AsyncHooks::kAsyncIdCounter] + 1;
-
+  async_hooks()->async_id_fields()[AsyncHooks::kAsyncIdCounter] += 1;
   return async_hooks()->async_id_fields()[AsyncHooks::kAsyncIdCounter];
 }
 ```
@@ -2488,6 +2459,82 @@ The callback may be called (best effort) and it looks like this:
       wrap->handle_.Reset();
       delete wrap;
     }
+
+
+ContextifyScript will call `MakeWeak` in it's constructor:
+```c++
+ContextifyScript(Environment* env, Local<Object> object) : BaseObject(env, object) {
+  MakeWeak();
+}
+```
+So we are calling `MakeWeak` so that a callback (a finalizer) will be called when the GC has determined that there are not more 
+refs to the object.
+
+If we take a look at `MakeWeak`:
+```c++
+void BaseObject::MakeWeak() {
+  persistent_handle_.SetWeak(
+      this,
+      [](const v8::WeakCallbackInfo<BaseObject>& data) {
+        std::unique_ptr<BaseObject> obj(data.GetParameter());
+        // Clear the persistent handle so that ~BaseObject() doesn't attempt
+        // to mess with internal fields, since the JS object may have
+        // transitioned into an invalid state.
+        // Refs: https://github.com/nodejs/node/issues/18897
+        obj->persistent_handle_.Reset();
+      }, v8::WeakCallbackType::kParameter);
+}
+```
+From looking at the code the callback is called after the 
+
+
+And the destructor looks like this now:
+```c++
+BaseObject::~BaseObject() {
+  env_->RemoveCleanupHook(DeleteMe, static_cast<void*>(this));
+
+  if (persistent_handle_.IsEmpty()) {
+    // This most likely happened because the weak callback below cleared it.
+    return;
+  }
+
+  {
+    v8::HandleScope handle_scope(env_->isolate());
+    object()->SetAlignedPointerInInternalField(0, nullptr);
+  }
+}
+```
+Notice the call to persitent_handle_.IsEmpty(), so if it is emtpy we will not do anything. So could this callback could be avoided completely?
+Making something a weak pointer will allow it to be GC'd but you might not require any callback to be invoked. In that case you can just call:
+```c++
+  persistent_handle_.SetWeak();
+```
+
+Remember, `obj` is of type BaseObject and is not managed by V8, but the persistent_handle_ is managed by V8's GC. When we get the callback that
+the persistent_handle_ is about to be freed. If we don't call `Reset` then `~BaseObject` will try to set the internal field on the now
+freed `persistent_handle_`. `object()` calls and `SetAlignedPointerInInternalField` will segfault as the handle has already been freed.
+```c++
+v8::Local<v8::Object> BaseObject::object() const {
+  return PersistentToLocal(env_->isolate(), persistent_handle_);
+}
+```
+
+My understanding of this is that when the callback/finalizer lambda is called the underlying Persistent object will have been freed, but the BaseObject
+instance still has a reference to it. It uses this reference in `~ObjectBaset()` create a new Local, and then calls `SetAlignedPointerInInternalField`
+which will segfault when trying to OpenHandle (which has been feed). 
+
+So, what does Reset do?
+
+V8::DisposeGlobal(reinterpret_cast<internal::Object**>(this->val_));
+i::GlobalHandles::Destroy(location);
+global-handles.cc:94
+
+
+(lldb) expr persistent_handle_
+(node::Persistent<v8::Object>) $2 = {
+  v8::PersistentBase<v8::Object> = (val_ = 0x0000000108005fa0)
+}
+
 
 
 ### TcpWrap
@@ -6200,19 +6247,16 @@ All JavaScript values are abstracted behind an opaque type named napi_value.
 ### FIXED_ONE_BYTE_STRING
 This is a macro which can be found in `src/util.h`:
 ```c++
-
-    #define FIXED_ONE_BYTE_STRING(isolate, string)                                \
-    (node::OneByteString((isolate), (string), sizeof(string) - 1))
-
-    inline v8::Local<v8::String> OneByteString(v8::Isolate* isolate,
-                                           const char* data,
-                                           int length) {
-       return v8::String::NewFromOneByte(isolate,
-                                     reinterpret_cast<const uint8_t*>(data),
-                                     v8::NewStringType::kNormal,
-                                     length).ToLocalChecked();
-    }
+  // Used to be a macro, hence the uppercase name.
+  template <int N>
+  inline v8::Local<v8::String> FIXED_ONE_BYTE_STRING(
+    v8::Isolate* isolate,
+    const char(&data)[N]) {
+    return OneByteString(isolate, data, N - 1);
+  }
 ```
+`const char(&data)` is the same as `const char&[]`
+const char (&)[]
 So we are passing in the string which recieved as a const char* in the OneByteString function. This is then reinterpreted to const uint8_t*.
 
 OneByteString: the string's bytes are not UTF-8 encoded, can only contain characters in the first 256 unicode code points
@@ -16623,3 +16667,208 @@ This will call the `nReadingNextTick` function which we can see above will call 
 `rs.push` will emit the `readable` event on the next tick. Unless we add an event listener for this event and call read() to consume
 the data nothing else will happen. The data will just stay in the buffer.
 
+
+```console
+$  ./node -p 'require("crypto").constants.defaultCoreCipherList' | tr : '\n'
+ECDHE-RSA-AES128-GCM-SHA256
+ECDHE-ECDSA-AES128-GCM-SHA256
+ECDHE-RSA-AES256-GCM-SHA384
+ECDHE-ECDSA-AES256-GCM-SHA384
+DHE-RSA-AES128-GCM-SHA256
+ECDHE-RSA-AES128-SHA256
+DHE-RSA-AES128-SHA256
+ECDHE-RSA-AES256-SHA384
+DHE-RSA-AES256-SHA384
+ECDHE-RSA-AES256-SHA256
+DHE-RSA-AES256-SHA256
+HIGH
+!aNULL
+!eNULL
+!EXPORT
+!DES
+!RC4
+!MD5
+!PSK
+!SRP
+!CAMELLIA
+```
+The above are declared in `src/node_constants.h`.
+Just to recap the cipher suite format, lets take `ECDHE-RSA-AES128-GCM-SHA256`
+`ECHDE` is  the key exchange algorithm, `RSA` the authentication algorithm, `AES128` is the bulk encryption algorithm, and 
+
+```console
+$ sslscan --no-failed localhost:1888
+Version: 1.11.11-static
+OpenSSL 1.0.2f  28 Jan 2016
+
+Connected to ::1
+
+Testing SSL server localhost on port 1888 using SNI name localhost
+
+  TLS Fallback SCSV:
+Server supports TLS Fallback SCSV
+
+  TLS renegotiation:
+Secure session renegotiation supported
+
+  TLS Compression:
+Compression disabled
+
+  Heartbleed:
+TLS 1.2 not vulnerable to heartbleed
+TLS 1.1 not vulnerable to heartbleed
+TLS 1.0 not vulnerable to heartbleed
+
+  Supported Server Cipher(s):
+Preferred TLSv1.2  128 bits  ECDHE-RSA-AES128-GCM-SHA256   Curve P-256 DHE 256
+Accepted  TLSv1.2  256 bits  ECDHE-RSA-AES256-GCM-SHA384   Curve P-256 DHE 256
+Accepted  TLSv1.2  128 bits  ECDHE-RSA-AES128-SHA256       Curve P-256 DHE 256
+Accepted  TLSv1.2  256 bits  ECDHE-RSA-AES256-SHA384       Curve P-256 DHE 256
+Accepted  TLSv1.2  256 bits  ECDHE-RSA-AES256-SHA          Curve P-256 DHE 256
+Accepted  TLSv1.2  128 bits  ECDHE-RSA-AES128-SHA          Curve P-256 DHE 256
+Accepted  TLSv1.2  256 bits  AES256-GCM-SHA384
+Accepted  TLSv1.2  128 bits  AES128-GCM-SHA256
+Accepted  TLSv1.2  256 bits  AES256-SHA256
+Accepted  TLSv1.2  128 bits  AES128-SHA256
+Accepted  TLSv1.2  256 bits  AES256-SHA
+Accepted  TLSv1.2  128 bits  AES128-SHA
+Preferred TLSv1.1  256 bits  ECDHE-RSA-AES256-SHA          Curve P-256 DHE 256
+Accepted  TLSv1.1  128 bits  ECDHE-RSA-AES128-SHA          Curve P-256 DHE 256
+Accepted  TLSv1.1  256 bits  AES256-SHA
+Accepted  TLSv1.1  128 bits  AES128-SHA
+Preferred TLSv1.0  256 bits  ECDHE-RSA-AES256-SHA          Curve P-256 DHE 256
+Accepted  TLSv1.0  128 bits  ECDHE-RSA-AES128-SHA          Curve P-256 DHE 256
+Accepted  TLSv1.0  256 bits  AES256-SHA
+Accepted  TLSv1.0  128 bits  AES128-SHA
+
+  SSL Certificate:
+Signature Algorithm: sha1WithRSAEncryption
+RSA Key Strength:    2048
+
+Subject:  danbev
+Issuer:   danbev
+
+Not valid before: Dec  7 07:56:37 2017 GMT
+Not valid after:  Jan  6 07:56:37 2018 GMT
+```
+
+### Show node man page
+```console
+$ man doc/node.1
+```
+
+
+### Slow debug build
+The debug build is very slow. This section exists to troubleshoot the debug build.
+```console
+$ maked
+  TOUCH 5a237c891f2234af459ae38bfa47f55ce1bae08e.intermediate
+  TOUCH 000a2d5af5f332d5cc9c0871728bccfb7db9209c.intermediate
+  ACTION Generating inspector protocol sources from protocol json definition /Users/danielbevenius/work/nodejs/node/out/Debug/obj/gen/src/js_protocol.stamp
+  ACTION Generating node protocol sources from protocol json 5a237c891f2234af459ae38bfa47f55ce1bae08e.intermediate
+  ACTION Generating inspector protocol sources from protocol json 000a2d5af5f332d5cc9c0871728bccfb7db9209c.intermediate
+  TOUCH 922bdaf2d2769f5377a88efe3ece13a08524d234.intermediate
+  ACTION _Users_danielbevenius_work_nodejs_node_deps_v8_gypfiles_v8_gyp_v8_torque_host_run_torque 922bdaf2d2769f5377a88efe3ece13a08524d234.intermediate
+  CXX(target) /Users/danielbevenius/work/nodejs/node/out/Debug/obj.target/v8_initializers/gen/torque-generated/builtins-array-from-dsl-gen.o
+  LIBTOOL-STATIC /Users/danielbevenius/work/nodejs/node/out/Debug/libv8_initializers.a
+  LINK(target) /Users/danielbevenius/work/nodejs/node/out/Debug/mksnapshot
+  ACTION _Users_danielbevenius_work_nodejs_node_deps_v8_gypfiles_v8_gyp_v8_snapshot_target_run_mksnapshot /Users/danielbevenius/work/nodejs/node/out/Debug/obj.target/v8_snapshot/geni/snapshot.cc
+  CXX(target) /Users/danielbevenius/work/nodejs/node/out/Debug/obj.target/v8_snapshot/geni/snapshot.o
+  LIBTOOL-STATIC /Users/danielbevenius/work/nodejs/node/out/Debug/libv8_snapshot.a
+  TOUCH /Users/danielbevenius/work/nodejs/node/out/Debug/obj.target/deps/v8/gypfiles/v8_maybe_snapshot.stamp
+  TOUCH /Users/danielbevenius/work/nodejs/node/out/Debug/obj.target/deps/v8/gypfiles/v8.stamp
+  CXX(target) /Users/danielbevenius/work/nodejs/node/out/Debug/obj.target/node_lib/src/node.o
+  LIBTOOL-STATIC /Users/danielbevenius/work/nodejs/node/out/Debug/libnode.a
+  LINK(target) /Users/danielbevenius/work/nodejs/node/out/Debug/node
+  TOUCH /Users/danielbevenius/work/nodejs/node/out/Debug/obj.target/rename_node_bin_win.stamp
+  LINK(target) /Users/danielbevenius/work/nodejs/node/out/Debug/cctest
+```
+
+
+### ICU compler flags
+On my machine (macosx) I see the following compler flags:
+```console
+ccache clang++ -Qunused-arguments '-D_DARWIN_USE_64_BIT_INODE=1' '-DU_COMMON_IMPLEMENTATION=1' '-DU_I18N_IMPLEMENTATION=1' '-DU_IO_IMPLEMENTATION=1' '-DU_TOOLUTIL_IMPLEMENTATION=1' 
+'-DU_ATTRIBUTE_DEPRECATED=' '-D_CRT_SECURE_NO_DEPRECATE=' '-DU_STATIC_IMPLEMENTATION=1' '-DUCONFIG_NO_SERVICE=1' '-DU_ENABLE_DYLOAD=0' '-DU_HAVE_STD_STRING=1' 
+'-DUCONFIG_NO_BREAK_ITERATION=0' -I../deps/icu-small/source/common -I../deps/icu-small/source/i18n -I../deps/icu-small/source/tools/toolutil  
+-Os -gdwarf-2 -mmacosx-version-min=10.7 -arch x86_64 -Wall -Wendif-labels -W -Wno-unused-parameter -std=gnu++1y -stdlib=libc++ -fno-exceptions 
+-fno-strict-aliasing 
+-MMD -MF /Users/danielbevenius/work/nodejs/node-poc/out/Release/.deps//Users/danielbevenius/work/nodejs/node-poc/out/Release/obj.host/icutools/deps/icu-small/source/i18n/regexcmp.o.d.raw   
+-c -o /Users/danielbevenius/work/nodejs/node-poc/out/Release/obj.host/icutools/deps/icu-small/source/i18n/regexcmp.o ../deps/icu-small/source/i18n/regexcmp.cpp
+```
+
+But on linux for example I don't see `-fno-strict-aliasing` which is causing a number of warnings to be generated. This affects us at work where we have a program named RPMDIFF that
+will generate an error for these warnings.
+
+
+
+
+#### Troubleshooting test/addons-napi/test_threadsafe_function/test.js
+This test fails when built with `--debug`. The error is the following:
+```console
+$ ./configure --debug && make -j8 
+$ make build-addons-napi
+FATAL ERROR: v8::HandleScope::CreateHandle() Cannot create a handle without a HandleScope
+ 1: 0x10004e287 node::DumpBacktrace(__sFILE*) [/Users/danielbevenius/work/nodejs/node-poc/out/Debug/node]
+ 2: 0x1000cd37b node::Abort() [/Users/danielbevenius/work/nodejs/node-poc/out/Debug/node]
+ 3: 0x1000cd69f node::OnFatalError(char const*, char const*) [/Users/danielbevenius/work/nodejs/node-poc/out/Debug/node]
+ 4: 0x10062f171 v8::Utils::ReportApiFailure(char const*, char const*) [/Users/danielbevenius/work/nodejs/node-poc/out/Debug/node]
+ 5: 0x10063448f v8::Utils::ApiCheck(bool, char const*, char const*) [/Users/danielbevenius/work/nodejs/node-poc/out/Debug/node]
+ 6: 0x1011aa36f v8::internal::HandleScope::Extend(v8::internal::Isolate*) [/Users/danielbevenius/work/nodejs/node-poc/out/Debug/node]
+ 7: 0x100616118 v8::internal::HandleScope::CreateHandle(v8::internal::Isolate*, v8::internal::Object*) [/Users/danielbevenius/work/nodejs/node-poc/out/Debug/node]
+ 8: 0x10061606c v8::internal::HandleScope::GetHandle(v8::internal::Isolate*, v8::internal::Object*) [/Users/danielbevenius/work/nodejs/node-poc/out/Debug/node]
+ 9: 0x100615fc9 v8::internal::HandleBase::HandleBase(v8::internal::Object*, v8::internal::Isolate*) [/Users/danielbevenius/work/nodejs/node-poc/out/Debug/node]
+10: 0x100629b80 v8::internal::Handle<v8::internal::FixedArray>::Handle(v8::internal::FixedArray*, v8::internal::Isolate*) [/Users/danielbevenius/work/nodejs/node-poc/out/Debug/node]
+11: 0x100629a75 v8::internal::Handle<v8::internal::FixedArray>::Handle(v8::internal::FixedArray*, v8::internal::Isolate*) [/Users/danielbevenius/work/nodejs/node-poc/out/Debug/node]
+12: 0x100635960 v8::EmbedderDataFor(v8::Context*, int, bool, char const*) [/Users/danielbevenius/work/nodejs/node-poc/out/Debug/node]
+13: 0x100635d7c v8::Context::SlowGetAlignedPointerFromEmbedderData(int) [/Users/danielbevenius/work/nodejs/node-poc/out/Debug/node]
+14: 0x10001c26b v8::Context::GetAlignedPointerFromEmbedderData(int) [/Users/danielbevenius/work/nodejs/node-poc/out/Debug/node]
+15: 0x1000144ea node::Environment::GetCurrent(v8::Local<v8::Context>) [/Users/danielbevenius/work/nodejs/node-poc/out/Debug/node]
+16: 0x1000f49e2 napi_env__::node_env() const [/Users/danielbevenius/work/nodejs/node-poc/out/Debug/node]
+17: 0x1000f9c54 (anonymous namespace)::v8impl::ThreadSafeFunction::CloseHandlesAndMaybeDelete(bool)::'lambda'(uv_handle_s*)::operator()(uv_handle_s*) const [/Users/danielbevenius/work/nodejs/node-poc/out/Debug/node]
+18: 0x1000f9b2c void node::Environment::CloseHandle<uv_handle_s, (anonymous namespace)::v8impl::ThreadSafeFunction::CloseHandlesAndMaybeDelete(bool)::'lambda'(uv_handle_s*)>(uv_handle_s*, (anonymous namespace)::v8impl::ThreadSafeFunction::CloseHandlesAndMaybeDelete(bool)::'lambda'(uv_handle_s*))::'lambda'(uv_handle_s*)::operator()(uv_handle_s*) const [/Users/danielbevenius/work/nodejs/node-poc/out/Debug/node]
+19: 0x1000f99c8 void node::Environment::CloseHandle<uv_handle_s, (anonymous namespace)::v8impl::ThreadSafeFunction::CloseHandlesAndMaybeDelete(bool)::'lambda'(uv_handle_s*)>(uv_handle_s*, (anonymous namespace)::v8impl::ThreadSafeFunction::CloseHandlesAndMaybeDelete(bool)::'lambda'(uv_handle_s*))::'lambda'(uv_handle_s*)::__invoke(uv_handle_s*) [/Users/danielbevenius/work/nodejs/node-poc/out/Debug/node]
+20: 0x101da3906 uv__finish_close [/Users/danielbevenius/work/nodejs/node-poc/out/Debug/node]
+21: 0x101da14aa uv__run_closing_handles [/Users/danielbevenius/work/nodejs/node-poc/out/Debug/node]
+22: 0x101da1211 uv_run [/Users/danielbevenius/work/nodejs/node-poc/out/Debug/node]
+```
+
+The path taken for a normal/Release build would take would be the following from `deps/v8/include/v8.h`:
+```c++
+void* Context::GetAlignedPointerFromEmbedderData(int index) {
+#ifndef V8_ENABLE_CHECKS
+  typedef internal::Internals I;
+  return I::ReadEmbedderData<void*>(this, index);
+#else
+  return SlowGetAlignedPointerFromEmbedderData(index);
+#endif
+}
+```
+For a debug build the `SlowGetAlignedPointerFromEmbedderData` would be called leading to the error above.
+
+The issue here seems to be with this lambda:
+```c++
+    env->node_env()->CloseHandle(
+        reinterpret_cast<uv_handle_t*>(&async),
+        [](uv_handle_t* handle) -> void {
+          ThreadSafeFunction* ts_fn =
+              node::ContainerOf(&ThreadSafeFunction::async,
+                                reinterpret_cast<uv_async_t*>(handle));
+          ts_fn->env->node_env()->CloseHandle(
+              reinterpret_cast<uv_handle_t*>(&ts_fn->idle),
+              [](uv_handle_t* handle) -> void {
+                ThreadSafeFunction* ts_fn =
+                    node::ContainerOf(&ThreadSafeFunction::idle,
+                                      reinterpret_cast<uv_idle_t*>(handle));
+                ts_fn->Finalize();
+              });
+        });
+```
+The call to `ts_fn->env->node_env()->CloseHandle` will cause this error. 
+The issue was fixed by adding two HandleScopes, on in the function and then one in the lambda:
+```c++
+ void CloseHandlesAndMaybeDelete(bool set_closing = false) {
+  v8::HandleScope scope(env->isolate);
+  ...
+  v8::HandleScope scope(ts_fn->env->isolate);
+```
