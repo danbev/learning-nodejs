@@ -6241,8 +6241,176 @@ You might have to manually remove `config_fips.gypi` when you want to reconfigur
 ```
 
 ### Node N-API
+Lets start from the beginning and look at the initialization of a napi addons:
+```c
+NAPI_MODULE(NODE_GYP_MODULE_NAME, Init)
+```
+This macro is defined in `src/node_api.h`:
+```c
+#define NAPI_MODULE_X(modname, regfunc, priv, flags)                  \
+  EXTERN_C_START                                                      \
+    static napi_module _module =                                      \
+    {                                                                 \
+      NAPI_MODULE_VERSION,                                            \
+      flags,                                                          \
+      __FILE__,                                                       \
+      regfunc,                                                        \
+      #modname,                                                       \
+      priv,                                                           \
+      {0},                                                            \
+    };                                                                \
+    NAPI_C_CTOR(_register_ ## modname) {                              \
+      napi_module_register(&_module);                                 \
+    }                                                                 \
+  EXTERN_C_END
 
-All JavaScript values are abstracted behind an opaque type named napi_value.
+#define NAPI_MODULE(modname, regfunc)                                 \
+  NAPI_MODULE_X(modname, regfunc, NULL, 0)  // NOLINT (readability/null_usage)
+```
+This is basically the same as what we have seen for a normal addons and would expend to:
+```c
+extern "C" {
+  static napi_module _module = {
+      NAPI_MODULE_VERSION,
+      flags,
+      __FILE__,
+      Init,
+      NODE_GYP_MODULE_NAME,
+      priv,
+      {0},
+  };
+  static void _register_NODE_GYP_MODULE_NAME(void) __attribute__((constructor));
+  static void _register_NODE_GYP_MODULE_NAME(void) {
+      napi_module_register(&_module);
+  }
+}
+```
+It's run when a shared library is loaded. 
+
+```c++
+void napi_module_register(napi_module* mod) {
+  node::node_module* nm = new node::node_module {
+    -1,
+    mod->nm_flags,
+    nullptr,
+    mod->nm_filename,
+    nullptr,
+    napi_module_register_cb,
+    mod->nm_modname,
+    mod,  // priv
+    nullptr,
+  };
+  node::node_module_register(nm);
+}
+```
+Let's set a break point on `NAPI_MODULE_INIT` and take a closer look at it:
+```console
+$ ./configure --debug && make -j8
+$ make build-addons-napi
+$ lldb -- ./node test/addons-napi/1_hello_world/test.js
+(lldb) br s -f binding.c -l 13
+Breakpoint 1: no locations (pending).
+WARNING:  Unable to resolve breakpoint to any actual locations.
+(lldb) r
+````
+Doing a back trace we will see 
+```console
+(lldb) bt 10
+* thread #1, queue = 'com.apple.main-thread', stop reason = breakpoint 1.1
+  * frame #0: 0x00000001027adc5b binding.node`_register_binding at binding.c:13
+    frame #1: 0x00000001026eeac6 dyld`ImageLoaderMachO::doModInitFunctions(ImageLoader::LinkContext const&) + 420
+    frame #2: 0x00000001026eecf6 dyld`ImageLoaderMachO::doInitialization(ImageLoader::LinkContext const&) + 40
+    frame #3: 0x00000001026ea218 dyld`ImageLoader::recursiveInitialization(ImageLoader::LinkContext const&, unsigned int, char const*, ImageLoader::InitializerTimingList&, ImageLoader::UninitedUpwards&) + 330
+    frame #4: 0x00000001026e934e dyld`ImageLoader::processInitializers(ImageLoader::LinkContext const&, unsigned int, ImageLoader::InitializerTimingList&, ImageLoader::UninitedUpwards&) + 134
+    frame #5: 0x00000001026e93e2 dyld`ImageLoader::runInitializers(ImageLoader::LinkContext const&, ImageLoader::InitializerTimingList&) + 74
+    frame #6: 0x00000001026dd3e5 dyld`dyld::runInitializers(ImageLoader*) + 82
+    frame #7: 0x00000001026e60a8 dyld`dlopen + 527
+    frame #8: 0x00007fff6704fd86 libdyld.dylib`dlopen + 86
+    frame #9: 0x000000010003b238 node`node::DLOpen(v8::FunctionCallbackInfo<v8::Value> const&) [inlined] node::DLib::Open() at node.cc:1158 [opt]
+    frame #10: 0x000000010003b224 node`node::DLOpen(args=<unavailable>) at node.cc:1253 [opt]
+```
+The example we are looking at is `test/addons-napi/1_hello_world` and 
+```javascript
+const binding = require(`./build/${common.buildType}/binding`);
+```
+Notice that this does not have a file extension, and one of the file extensions that will be tried is `.node`.
+which will be `test/addons-napi/1_hello_world/build/Debug/binding.node`.
+
+From `lib/internal/modules/cjs/loader.js`:
+```javascript
+// Native extension for .node
+Module._extensions['.node'] = function(module, filename) {
+  return process.dlopen(module, path.toNamespacedPath(filename));
+};
+```
+Each addon is a dynamical library which is loaded by LDOpen in `src/node.cc`
+
+```c++
+NAPI_MODULE_INIT() {
+  napi_property_descriptor desc = DECLARE_NAPI_PROPERTY("hello", Method);
+  NAPI_CALL(env, napi_define_properties(env, exports, 1, &desc));
+  return exports;
+```
+Note that `DECLARE_NAPI_PROPERTY` is a macro defined in `test/common.h` and just initializes the struct with:
+```c++
+  napi_property_descriptor desc = { "hello", 0, Method, 0, 0, 0, napi_default, 0);
+```
+The `napi_property_descriptor` struct look like this:
+```c++
+typedef struct {
+  // One of utf8name or name should be NULL.
+  const char* utf8name;
+  napi_value name;
+
+  napi_callback method;
+  napi_callback getter;
+  napi_callback setter;
+  napi_value value;
+
+  napi_property_attributes attributes;
+  void* data;
+} napi_property_descriptor;
+```
+
+`napi_callback` is a function pointer, which is getting set to 0. Why is this not set to NULL?
+```c+++
+typedef napi_value (*napi_callback)(napi_env env, napi_callback_info info);
+```
+
+`napi_default` is an enum in `src/node_api_types.h`:
+```c++
+typedef enum {
+  napi_default = 0,
+  napi_writable = 1 << 0,
+  napi_enumerable = 1 << 1,
+  napi_configurable = 1 << 2,
+
+  // Used with napi_define_class to distinguish static properties
+  // from instance properties. Ignored by napi_define_properties.
+  napi_static = 1 << 10,
+} napi_property_attributes;
+```
+
+All JavaScript values are abstracted behind an opaque type named napi_value. This is a way hide details from the using code
+and they don't have access to the actual implementation of the struct. In `napi_value`'s case it is just a pointer and
+no additional information exist, but for other types like napi_env:
+```c++
+typedef struct napi_env__* napi_env;
+```
+`napi_env__` contains information like the Isolate, the node::Environment for example and is defined in src/node_api.cc which
+is the implementation. So the while you can see the contents of the struct in the debugger trying to access any member 
+information will get an error like the following:
+```console
+../binding.c:7:6: error: incomplete definition of type 'struct napi_env__'
+  env->isolate;
+  ~~~^
+/Users/danielbevenius/work/nodejs/node-poc/src/node_api_types.h:13:16: note: forward declaration of 'struct napi_env__'
+typedef struct napi_env__* napi_env;
+               ^
+1 error generated.
+````
+The way these types are used is by passing them to functions that operate on them, and those functions have access to the
+internal type definitions. This is also what OpenSSL does for it's type system.
 
 ### FIXED_ONE_BYTE_STRING
 This is a macro which can be found in `src/util.h`:
@@ -16872,3 +17040,5 @@ The issue was fixed by adding two HandleScopes, on in the function and then one 
   ...
   v8::HandleScope scope(ts_fn->env->isolate);
 ```
+
+
