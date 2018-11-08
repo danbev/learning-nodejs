@@ -17042,3 +17042,52 @@ The issue was fixed by adding two HandleScopes, on in the function and then one 
 ```
 
 
+#### GetHashes
+I want to understand what the following function actually does:
+```c++
+void GetHashes(const FunctionCallbackInfo<Value>& args) {
+  Environment* env = Environment::GetCurrent(args);
+  CipherPushContext ctx(env);
+  EVP_MD_do_all_sorted(array_push_back<EVP_MD>, &ctx);
+  args.GetReturnValue().Set(ctx.arr);
+}
+```
+`EVP_MD_do_all_sorted` is a function defined in `deps/openssl/openssl/crypto/evp/names.c`:
+```c
+void EVP_CIPHER_do_all_sorted(void (*fn) (const EVP_CIPHER *ciph,
+                                          const char *from, const char *to,
+                                          void *x), void *arg) {
+  ...
+}
+```
+Notice that the first argument is a pointer to a function that returns void, and takes four arguments, and the second
+argument is a void pointer (`void* arg`).
+In this case the function passed as the first argument is `array_push_back<EVP_MD>`:
+(just showing the `CipherPushContext` for completeness)
+```c++
+class CipherPushContext {
+ public:
+  explicit CipherPushContext(Environment* env)
+      : arr(Array::New(env->isolate())),
+        env_(env) {
+  }
+
+  inline Environment* env() const { return env_; }
+
+  Local<Array> arr;
+
+ private:
+  Environment* env_;
+};
+
+static void array_push_back(const TypeName* md,
+                            const char* from,
+                            const char* to,
+                            void* arg) {
+  CipherPushContext* ctx = static_cast<CipherPushContext*>(arg);
+  ctx->arr->Set(ctx->arr->Length(), OneByteString(ctx->env()->isolate(), from));
+}
+```
+Notice that this matches the signature of the function parameter definition. So this function will be called
+by OpenSSL for each hash and then it is added to a V8 Array.
+
