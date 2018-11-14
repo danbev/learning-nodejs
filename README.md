@@ -17091,3 +17091,11 @@ static void array_push_back(const TypeName* md,
 Notice that this matches the signature of the function parameter definition. So this function will be called
 by OpenSSL for each hash and then it is added to a V8 Array.
 
+
+Objects in OpenSSL can have a short name, a long name and a numerical identifier ( NID ) associated with them. 
+```c
+const char* OBJ_nid2sn(int n)
+```
+Converts the passed in numeric identifier (NID) to itsshort name. Returns Null if an error is reported.
+
+
