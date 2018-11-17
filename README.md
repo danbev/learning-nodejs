@@ -4656,7 +4656,7 @@ China Internet Network Information Center (CNNIC) is referenced in some code. It
 
 #### Signed Public Key and Challenge (SPKAC)
 Also known as Netscape SPKI (spooky). There was originally an element named keygen in the html5 spec which was later
-removed. The intention was to create client side certificates
+removed. The intention was to create client side certificates through a web service for protocols like WebID.
 
 #### Building with shared openssl
 Building an [locally built version](https://github.com/danbev/learning-libcrypto#building-openssl) of OpenSSL.
@@ -17097,5 +17097,56 @@ Objects in OpenSSL can have a short name, a long name and a numerical identifier
 const char* OBJ_nid2sn(int n)
 ```
 Converts the passed in numeric identifier (NID) to itsshort name. Returns Null if an error is reported.
+
+
+### Crypto::Convert
+Converts the EC Diffie-Hellman public key specified by key and curve to the "compressed", "uncompressed", or "hybrid" 
+format.
+
+```c++
+size_t EC_POINT_point2oct(const EC_GROUP *group, const EC_POINT *point,
+                          point_conversion_form_t form, unsigned char *buf,
+                          size_t len, BN_CTX *ctx)
+```
+
+### Password hashing
+When storing a users password we first hash it before storing it (remember that hashing is/should be a oneway thing
+and we cannot unhash it later). When the user logs in we pass the password to the same hash function and compare that
+with the entry we have stored. So if the database is compromised the only thing in it will be hashes.
+If two users have the same password the same hash would be stored in the database which can give a hacker some clues.
+For this we add what is called a salt value which is generated randomly to the users entered password before it is 
+passed to the hash function. We need to store the salt as well as it will be required when the user enters his/her
+password again and we have to add this to that password before calling the hash function and then comparing the 
+hashes. When the salt is unique for each hash, we inconvenience the attacker by now having to compute a rainbow 
+table for each user hash.
+The algorithms for hashing are made slow intentionally to withstand brute force attacks.
+MD5 was considered unsuitable for hashing in 2005.
+SHA-0 and SHA-1 are no longer considered as secure.
+When Linkedin got compromised in 2012 most of their passwords were stolen because, at that time they were still
+using SHA-1 to hash their passwords. Even though SHA-0 and SHA-1 were unsuccessful, SHA-2 still has some strength
+left with it’s different variations of hash lengths. SHA family has also released SHA-3 improving its predecessors.
+
+### PBKDF2 (Password-Based Key Derivation Function2)
+In PBKDF2 we can force the algorithm to behave slowly by increasing its iteration count.
+```javascript
+const crypto = require('crypto');
+const hash = crypto.pbkdf2Sync('testing', 'salt', 2, 20, 'sha256');
+console.log(hash.toString('hex'));
+```
+### bcrypt
+Is used for password hashing and is derived from the Blowfish block cipher which uses tables (when hashing)
+which are reside in memory which means that a certain amount of memory is required.
+
+### scrypt
+Scrypt is another hashing algorithm which has the same properties as bcrypt, except that when 
+you increase rounds, it exponentially increases calculation time and memory space required to 
+generate the hash. Scrypt was created as response to evolving attacks on bcrypt and is 
+completely unfeasable when using FPGAs or GPUs due to memory constraints. 
+Scrypt requires the storage of a series of intermediate state data snapshots, which are used 
+in further derivation operations. These snapshots, stored in memory, grow exponentially compared when rounds increase. So adding a round, will make it exponentially harder to brute force the password. 
+
+### FPGA
+A field-programmable gate array (FPGA) is an integrated circuit designed to be configured by 
+a customer or a designer after manufacturing – hence "field-programmable".
 
 
