@@ -4661,17 +4661,18 @@ removed. The intention was to create client side certificates through a web serv
 #### Building with shared openssl
 Building an [locally built version](https://github.com/danbev/learning-libcrypto#building-openssl) of OpenSSL.
 ```console
-    $ ./configure --debug --shared-openssl --shared-openssl-libpath=/Users/danielbevenius/work/security/build_1_1_0g/lib --prefix=/Users/danielbevenius/work/nodejs/build --shared-openssl-includes=/Users/danielbevenius/work/security/build_1_1_0g/include
+$ ./configure --debug --shared-openssl --shared-openssl-libpath=/Users/danielbevenius/work/security/build_1_1_0g/lib --shared-openssl-includes=/Users/danielbevenius/work/security/build_1_1_0g/include
+$ make -j8
 ```
 
 #### Building OpenSSL without elliptic curve support
 ```console
-    $ ./Configure no-ec --debug --prefix=/Users/danielbevenius/work/security/openssl/build  --libdir="openssl" darwin64-x86_64-cc
+$ ./Configure no-ec --debug --prefix=/Users/danielbevenius/work/security/openssl/build  --libdir="openssl" darwin64-x86_64-cc
 ```
 
 Then building Node against that version:
 ```console
-    $ ./configure --debug --shared-openssl --shared-openssl-libpath=/Users/danielbevenius/work/security/openssl/build/openssl --prefix=/Users/danielbevenius/work/nodejs/build --shared-openssl-includes=/Users/danielbevenius/work/security/openssl/build/include
+$ ./configure --shared-openssl --shared-openssl-libpath=/Users/danielbevenius/work/security/openssl/build/openssl --shared-openssl-includes=/Users/danielbevenius/work/security/openssl/build/include
 ```
 
 This will not compile are the headers for ec will not exist in the `--shared-openssl-includes` directory. You'll have to use the source
@@ -4688,6 +4689,22 @@ I was wondering what the values will if you just specify `--shared-openssl` whic
 install libraries in the system. For my system this will be:
 
     'libraries': ['-lcrypto', '-lssl']},
+
+#### RHEL8
+OpenSSL on RHEL8 will be OpenSSL 1.1.1 and TLS 1.3. For node this will have 
+implications if node is built and dynamically linking OpenSSL.
+
+Is the OpenSSL version that RHEL ships the same as the upstream one?  
+If there is no difference than perhaps using different certificates or something,
+I think we should be using the statically linked version of OpenSSL. I know that 
+previously dynamically linking was argued as better as that would mean that only 
+the OpenSSL dynamic library would have to be updated in the case of a CVE. But 
+in node's case it is very tightly coupled with OpenSSL and changes are that there 
+are code changes in node core required. So just updating the dynamic OpenSSL 
+library might break a node application. So in reality if a CVE coming out for OpenSSL the node
+package/executable will also have to be updated. Also, at least for us with
+in rhoar our target is a container we would have to update the base image in
+addition to an update to node.. 
 
 ### Building on Solaris
 I used VirtualBox to build and run the test suite on Solaris
@@ -5808,11 +5825,14 @@ So calling `tls.createSecureContext` will end up in `lib/_tls_common.js:
       var c = new SecureContext(options.secureProtocol, secureOptions, context);
 ```
 
-And here we find the call to `SecureContext` using `new`.
+And here we find the call to `SecureContext` using `new`. At this point this
+function will have been bound by `SecureContext::Initialize` which is called
+by `node::crypto::Initialize` in `src/node_crypto.cc`. When the `tls` module
+is required it will load the internal `crypto` module` which is what will 
+cause `node::crypto::Initialize` to be invoked.
 
-In this walk through we have been taking a look at `New` but this was not called at this time. The
-next task in `SecureContext::Initialize(env, target)` is to set up functions on the 
-
+`SecureContext::Initialize(env, target)` has the following functions that is
+adds:
 ```c++
     Local<FunctionTemplate> t = env->NewFunctionTemplate(SecureContext::New);
     t->InstanceTemplate()->SetInternalFieldCount(1);
@@ -5825,15 +5845,45 @@ next task in `SecureContext::Initialize(env, target)` is to set up functions on 
     ...
     target->Set(FIXED_ONE_BYTE_STRING(env->isolate(), "SecureContext"), t->GetFunction());
 ```
+
+So, when `tls.createSecureContext` returns `c` will have been bound to a new
+function that was set up above.
+
+In most/all of the functions in the SecureContext class you'll find the following:
+```c++
+  SecureContext* sc;
+  ASSIGN_OR_RETURN_UNWRAP(&sc, args.Holder());
+```
+If call to such a function could look like this:
+```javascript
+   c.context.addCACert('something');
+```
+The JavaScript layer will add wrap the native secure context in a object with
+a context member for the native secure context, which is the SecureContext on
+the C++ side. So when we call `addCACert` what is unwrapped by 
+`ASSIGN_OR_RETURN_UNWRAP` is `c` which is the native context. 
     
 Remember that these are prototype functions that are being setup on instance created when using
 `new SecureContext` which will be an instance of `CipherBase` since this is the type that the `New` function returned.
 
+When is the underlying OpenSSL Context created? 
+This is one in `SecureContext::Init` which is called in `_tls_common.js`, in the
+SecureContext constructor:
 ```javascript
-    const binding = process.binding('crypto');
+  this.context = new NativeSecureContext();
+  this.context.init(secureProtocol);
+```
+`SecureContext::Init` will setup/initialize the OpenSSL context. This includes
+parsing the options passed, `secureProtocol` above and calling the correct 
+TLS_xxx_method(), and then using that `SSL_METHOD` pointer to create a new
+SSL_CTX.
+
+
+```javascript
+    const binding = internalBinding('crypto');
 ```
 
-Recall that binding is a function that is set on the process object when it is set up on node.cc. This 
+Recall that internalBinding is a function that is set on the process object when it is set up on node.cc. This 
 will be a call to Binding:
 ```console
     (lldb) br s -f node.cc -l 2723
@@ -17149,4 +17199,173 @@ in further derivation operations. These snapshots, stored in memory, grow expone
 A field-programmable gate array (FPGA) is an integrated circuit designed to be configured by 
 a customer or a designer after manufacturing – hence "field-programmable".
 
+### timingSafeEqual
+When comparing MAC hashes, AEAD authentication tags, or other hash
+values in the context of authentication or integrity checking, it
+is important not to leak timing information to a potential attacker.
+
+Bytewise memory comparisons (such as memcmp) are usually optimized so
+that they return a nonzero value as soon as a mismatch is found.
+This early-return behavior can leak timing information, allowing an
+attacker to iteratively guess the correct result.
+
+This function uses OpenSSL's `CRYPTO_memcmp` function.
+
+
+
+####
+```c++
+class PublicKeyCipher {
+  public:
+   typedef int (*EVP_PKEY_cipher_init_t)(EVP_PKEY_CTX* ctx);
+   typedef int (*EVP_PKEY_cipher_t)(EVP_PKEY_CTX* ctx,
+                                    unsigned char* out, size_t* outlen,
+                                    const unsigned char* in, size_t inlen);
+
+  template <Operation operation,
+            EVP_PKEY_cipher_init_t EVP_PKEY_cipher_init,
+            EVP_PKEY_cipher_t EVP_PKEY_cipher>
+  static bool Cipher(const char* key_pem,
+    ...
+
+  env->SetMethod(target, "publicEncrypt",
+                 PublicKeyCipher::Cipher<PublicKeyCipher::kPublic,
+                                         EVP_PKEY_encrypt_init,
+                                         EVP_PKEY_encrypt>);
+   
+```
+So `EVP_PKEY_cipher_init_t` is a function pointer to a function that takes
+an EVP_PKEY_CTX* and returns an int. And this is being used in a templated
+function which is shown above. Notice that this function is getting specialized
+with `EVP_PKEY_encrypt_init` and `EVP-PKEY_encrypt` functions from OpenSSL.
+Is it laste used like this:
+```c++
+ if (EVP_PKEY_cipher_init(ctx.get()) <= 0)
+   return false;
+
+  if (EVP_PKEY_cipher(ctx.get(), nullptr, out_len, data, len) <= 0)
+    return false;
+}
+```
+
+### SecureContext
+
+### PKCS12 (Public Key Cryptography Standards)
+In cryptography, PKCS #12 defines an archive file format for storing many cryptography objects as a single file. 
+It is commonly used to bundle a private key with its X.509 certificate or to bundle all the members of a chain of trust.
+
+A PKCS #12 file may be encrypted and signed. The internal storage containers, called "SafeBags", may also be encrypted and signed. 
+A few SafeBags are predefined to store certificates, private keys and CRLs. Another SafeBag is provided to store any other data at individual implementer's choice.
+
+PKCS #12 is one of the family of standards called Public-Key Cryptography Standards (PKCS) published by RSA Laboratories.
+The filename extension for PKCS #12 files is ".p12" or ".pfx".[4]
+These files can be created, parsed and read out with the OpenSSL pkcs12 command
+
+### TLS Session Tickets
+The ticket is created by a TLS server and sent to a TLS client.
+The TLS client presents the ticket to the TLS server to resume a session.
+
+The generation of these ticket values are done on the server side when 
+intializing the SecureContext::Init:
+```c++
+  // OpenSSL 1.1.0 changed the ticket key size, but the OpenSSL 1.0.x size was
+  // exposed in the public API. To retain compatibility, install a callback
+  // which restores the old algorithm.
+  if (RAND_bytes(sc->ticket_key_name_, sizeof(sc->ticket_key_name_)) <= 0 ||
+      RAND_bytes(sc->ticket_key_hmac_, sizeof(sc->ticket_key_hmac_)) <= 0 ||
+      RAND_bytes(sc->ticket_key_aes_, sizeof(sc->ticket_key_aes_)) <= 0) {
+    return env->ThrowError("Error generating ticket keys");
+  }
+  SSL_CTX_set_tlsext_ticket_key_cb(sc->ctx_.get(), TicketCompatibilityCallback);
+```
+
+The client indicates that it supports this mechanism by including a
+SessionTicket TLS extension in the ClientHello message.
+The extension will be empty if the client does not already possess a
+ticket for the server.  The server sends an empty SessionTicket
+extension to indicate that it will send a new session ticket using
+the NewSessionTicket handshake message.
+
+The server uses two different keys: one 128-bit key for Advanced
+Encryption Standard (AES) in Cipher Block Chaining (CBC) mode
+encryption and one 256-bit key for HMAC-SHA-256
+
+
+
+
+For new sessions tickets, when the client doesn't present a session ticket, or an 
+attempted retreival of the ticket failed, or a renew option was indicated, the 
+callback function will be called with enc equal to 1. The OpenSSL library expects 
+that the function will set an arbitary name, initialize iv, and set the cipher 
+context ctx and the hash context hctx.
+
+The name is 16 characters long and is used as a key identifier
+
+
+### #error directive
+The #error directive is used in the code base, for example in node_crypto.cc
+```c++
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L && \
+    OPENSSL_VERSION_NUMBER < 0x10100070L
+#error "OpenSSL 1.1.0 revisions before 1.1.0g are not supported"
+#endif
+  ...
+}
+```
+The #error directive causes the compiler (or preprocessor) to output the error message.
+
+### secure-pair.js
+This test fails when using OpenSSL 1.?.?
+
+```console
+=== release test-benchmark-tls ===
+Path: sequential/test-benchmark-tls
+(node:3355) [DEP0107] DeprecationWarning: tls.convertNPNProtocols() is deprecated.
+_tls_common.js:113
+      c.context.setCert(cert);
+                ^
+Error: error:140AB18F:SSL routines:SSL_CTX_use_certificate:ee key too small
+    at Object.createSecureContext (_tls_common.js:113:17)
+    at Object.connect (_tls_wrap.js:1121:48)
+    at Server.proxy.listen (/builddir/build/BUILD/node-v10.14.0/benchmark/tls/secure-pair.js:42:24)
+    at Object.onceWrapper (events.js:273:13)
+    at Server.emit (events.js:182:13)
+    at emitListeningNT (net.js:1320:10)
+    at process._tickCallback (internal/process/next_tick.js:63:19)
+    at Function.Module.runMain (internal/modules/cjs/loader.js:744:11)
+    at startup (internal/bootstrap/node.js:285:19)
+    at bootstrapNodeJSCore (internal/bootstrap/node.js:739:3)
+```
+If we examine
+```js
+  const options = {
+    key: fs.readFileSync(`${cert_dir}/test_key.pem`),
+    cert: fs.readFileSync(`${cert_dir}/test_cert.pem`),
+    ca: [ fs.readFileSync(`${cert_dir}/test_ca.pem`) ],
+    ciphers: 'AES256-GCM-SHA384',
+    isServer: true,
+    requestCert: true,
+    rejectUnauthorized: true,
+  };
+```
+Lets check the size of `test_key.pem`:
+```console
+$ openssl rsa -in test_key.pem -text -noout
+Private-Key: (1024 bit)
+modulus:
+  ...
+```
+
+This was due to the crypto-policy on RHEL8 which is DEFAULT (by default) and
+it will not allow key sizes smaller than 2048. This can be worked around by
+setting the policy to legacy:
+```console
+$ update-crypto-policies --set LEGACY
+```
+Another way could possibly be to set the security level for OpenSSL:
+```c++
+SSL_CTX_set_security_level(sc->ctx_.get(), 1);
+```
+Not sure if this is something we would want to do but I'm sticking this here
+just in case it migth be needed later.
 
