@@ -5744,9 +5744,35 @@ Download and verify the download:
 Compare the changes to make see if you have to make changes to the
 
 ### OpenSSL with FIPS
-When building the OpenSSL and specifying `--openssl-fips`, which is described as "Build OpenSSL using FIPS canister .o file in supplied folder", support for [Fipsld](https://wiki.openssl.org/index.php/Fipsld_and_C%2B%2B). The follwing can be seen on that page:
-"When performing a static link against the OpenSSL library, you have to embed the expected FIPS signature in your executable after final linking. Embedding the FIPS signature in your executable is most often accomplished with fisld."
-"fisld will take the place of the linker (or compiler if invoking via a compiler driver). If you use fisld to compile a source file, fisld will do nothing and simply invoke the compiler you specify through FIPSLD_CC. When it comes time to link, fisld will compile fips_premain.c, add fipscanister.o, and then perform the final link of your program. Once your program is linked, fisld will then invoke incore to embed the FIPS signature in your program."
+When building the OpenSSL and specifying `--openssl-fips`, which is described as 
+"Build OpenSSL using FIPS canister .o file in supplied folder"
+[Fipsld](https://wiki.openssl.org/index.php/Fipsld_and_C%2B%2B). 
+
+The canister file is just the collection of the all the source code into an single 
+monolihic object module to guarentee the relative order of the original code
+components:
+```console
+$ ld -r ­-o fipscanister.o fips_start.o ... fips_end.o
+```
+Doing this will preserve the relative order of the original code components.
+
+The follwing can be seen on that page:
+"When performing a static link against the OpenSSL library, you have to embed 
+the expected FIPS signature in your executable after final linking. Embedding 
+the FIPS signature in your executable is most often accomplished with fisld."
+"fisld will take the place of the linker (or compiler if invoking via a compiler driver). 
+If you use fisld to compile a source file, fisld will do nothing and simply 
+invoke the compiler you specify through FIPSLD_CC. When it comes time to link, 
+fisld will compile fips_premain.c, add fipscanister.o, and then perform the 
+final link of your program. Once your program is linked, fisld will then invoke 
+incore to embed the FIPS signature in your program."
+
+But how about when we dynamically link to an OpenSSL version that has FIPS support
+enabled. Since we would not be statically linking we should not have to specify
+the fipscanister.o. But without specifying the `--openssl-fips` flag the options
+to enable/disable FIPS are not avaiable in node (nore are functions enabled/disabled
+that would otherwise be when when FIPS mode is enabled).
+
 
 For instructions building an OpenSSL version with FIPS support see:
 https://github.com/danbev/learning-libcrypto#fips
@@ -5758,6 +5784,10 @@ called the OpenSSL FIPS Object Module has been created. The Module was designed 
 compatibility with the OpenSSL library so products using the OpenSSL library and API can be
 converted to use FIPS 140-2 validated cryptography with minimal effort.
 
+FIPS Mode in which the FIPS approved algorithms are implemented by
+the FIPS Object Module and non-FIPS approved algorithms are disabled by default. 
+These non-validated algorithms include, but are not limited to, Blowfish, CAST, 
+IDEA, RC-family, and non-SHA message digest and other algorithms.
 
 The v1.2.x Module is only compatible with OpenSSL 0.9.8 releases, while the v2.0 Module is
 compatible with OpenSSL 1.0.1 and 1.0.2 releases. The v2.0 Module is the best choice for all new
@@ -17362,10 +17392,61 @@ setting the policy to legacy:
 ```console
 $ update-crypto-policies --set LEGACY
 ```
+or optionally setting the following environment variable:
+```console
+$ export OPENSSL_TLS_SECURITY_LEVEL=1
+```
 Another way could possibly be to set the security level for OpenSSL:
 ```c++
 SSL_CTX_set_security_level(sc->ctx_.get(), 1);
 ```
 Not sure if this is something we would want to do but I'm sticking this here
 just in case it migth be needed later.
+
+### Inspect
+```js
+util.inspect.defaultOptions.showHidden = true
+```
+
+### ssl_wrap
+When is the constructor of SSLWrap called?
+```js
+TLSSocket.prototype._wrapHandle = function(wrap) {
+  var handle;
+  ...
+    // Wrap socket's handle
+  const context = options.secureContext ||
+                  options.credentials ||
+                  tls.createSecureContext(options);
+  const externalStream = handle._externalStream;
+  const res = tls_wrap.wrap(externalStream,
+                            context.context,
+                            !!options.isServer); 
+```
+
+The wrap function is defined in `src/tls_wrap.cc`:
+```c++
+void TLSWrap::Initialize(Local<Object> target,
+                         Local<Value> unused,
+                         Local<Context> context,
+                         void* priv) {
+  Environment* env = Environment::GetCurrent(context);
+
+  env->SetMethod(target, "wrap", TLSWrap::Wrap);
+```
+
+```c++
+ Local<External> stream_obj = args[0].As<External>();
+  Local<Object> sc = args[1].As<Object>();
+  Kind kind = args[2]->IsTrue() ? SSLWrap<TLSWrap>::kServer :
+                                  SSLWrap<TLSWrap>::kClient;
+
+  StreamBase* stream = static_cast<StreamBase*>(stream_obj->Value());
+  CHECK_NOT_NULL(stream);
+
+  TLSWrap* res = new TLSWrap(env, kind, stream, Unwrap<SecureContext>(sc));
+
+  args.GetReturnValue().Set(res->object());
+```
+
 
