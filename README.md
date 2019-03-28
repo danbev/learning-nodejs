@@ -5773,6 +5773,9 @@ the fipscanister.o. But without specifying the `--openssl-fips` flag the options
 to enable/disable FIPS are not avaiable in node (nore are functions enabled/disabled
 that would otherwise be when when FIPS mode is enabled).
 
+Perhaps we can set the macro `NODE_FIPS_MODE` if `OPENSSL_FIPS` is set which should
+be done when linking against an OpenSSL version that support FIPS?
+
 
 For instructions building an OpenSSL version with FIPS support see:
 https://github.com/danbev/learning-libcrypto#fips
@@ -6516,9 +6519,25 @@ Is when a program is linked dynmically to a former version and does not have to 
 If a program needs to be recompiled to run with a new version of library but doesn't require 
 any further modifications, the library is source compatible.
 
+### Application Binary Interface (ABI)
 An ABI defines the structures and methods used to access external, already compiled libraries/code at the level of machine code.
+The headers decsribing classes, functions etc are compiled to a set of addresses
+and expected parameters, memory structure sizes and layout. The application using
+the ABI must be compiled so that these addresses, the expected paramters, memory
+layout etc match those that that the ABI provider provided.
+Changes to the header files can be made but must be done carfully to ensure that
+the compability is not changed, so that the addresses produced when compiling
+are not changed which would mean that exising users of the compiled code would 
+become incompatible.
+
+
+Keeping an ABI stable means not changing function interfaces (return type and number, 
+types, and order of arguments), definitions of data types or data structures, defined constants, etc. 
+New functions and data types can be added, but existing ones must stay the same.
 
 Making a namespace change in C++ will generate a different mangled name so the symbol in the object file will be different.
+
+In Node there is `NODE_MODULE_VERSION` which is defined in `node_version.h`
 
 
 #### C++ Lint task
@@ -14342,7 +14361,7 @@ is set. The following call be get the tag and set the value of `auth_tag_`.
 EVP_CIPHER_CTX_ctrl(ctx_, EVP_CTRL_GCM_GET_TAG, auth_tag_len_, reinterpret_cast<unsigned char*>(auth_tag_)));
 ```
 
-### Authenticated Encryption with Associated Data
+### Authenticated Encryption with Associated Data (AEAD)
 You can also add additional data that will be covered by the authentication tag but not encrypted.
 This can be useful for package headers which should be allowed to be read, but you still don't want
 them to be tampered with. Lets take a look at an example:
@@ -17450,3 +17469,756 @@ void TLSWrap::Initialize(Local<Object> target,
 ```
 
 
+### RHEL8 issue
+I'm seeing a failure when running `test/parallel/test-tls-handshake-error.js` on
+RHEL8 (dynamically linking to the FIPS compatible OpenSSL library). The error is
+:
+```console
+
+```
+
+The test in question looks like it is intended to test a handshake error where
+the cipher passed in is not available. 
+
+These are the ciphers available on the current master:
+```console
+$ ./out/Release/openssl-cli ciphers -s | tr ':' '\n'
+ECDHE-ECDSA-AES256-GCM-SHA384
+ECDHE-RSA-AES256-GCM-SHA384
+DHE-RSA-AES256-GCM-SHA384
+ECDHE-ECDSA-CHACHA20-POLY1305
+ECDHE-RSA-CHACHA20-POLY1305
+DHE-RSA-CHACHA20-POLY1305
+ECDHE-ECDSA-AES128-GCM-SHA256
+ECDHE-RSA-AES128-GCM-SHA256
+DHE-RSA-AES128-GCM-SHA256
+ECDHE-ECDSA-AES256-SHA384
+ECDHE-RSA-AES256-SHA384
+DHE-RSA-AES256-SHA256
+ECDHE-ECDSA-AES128-SHA256
+ECDHE-RSA-AES128-SHA256
+DHE-RSA-AES128-SHA256
+ECDHE-ECDSA-AES256-SHA
+ECDHE-RSA-AES256-SHA
+DHE-RSA-AES256-SHA
+ECDHE-ECDSA-AES128-SHA
+ECDHE-RSA-AES128-SHA
+DHE-RSA-AES128-SHA
+AES256-GCM-SHA384
+AES128-GCM-SHA256
+AES256-SHA256
+AES128-SHA256
+AES256-SHA
+AES128-SHA
+```
+And these are the ciphers avilable on RHEL8:
+```console
+bash-4.4# openssl ciphers -s | tr ':' '\n'
+TLS_AES_256_GCM_SHA384
+TLS_CHACHA20_POLY1305_SHA256
+TLS_AES_128_GCM_SHA256
+TLS_AES_128_CCM_SHA256
+ECDHE-ECDSA-AES256-GCM-SHA384
+ECDHE-RSA-AES256-GCM-SHA384
+ECDHE-ECDSA-CHACHA20-POLY1305
+ECDHE-RSA-CHACHA20-POLY1305
+ECDHE-ECDSA-AES256-CCM
+ECDHE-ECDSA-AES128-GCM-SHA256
+ECDHE-RSA-AES128-GCM-SHA256
+ECDHE-ECDSA-AES128-CCM
+ECDHE-ECDSA-AES128-SHA256
+ECDHE-RSA-AES128-SHA256
+ECDHE-ECDSA-AES256-SHA
+ECDHE-RSA-AES256-SHA
+ECDHE-ECDSA-AES128-SHA
+ECDHE-RSA-AES128-SHA
+ECDHE-ECDSA-RC4-SHA
+ECDHE-RSA-RC4-SHA
+ECDHE-ECDSA-DES-CBC3-SHA
+ECDHE-RSA-DES-CBC3-SHA
+AES256-GCM-SHA384
+AES256-CCM
+AES128-GCM-SHA256
+AES128-CCM
+AES256-SHA256
+AES128-SHA256
+AES256-SHA
+AES128-SHA
+RC4-SHA
+DES-CBC3-SHA
+DHE-DSS-AES256-GCM-SHA384
+DHE-RSA-AES256-GCM-SHA384
+DHE-RSA-CHACHA20-POLY1305
+DHE-RSA-AES256-CCM
+DHE-DSS-AES128-GCM-SHA256
+DHE-RSA-AES128-GCM-SHA256
+DHE-RSA-AES128-CCM
+DHE-RSA-AES256-SHA256
+DHE-DSS-AES256-SHA256
+DHE-RSA-AES128-SHA256
+DHE-DSS-AES128-SHA256
+DHE-RSA-AES256-SHA
+DHE-DSS-AES256-SHA
+DHE-RSA-AES128-SHA
+DHE-DSS-AES128-SHA
+DHE-RSA-DES-CBC3-SHA
+DHE-DSS-DES-CBC3-SHA
+```
+Notice that `RC4` is not available on the current master but is on RHEL.
+So instead of getting a `no cipher match` match error the error will instead be
+:
+```console
+{ Error: Client network socket disconnected before secure TLS connection was established
+    at TLSSocket.onConnectEnd (_tls_wrap.js:1184:19)
+    at Object.onceWrapper (events.js:276:13)
+    at TLSSocket.emit (events.js:193:15)
+    at endReadableNT (_stream_readable.js:1130:12)
+    at processTicksAndRejections (internal/process/next_tick.js:76:17)
+  code: 'ECONNRESET',
+  path: undefined,
+  host: undefined,
+  port: 39617,
+  localAddress: undefined }
+```
+
+Welcome to the Node.js Technical Steering Commitee Meeting January 16 2019
+Lets go the first topic of the agenda 
+* Start with public announcements? 
+* 
+
+### The NODE_MODULE_VERSION issue
+So the issue was that Electron 3 and 4 were using the same ABI number (64).
+Electron embeds node and has prebuilt packages. These packages work with Electron 3
+but cause the dynamic linker to fail to bind symbols when loaded in Electron 4.
+The changes between Electron 3 and 4 are switching to GN and from OpenSSL to
+BoringSSL.
+
+The request is to be able to have a specific reserved NODE_MODULE_VERSION that
+an embedder/distro can use to identify their specific version. This would allow
+packages to specify this module version for packages/addons and they would be 
+rejected by an incorrect version.
+
+I'm guessing here as I've not used `node-pre-gyp` that packages could then 
+be built specifying a unique NODE_MODULE_VERSION for Electron 4 and have them 
+built against that version. 
+
+So say electron embeds (compiles into its application) and it will have the
+NODE_MODULE_VERSION specified. A package/module compiled against that version would 
+have the same version compiled into it.
+
+Next a new electron version is released with a later version of node, but 
+there have not been any breaking APIs on the C++ side in node so the 
+NODE_MODULE_VERSION has not changed. But there are have been ABI breaking changes to Electrons
+dependencies (OpenSSL/BoringSSL, V8) which cause the application to report dynamic
+linking errors when trying to bind symbols. 
+
+With a electron specific NODE_MODULE_VERSION they could update this to indicate 
+when such breaking ABI changes have been made and have node reject them before 
+trying to dynamically link them.
+Is this correct?
+
+There are currently two suggestions about how to manage these version, one being
+in src/node_versions.h and the other in a document which gets updated.
+
+
+
+Lets take RHEL8 as an example. We are going to dynamically link to the system
+provided FIPS compatible OpenSSL library. And lets say the version is v12.0.0-pre.
+We compile our addon/native module against this version. Our addon also uses
+OpenSSL for something so it includes some OpenSSL headers. 
+This addons is then used against v12.0.0-pre but this version was statically linked
+against the OpenSSL version that was shipped with Node (at this time 1.1.0j).
+Now, node will not object to loading this addon as the NODE_MODULE_VERSION will 
+match but the dynamic linker migth not not be able to load symbols as there would
+be changes between. For RHEL8 OpenSSL should be ABI complient with 1.1.0 so I 
+don't think this would be easy to detect, but 
+
+
+In file included from ../src/node.h:63,
+                 from ../test/cctest/test_node_postmortem_metadata.cc:2:
+../deps/v8/include/v8.h: In instantiation of 
+'void v8::PersistentBase<T>::SetWeak(P*, typename v8::WeakCallbackInfo<P>::Callback, v8::WeakCallbackType) 
+[with P = node::BaseObject; T = v8::Object; typename v8::WeakCallbackInfo<P>::Callback = void (*)(const v8::WeakCallbackInfo<node::BaseObject>&)]':
+
+../src/base_object-inl.h:104:42:   required from here
+../deps/v8/include/v8.h:9453:16:
+warning: cast between incompatible function types from 
+'v8::WeakCallbackInfo<node::BaseObject>::Callback' {aka 'void (*)(const v8::WeakCallbackInfo<node::BaseObject>&)'} 
+to 
+'Callback' {aka 'void (*)(const v8::WeakCallbackInfo<void>&)'} [-Wcast-function-type]
+                reinterpret_cast<Callback>(callback), type);
+                ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+
+I'm looking at some warnings that are generated on Linux but not on mac from
+`test/addon/uv-handle-lead/binding.cc`:
+```c++
+NODE_MODULE_INIT(/*exports, module, context*/) {
+  NODE_SET_METHOD(exports, "leakHandle", LeakHandle);
+}
+```
+
+```console
+$ gcc -E test/addons/uv-handle-leak/binding.cc -Isrc -Ideps/v8/include -Ideps/uv/include
+```
+Below is the output of the pre-processor:
+```c++
+extern "C" __attribute__((visibility("default"))) void node_register_module_v68(
+    v8::Local<v8::Object> exports,
+    v8::Local<v8::Value> module,
+    v8::Local<v8::Context> context); extern "C" { 
+  static node::node_module _module = { 
+    68,
+    0,
+    __null
+    , "test/addons/uv-handle-leak/binding.cc",
+    __null
+    , (node::addon_context_register_func) (node_register_module_v68), "NODE_GYP_MODULE_NAME",
+    __null
+    ,
+    __null
+  };
+  static void _register_NODE_GYP_MODULE_NAME(void) __attribute__((constructor)); 
+  static void _register_NODE_GYP_MODULE_NAME(void) {
+    node_module_register(&_module); 
+  }
+} 
+
+void node_register_module_v68(v8::Local<v8::Object> exports,
+                              v8::Local<v8::Value> module,
+                              v8::Local<v8::Context> context) {
+  node::NODE_SET_METHOD(exports, "leakHandle", LeakHandle);
+}
+```
+
+The following warning is displayed on linux systems (not on mac though);
+```console
+make[1]: Entering directory '/node/test/addons/uv-handle-leak/build'
+  CXX(target) Release/obj.target/binding/binding.o
+  SOLINK_MODULE(target) Release/obj.target/binding.node
+  COPY Release/binding.node
+make[1]: Leaving directory '/node/test/addons/uv-handle-leak/build'
+
+In file included from ../binding.cc:1:
+/node/src/node.h:515:51:
+warning: cast between incompatible function types from 
+'void (*)(v8::Local<v8::Object>, v8::Local<v8::Value>, v8::Local<v8::Context>)' 
+to 
+'node::addon_context_register_func' {aka 'void (*)(v8::Local<v8::Object>, v8::Local<v8::Value>, v8::Local<v8::Context>, void*)'} [-Wcast-function-type]
+       (node::addon_context_register_func) (regfunc),                  \
+                                                   ^
+/node/src/node.h:533:3: note: in expansion of macro 'NODE_MODULE_CONTEXT_AWARE_X'
+   NODE_MODULE_CONTEXT_AWARE_X(modname, regfunc, NULL, 0)
+   ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+/node/src/node.h:556:3: note: in expansion of macro 'NODE_MODULE_CONTEXT_AWARE'
+   NODE_MODULE_CONTEXT_AWARE(NODE_GYP_MODULE_NAME,                     \
+   ^~~~~~~~~~~~~~~~~~~~~~~~~
+../binding.cc:45:1: note: in expansion of macro 'NODE_MODULE_INIT'
+ NODE_MODULE_INIT(/*exports, module, context*/) {
+ ^~~~~~~~~~~~~~~~
+```
+
+`node::addon_context_register_func` is defined as:
+```c++
+typedef void (*addon_context_register_func)(
+    v8::Local<v8::Object> exports,
+    v8::Local<v8::Value> module,
+    v8::Local<v8::Context> context,
+    void* priv);
+```
+Notice that the last parameter for this function is not specified in the macro
+`NODE_MODULE_INITIALIZER`:
+```c++
+#define NODE_MODULE_INIT()                                            \
+  extern "C" NODE_MODULE_EXPORT void                                  \
+  NODE_MODULE_INITIALIZER(v8::Local<v8::Object> exports,              \
+                          v8::Local<v8::Value> module,                \
+                          v8::Local<v8::Context> context);            \
+  NODE_MODULE_CONTEXT_AWARE(NODE_GYP_MODULE_NAME,                     \
+                            NODE_MODULE_INITIALIZER)                  \
+NODE_MODULE_INITIALIZER(v8::Local<v8::Object> exports,                \
+                          v8::Local<v8::Value> module,                \
+                          v8::Local<v8::Context> context)
+
+```
+Adding the last parameter `void* priv` to the last `NODE_MODULE_INITIALIZER` 
+allows the function signature to match `node::addon_context_register_func`:
+```c++
+NODE_MODULE_INITIALIZER(v8::Local<v8::Object> exports,               \
+                          v8::Local<v8::Value> module,               \
+                          v8::Local<v8::Context> context)            \
+                          void* priv)
+```
+
+
+```console
+Building addon in /node/test/addons/make-callback
+/node/tools/build-addons.js:58
+main(process.argv[3]).catch((err) => setImmediate(() => { throw err; }));
+                                                          ^
+
+Error: spawn /node/out/Release/node EACCES
+    at Process.ChildProcess._handle.onexit (internal/child_process.js:246:19)
+    at onErrorNT (internal/child_process.js:422:16)
+    at processTicksAndRejections (internal/process/next_tick.js:76:17)
+make[1]: *** [Makefile:380: test/addons/.buildstamp] Error 1
+make[1]: *** Waiting for unfinished jobs....
+  touch /node/out/Release/obj.target/rename_node_bin_win.stamp
+```
+
+### QUIC (Quick Internet UDP Internet Connections)
+Make sure you are reading the correct specifiction version. Currently, ngtcp2
+follows [version 15](https://tools.ietf.org/id/draft-ietf-quic-transport-15.html).
+
+For testing/debugging build with debug symbols enabled and static so that there
+is a single executable that can be run (not a libtool wrapper script):
+
+First, clone the OpenSSL fork:
+```console
+$ git clone --depth 1 -b quic-draft-15 https://github.com/tatsuhiro-t/openssl
+$ ./config enable-tls1_3 --prefix=$PWD/build
+$ make -j8
+$ make install_sw
+```
+Now clone ngtcp and configure and build::
+```console
+$ autoreconf -i
+$ ./configure PKG_CONFIG_PATH=$PWD/../openssl/build/lib/pkgconfig LDFLAGS="-Wl,-rpath,$PWD/../openssl/build/lib" --enable-debug --disable-shared
+$ ./configure PKG_CONFIG_PATH=$PWD/../openssl/build/lib/pkgconfig LDFLAGS="-O0 -Wl,-rpath,$PWD/../openssl/build/lib" --enable-debug --disable-shared CFLAGS="-O0" CXXFLAGS="-O0"
+$ make -j8 check
+```
+The above will build as a static library which made debbugging a little easier.
+
+`ngtcp2/examples`:
+```console
+$ openssl req -nodes -new -x509 -keyout server.key -out server.cert
+$ ./server localhost 7777 server.key server.cert
+$ ./client localhost 7777
+```
+
+Lets take a look at what goes on my debugging a client and server:
+```console
+$ lldb ./examples/server --show-secret localhost 7777 examples/server.key examples/server.cert
+(lldb) br s -n Server::on_read
+
+// In a new console
+$ lldb -- client localhost 7777
+(lldb) br s -n main
+```
+In the client, first the programs options are parsed and configured.
+Next, an SSL Context is created by the following function call
+```c++
+auto ssl_ctx = create_ssl_ctx();
+```
+This function will set the correct protocol versions to `TLS1_3_VERSION`.
+```c++
+// This makes OpenSSL client not send CCS after an initial ClientHello.
+SSL_CTX_clear_options(ssl_ctx, SSL_OP_ENABLE_MIDDLEBOX_COMPAT);
+```
+`SSL_OP_ENABLE_MIDDLEBOX_COMPAT`:
+```
+If set then dummy Change Cipher Spec (CCS) messages are sent in TLSv1.3. This has the effect of making TLSv1.3 look more like TLSv1.2 so that middleboxes that do not understand TLSv1.3 will not drop the connection. Regardless of whether this option is set or not CCS messages received from the peer will always be ignored in TLSv1.3. This option is set by default. To switch it off use SSL_clear_options(). A future version of OpenSSL may not set this by default.
+```
+Next the ciphersuites are set and the groups (EC groups?). Following that we
+have:
+```c++
+SSL_CTX_set_mode(ssl_ctx, SSL_MODE_QUIC_HACK);
+```
+This part of the patch to support QUIC in OpenSSL.
+Next, we have a custom extension
+```
+SSL_CTX_add_client_custom_ext() adds a custom extension for a TLS/DTLS client with extension type ext_type and callbacks add_cb, free_cb and parse_cb. 
+```
+```c++
+if (SSL_CTX_add_custom_ext(
+          ssl_ctx, NGTCP2_TLSEXT_QUIC_TRANSPORT_PARAMETERS,
+          SSL_EXT_CLIENT_HELLO | SSL_EXT_TLS1_3_ENCRYPTED_EXTENSIONS,
+          transport_params_add_cb,
+          transport_params_free_cb,
+          nullptr, // no add/free function args
+          transport_params_parse_cb,
+          nullptr) // no parse args
+                 != 1) {
+```
+`transport_params_add_cb` is used to add custom data to be included in TLS
+messages.
+
+Lets start with the client and step through until we get to `Client::init`:
+```c++
+  if (init_ssl() != 0) {
+    return -1;
+  }
+```
+This calls Client::init_ssl:
+```c++
+  ssl_ = SSL_new(ssl_ctx_);
+  auto bio = BIO_new(create_bio_method());
+  BIO_set_data(bio, this);
+  SSL_set_bio(ssl_, bio, bio);
+  SSL_set_app_data(ssl_, this);
+  SSL_set_connect_state(ssl_);
+  SSL_set_msg_callback(ssl_, msg_cb);
+  SSL_set_msg_callback_arg(ssl_, this);
+  SSL_set_key_callback(ssl_, key_cb, this);
+```
+Next, back in Client::init we have:
+```c++
+  auto callbacks = ngtcp2_conn_callbacks{
+      client_initial,
+      nullptr, // recv_client_initial
+      recv_crypto_data,
+      handshake_completed,
+      nullptr, // recv_version_negotiation
+      do_hs_encrypt,
+      do_hs_decrypt,
+      do_encrypt,
+      do_decrypt,
+      do_in_hp_mask,
+      do_hp_mask,
+      recv_stream_data,
+      acked_crypto_offset,
+      acked_stream_data_offset,
+      nullptr, // stream_open
+      stream_close,
+      nullptr, // recv_stateless_reset
+      recv_retry,
+      extend_max_streams_bidi,
+      nullptr, // extend_max_streams_uni
+      nullptr, // rand
+      get_new_connection_id,
+      remove_connection_id,
+      ::update_key,
+  };
+```
+So these are the callback that a client would register.
+Next the source connection id is generated:
+```c++
+  ngtcp2_cid scid, dcid;
+  scid.datalen = 17;
+  std::generate(std::begin(scid.data), std::begin(scid.data) + scid.datalen,
+                [&dis]() { return dis(randgen); });
+```
+And then the destination destination connection id is generated:
+```c++
+  if (config.dcid.datalen == 0) {
+    dcid.datalen = 18;
+    std::generate(std::begin(dcid.data), std::begin(dcid.data) + dcid.datalen,
+                  [&dis]() { return dis(randgen); });
+  } else {
+    dcid = config.dcid;
+  }
+```
+Next various settings are set:
+```c++
+  settings.log_printf = config.quiet ? nullptr : debug::log_printf;
+  settings.initial_ts = util::timestamp(loop_);
+  settings.max_stream_data_bidi_local = 256_k;
+  settings.max_stream_data_bidi_remote = 256_k;
+  settings.max_stream_data_uni = 256_k;
+  settings.max_data = 1_m;
+  settings.max_streams_bidi = 1;
+  settings.max_streams_uni = 1;
+  settings.idle_timeout = config.timeout;
+  settings.max_packet_size = NGTCP2_MAX_PKT_SIZE;
+  settings.ack_delay_exponent = NGTCP2_DEFAULT_ACK_DELAY_EXPONENT;
+  settings.max_ack_delay = NGTCP2_DEFAULT_MAX_ACK_DELAY;
+```
+After this a connection is created using `ngtcp2_conn_client_new`:
+```c++
+rv = ngtcp2_conn_client_new(&conn_, &dcid, &scid, version, &callbacks,
+                              &settings, this);
+```
+This function can be found in `lib/ngtcp2_conn.c` and will set the connection
+state to `NGTCP2_CS_CLIENT_INITIAL`.
+Next, the there is a setup of the crypto context by:
+```c++
+rv = setup_initial_crypto_context();
+```
+The first thing that happens is:
+```c++
+auto dcid = ngtcp2_conn_get_dcid(conn_);
+```
+`dcid` which is the destination connection identifier. This is then used in thefollowing call:
+```c++
+rv = crypto::derive_initial_secret(
+      initial_secret.data(), initial_secret.size(), dcid,
+      reinterpret_cast<const uint8_t *>(NGTCP2_INITIAL_SALT),
+      str_size(NGTCP2_INITIAL_SALT));
+```
+This function is described by [section 5.2](https://tools.ietf.org/id/draft-ietf-quic-tls-17.html#rfc.section.5.2) of the spec which describes how initial packets are protected with a secret derived from the Destionation Conneciton ID.
+
+The first two parameters are the destination pointer (unit8_t) and the size (size_t). `dcid` is a pointer to the secret, followed by the salt and the salt length.
+The salt is defined in the [spec](https://tools.ietf.org/id/draft-ietf-quic-tls-17.html#rfc.section.5.2).
+
+```
+int derive_initial_secret(uint8_t *dest, size_t destlen,
+                          const ngtcp2_cid *secret, const uint8_t *salt,
+                          size_t saltlen) {
+  Context ctx;
+  prf_sha256(ctx);
+  return hkdf_extract(dest, destlen, secret->data, secret->datalen, salt, saltlen, ctx);
+}
+```
+The first call to `prf_sha256` will populate Context::prf by calling call EVP_sha256(). (pseudorandom function I think this is).
+
+
+Next we have:
+```c++
+rv = crypto::derive_client_initial_secret(secret.data(), secret.size(),
+                                            initial_secret.data(),
+                                            initial_secret.size());
+```
+We are using the secret that was derived from the destination connection id, and using the same secret but with a label:
+```c++
+int derive_client_initial_secret(uint8_t *dest, size_t destlen,
+                                 const uint8_t *secret, size_t secretlen) {
+  static constexpr uint8_t LABEL[] = "client in";
+  Context ctx;
+  prf_sha256(ctx);
+  return crypto::hkdf_expand_label(dest, destlen, secret, secretlen, LABEL,
+                                   str_size(LABEL), ctx);
+}
+```
+Next, we have:
+```c++
+auto keylen = crypto::derive_packet_protection_key(
+      key.data(), key.size(), secret.data(), secret.size(), hs_crypto_ctx_);
+```
+This will use the label "quic key":
+```c++
+```
+
+If there has not been a connection previously (0-RTT not possible) then an 
+initail handshake will be performed (Client::do_handshake_write_once):
+```c++
+nwrite = c.do_handshake_write_once();
+```
+This will eventuall call conn_write_client_initial in conn_write_handshake:
+```c++
+nwrite = conn_write_client_initial(conn, dest, destlen, early_datalen, ts);
+```
+This will call the callback set previously named `client_initial` passing in
+the connection and connectio user_data.
+`client_initial will call `tls_handshake:
+```c++
+if (c->tls_handshake(true) != 0) {
+  return NGTCP2_ERR_CALLBACK_FAILURE;
+}
+```
+which will later call `SSL_do_handshake(ssl_)` which is a function in ssl_lib.c. This will call any extensions that have been registered which is the case for us as we added a custom extension.
+`transport_params_add_cb`:
+```c++
+rv = ngtcp2_conn_get_local_transport_params(
+      conn, &params, NGTCP2_TRANSPORT_PARAMS_TYPE_CLIENT_HELLO);
+...
+constexpr size_t bufsize = 64;
+auto buf = std::make_unique<uint8_t[]>(bufsize);
+auto nwrite = ngtcp2_encode_transport_params(
+      buf.get(), bufsize, NGTCP2_TRANSPORT_PARAMS_TYPE_CLIENT_HELLO, &params);
+```
+
+Later `Client::send_packet` will actually send the message to the server.
+
+This will cause the servers `sreadcb` go be called as this is registered
+as a read event in Server::Server:
+```c++
+ev_io_init(&rev_, sreadcb, 0, EV_READ);
+```
+```c++
+void sreadcb(struct ev_loop *loop, ev_io *w, int revents) {
+  auto s = static_cast<Server *>(w->data);
+
+  s->on_read();
+}
+```
+This will inturn call `feed_data` which will call `do_handshake` which does:
+```c++
+auto rv = do_handshake_read_once(data, datalen);
+```
+Which calls `ngtcp2_conn_read_handshake`:
+```
+6385   case NGTCP2_CS_SERVER_INITIAL:
+6386     rv = conn_recv_handshake_cpkt(conn, pkt, pktlen, ts);
+```
+This will later endup in `conn_recv_handshake_pkt`:
+```c++
+switch(fr->type) {
+...
+case NGTCP2_FRAME_CRYPTO:
+      rv = conn_recv_crypto(conn, pktns->crypto_rx_offset_base,
+                            max_crypto_rx_offset, &fr->crypto);
+
+```
+```c++
+conn_call_recv_crypto_data
+```
+```c++
+rv = conn->callbacks.recv_crypto_data(conn, offset, data, datalen,
+                                      conn->user_data);
+```
+This is the callback that the server registered.
+```console
+(lldb) br s -n recv_crypto_data
+```
+From `recv_crypto_data`:
+```c++
+ if (!ngtcp2_conn_get_handshake_completed(h->conn())) {
+    rv = h->tls_handshake();
+```
+```c++
+rv = SSL_read_early_data(ssl_, buf.data(), buf.size(), &nread);
+```
+This will call into OpenSSL. 
+
+Here is a backtrace from `msg_cb`.
+```console
+(lldb) bt
+* thread #1, queue = 'com.apple.main-thread', stop reason = breakpoint 1.1
+  * frame #0: 0x0000000100004a8c server`(anonymous namespace)::msg_cb(write_p=0, version=772, content_type=22, buf=0x0000000102807600, len=296, ssl=0x0000000102800600, arg=0x00000001013002d0) at server.cc:198 [opt]
+    frame #1: 0x00000001001c396d libssl.3.dylib`tls_get_message_body(s=0x0000000102800600, len=0x00007ffeefbeca58) at statem_lib.c:1332
+    frame #2: 0x00000001001b1a2f libssl.3.dylib`read_state_machine(s=0x0000000102800600) at statem.c:621
+    frame #3: 0x00000001001b12c3 libssl.3.dylib`state_machine(s=0x0000000102800600, server=1) at statem.c:432
+    frame #4: 0x00000001001b149a libssl.3.dylib`ossl_statem_accept(s=0x0000000102800600) at statem.c:255
+    frame #5: 0x000000010017200d libssl.3.dylib`SSL_do_handshake(s=0x0000000102800600) at ssl_lib.c:3608
+    frame #6: 0x0000000100171ead libssl.3.dylib`SSL_accept(s=0x0000000102800600) at ssl_lib.c:1662
+    frame #7: 0x00000001001726c0 libssl.3.dylib`SSL_read_early_data(s=0x0000000102800600, buf=0x00007ffeefbecbe8, num=8, readbytes=0x00007ffeefbecbd8) at ssl_lib.c:1826
+    frame #8: 0x00000001000053c4 server`Handler::tls_handshake(this=0x00000001013002d0) at server.cc:1105 [opt]
+    frame #9: 0x0000000100027736 server`conn_recv_crypto [inlined] conn_call_recv_crypto_data(conn=<unavailable>, offset=<unavailable>, data="\x01", datalen=296) at ngtcp2_conn.c:106 [opt]
+    frame #10: 0x000000010002771f server`conn_recv_crypto(conn=0x0000000102802600, rx_offset_base=<unavailable>, max_rx_offset=<unavailable>, fr=<unavailable>) at ngtcp2_conn.c:4639 [opt]
+    frame #11: 0x000000010002880b server`conn_recv_handshake_pkt(conn=<unavailable>, pkt=<unavailable>, pktlen=<unavailable>, ts=1549283305446764032) at ngtcp2_conn.c:4378 [opt]
+    frame #12: 0x000000010001eb92 server`conn_recv_handshake_cpkt(conn=0x0000000102802600, pkt="��", pktlen=1232, ts=1549283305446764032) at ngtcp2_conn.c:4449 [opt]
+    frame #13: 0x000000010001e7d3 server`ngtcp2_conn_read_handshake(conn=0x0000000102802600, pkt="��", pktlen=1232, ts=1549283305446764032) at ngtcp2_conn.c:6386 [opt]
+    frame #14: 0x00000001000065f7 server`Handler::do_handshake_read_once(this=<unavailable>, data=<unavailable>, datalen=<unavailable>) at server.cc:1402 [opt]
+    frame #15: 0x0000000100006f31 server`Handler::feed_data(sockaddr const*, unsigned int, unsigned char*, unsigned long) [inlined] Handler::do_handshake(this=0x00000001013002d0, data="��", datalen=1232) at server.cc:1439 [opt]
+    frame #16: 0x0000000100006f23 server`Handler::feed_data(this=0x00000001013002d0, sa=0x00007ffeefbfe5b0, salen=28, data="��", datalen=1232) at server.cc:1489 [opt]
+    frame #17: 0x000000010000a37f server`Server::on_read() [inlined] Handler::on_read(this=0x00000001013002d0, sa=0x00000000d6fb1e1c, salen=<unavailable>, data="", datalen=<unavailable>) at server.cc:1502 [opt]
+    frame #18: 0x000000010000a36a server`Server::on_read(this=0x00007ffeefbfe720) at server.cc:2164 [opt]
+```
+
+
+
+```c++
+auto rv =
+      ngtcp2_conn_read_handshake(conn_, data, datalen, util::timestamp(loop_));
+...
+
+```
+The actual handshake is sent by calling:
+```c++
+rv = conn->callbacks.client_initial(conn, conn->user_data);
+```
+
+```console
+sudo tcpdump -X -vv -i lo0 -s0 -n port 7777
+```
+I've also been able to get Wireshark `2.9.1` to decrypt QUIC/gQUIC traffic. You
+have to update the `GQUIC` protocol preference and check 'Force decode of all
+Google QUIC Payload`.
+
+The QUIC packet size includes the QUIC header and protected payload, but not the UDP or IP header.
+
+The PMTU is the maximum size of the entire IP packet including the IP header, 
+UDP header, and UDP payload. The UDP payload includes the QUIC packet header, 
+protected payload, and any authentication fields. 
+
+Long Headers:
+Long headers are used for packets that are sent prior to the completion of version 
+negotiation and establishment of 1-RTT keys like `Initial', '0-RTT', 'Handshake' and
+'Retry'.
+
+
+Key Derivation Function (KDF)
+HMAC-based Extract-and-Expand Key Derivation Function (HKDF)
+PRF (pseudorandom function)
+
+
+`on_read` will be called when the event library has a read event.
+
+```c++
+auto h = std::make_unique<Handler>(loop_, ssl_ctx_, this, &hd.dcid);
+h->init(fd_, &su.sa, addrlen, &hd.scid, pocid, hd.version);
+```
+The above will call the Handler::Handler constructor. It is in `init` that the
+ssl instance is created and the following will be called on that instance:
+```c++
+  ssl_ = SSL_new(ssl_ctx_);
+  auto bio = BIO_new(create_bio_method());
+  BIO_set_data(bio, this);
+  SSL_set_bio(ssl_, bio, bio);
+  SSL_set_app_data(ssl_, this);
+  SSL_set_accept_state(ssl_);
+  SSL_set_msg_callback(ssl_, msg_cb);
+  SSL_set_msg_callback_arg(ssl_, this);
+  SSL_set_key_callback(ssl_, key_cb, this);
+```
+
+```c++
+  auto callbacks = ngtcp2_conn_callbacks{
+      nullptr,
+      ::recv_client_initial,
+      recv_crypto_data,
+      handshake_completed,
+      nullptr,
+      do_hs_encrypt,
+      do_hs_decrypt,
+      do_encrypt,
+      do_decrypt,
+      do_in_hp_mask,
+      do_hp_mask,
+      ::recv_stream_data,
+      acked_crypto_offset,
+      acked_stream_data_offset,
+      nullptr, // stream_open
+      stream_close,
+      nullptr, // recv_stateless_reset
+      nullptr, // recv_retry
+      nullptr, // extend_max_streams_bidi
+      nullptr, // extend_max_streams_uni
+      rand,
+      get_new_connection_id,
+      remove_connection_id,
+      ::update_key,
+  };
+```
+
+Lets take a look at the example server startup
+```console
+$ lldb -- ./server localhost 7777 server.key server.cert
+$ (lldb) br s -n main
+```
+After parsing the program arguments an SSL context is created:
+```c++
+auto ssl_ctx = create_ssl_ctx(private_key_file, cert_file);
+```
+Later, we have the following line:
+```c++
+auto keylog_filename = getenv("SSLKEYLOGFILE");
+```
+Now, if we create a file on the filesystem and set this environment variable:
+```console
+$ touch ssl_keylog.file
+$ export SSLKEYLOGFILE=$(PWD)/ssl_keylog.file
+```
+Next, we can open Wireshark -> Preferences -> Protocols -> TLS and add the
+path to this file in the `(Pre)-Master-Secret log filename`.
+
+### Updating ngtcp2 sources in deps
+You'll need to checkout the correct version locally and the copy all the
+source and header files to deps/ngtcp2 directory. 
+If there are new source files these have to be updated in ngtcp2.gyp.
+
+
+#### QUIC Address Validation
+
+
+#### QUIC Path Validation
+This is used during connection migration and is performed by the migrating endpoint
+to ensure that the peer can be reached from the new local address.
+So, the address would be a two-tuple of IP-address and port and this would be used
+to make sure that it can communicate with the remote address (also a two-tuple of
+IP-address and port). A PATH_CHALLENGE is sent and a PATH_RESPONSE should be recieved
+by both.
+
+On receiving a PATH_CHALLENGE frame, an endpoint MUST respond immediately by echoing 
+the data contained in the PATH_CHALLENGE frame in a PATH_RESPONSE frame.
