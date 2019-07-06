@@ -5780,6 +5780,81 @@ be done when linking against an OpenSSL version that support FIPS?
 For instructions building an OpenSSL version with FIPS support see:
 https://github.com/danbev/learning-libcrypto#fips
 
+Detecting FIPS support:
+Currently, FIPS support is not available in the version that is shipped with
+Node.js. But we still have the option to dynamically link to a FIPS compatible
+OpenSSL library. This is for example what we do at Red Hat.
+There is a problem here though...
+
+If we run the following command on default build (statically linking with OpenSSL
+in deps, so no FIPS support):
+```console
+$ ./node -p "require('crypto').getFips()"
+0
+```
+This expected. 
+
+Node.js can also be dynamically linked with OpenSSL, for example:
+```console
+$ ./configure --shared-openssl --openssl-is-fips
+```
+The `--openssl-is-fips` option specifies that the OpenSSL library is FIPS compatible
+and this enables FIPS related functionality in Node to be available. 
+Building and running the same command on this version gives:
+```console
+$./node -p "require('crypto').getFips()"
+0
+```
+Now this is not expected. 
+
+None-FIPS configuration:
+```console
+$ node -p 'process.config.variables' | grep openssl
+  node_shared_openssl: false,
+  node_use_openssl: true,
+  openssl_fips: '',
+  openssl_is_fips: false,
+```
+
+FIPS Compatible configuration:
+```console
+./node -p 'process.config.variables' | grep openssl
+  node_shared_openssl: true,
+  node_use_openssl: true,
+  openssl_fips: '',
+  openssl_is_fips: true,
+  openssl_system_ca_path: '/etc/pki/tls/certs/ca-bundle.crt',
+```
+
+```console
+ ./node --expose-internals -p "require('internal/test/binding').internalBinding('config')"
+{
+  isDebugBuild: false,
+  hasOpenSSL: true,
+  fipsMode: true,
+  hasIntl: true,
+  hasSmallICU: true,
+  hasTracing: true,
+  hasNodeOptions: true,
+  hasInspector: true,
+  noBrowserGlobals: false,
+  bits: 64,
+  hasDtrace: true,
+  hasCachedBuiltins: true
+}
+We can see that fipsMode has be set which is also correct. But why does getFips()
+return 0? Because you have to also enable fips:
+```console
+$ ./node --enable-fips -p "require('crypto').getFips()"
+1
+```
+
+Enable fips in a container (UBI8/RHEL8):
+```console
+$ update-crypto-policies --set FIPS
+$ fips-mode-setup --enable --no-bootcfg
+$ export OPENSSL_FORCE_FIPS_MODE=true
+```
 
 #### OpenSSL FIPS Object Module
 OpenSSL itself is not validated, and never will be. Instead a carefully defined software component
@@ -14135,8 +14210,7 @@ const context = options.secureContext || tls.createSecureContext(options);
 ```
 `createSecureContext` can be found in `_tls_common.js`:
 ```javascript
-const binding = process.binding('crypto');
-const NativeSecureContext = binding.SecureContext;
+const { SecureContext: NativeSecureContext } = internalBinding('crypto');
 ...
 var c = new SecureContext(options.secureProtocol, secureOptions, context);
 ```
@@ -14392,11 +14466,11 @@ const decrypt = crypto.createDecipheriv(algo,
                                         Buffer.from(iv, 'hex'),
                                         options);
 
-// You have to remember tht GCM is both encryption and authentiction
+// You have to remember that GCM is both encryption and authentiction
 // and you have to supply the mac/tag that was generated
 decrypt.setAuthTag(Buffer.from(encrypt.getAuthTag()));
 
-// We have to set the additional data before descrypting
+// We have to set the additional data before decrypting
 // as decryption is defined as ADAD(K, C, A, T) = (P, A)
 decrypt.setAAD(Buffer.from('someheader=10', 'utf8'));
 let decrypted = decrypt.update(cipherText, 'hex', 'utf8');
@@ -14549,13 +14623,13 @@ server.listen(port, function() {
 });
 ```
 `tls.Server` will land in `_tls_wrap.js`. The first part of this constructor function checks if options
-is a function, in which case it is used as the connection listener (for about it below).
+is a function, in which case it is used as the connection listener (more about it below).
 
-Each server instance has an array of context which is initially empty:
+Each server instance has an array of contexts which is initially empty:
 ```javascript
   this._contexts = [];
 ```
-After this the options are set using `setOptions` (not sure why but this function is missing a name:
+After this, the options are set using `setOptions` (not sure why but this function is missing a name:
 ```javascript
 Server.prototype.setOptions = function(options) {
   ...
@@ -14569,7 +14643,9 @@ Server.prototype.setOptions = function setOptions(options) {
 ```
 So what options do we have available:
 * requestCert
-Clients always request the server certificate to authenticate it and servers can optionall do this by setting this option.
+Clients always request the server certificate to authenticate it and servers can
+optionally do this by setting this option.
+
 * rejectUnauthorized
 Used in conjunction with requestClient (it has to be true) and will be used to set the verifyMode:
 ```javascript
@@ -14577,8 +14653,8 @@ if (requestCert || rejectUnauthorized)
     ssl.setVerifyMode(requestCert, rejectUnauthorized);
 ```
 
-
-A sessionIdContext will be created in `setOptions` if one was not passed in:
+A sessionIdContext, used for session resumption, will be created in `setOptions`
+if one was not passed in:
 ```javascript
 s.sessionIdContext = crypto.createHash('sha1')
                                   .update(process.argv.join(' '))
@@ -14618,7 +14694,9 @@ This will pass in the `tlsConnectionListener` which will be set in the above cal
  this.on('connection', connectionListener);
 ```
 
-The connection listener look like this:
+
+
+The connection listener looks like this:
 ```javascript
 function tlsConnectionListener(rawSocket) {
   const socket = new TLSSocket(rawSocket, {
@@ -14639,6 +14717,7 @@ function tlsConnectionListener(rawSocket) {
   socket.on('_tlsError', onSocketTLSError);
 }
 ```
+TLSSocket is a JavaScript land class also defined in `_tls_wrap.js`.
 
 After `net.Server` returns we have the following in `_tls_wrap`'s Server constructor function:
 ```javascript
@@ -16468,82 +16547,327 @@ t
 There is a new feature in node where a code cache can be utilized for builtins. Note that these are the builtins that node provides, that is
 the one located in the lib directory.
 
-To build using the code cache there is a make target named `with-code-cache` which performs the steps required. Note that we want to 
-debug this and have to specify a `BUILDTYPE` so that the `--debug` flag is passed to `./configure`:
-```console
-$ make BUILDTYPE=Debug with-code-cache
-```
-This target will first run configure, then call:
-```console
-$ out/Debug/node --expose-internals tools/generate_code_cache.js out/Debug/obj/gen/node_code_cache.cc
-```
-Lets take a closer look at `node_code_cache.cc`.
-```console
-$ out/Debug/node --inspect-brk --expose-internals tools/generate_code_cache.js out/Debug/obj/gen/node_code_cache.cc
-```
+Just to keep things clear, there is an action named js2c which transforms the
+JavaScript source code in the `lib` directory into C byte arrays. These are then
+available in the Node.js binary. The output of the js2c action is a c++
+file named `out/Release/obj/gen/node_javascript.cc`. There was previously a placeholder
+for this in `src/node_javascript.cc` but not anymore.
 
-So when we hit the following line:
-```javascript
-const {
-  getCodeCache,
-  cachableBuiltins
-} = require('internal/bootstrap/cache');
-```
-This will try to load the module named `internal/bootstrap/cache` which will go through the normal process of getting the source
-by calling `NativeModule.prototype.compile`. 
-```javascript
- if (!codeCache[this.id] || script.cachedDataRejected) {
-        compiledWithoutCache.push(this.id);
-      } else {
-        compiledWithCache.push(this.id);
-      }
-```
-In our case compiledWithCache will be called and this id `internal/bootstrap/cache` will be added to the cache.
-What is placed in the code cache?
-Well in NativeModule.prototype.compile we have:
-```javascript
-  let source = NativeModule.getSource(this.id);
-  source = NativeModule.wrap(source);
-
-  const script = new ContextifyScript(source, this.filename, 0, 0, codeCache[this.id], false, undefined);
-```
-Notice that we are passing `codeCache[this.id]` into ContextifyScript. This is the compiled script:
-```console
-codeCache[this.id]
-Uint8Array(3816) [180, 3, 222, 192, 116, 162, 238, 172, 211, 6, 0, 0, 255, 3, 0, 0, 41, 164, 235, 155, 6, 0, 0, 0, 0, 0, 0, 0, 168, 14, 0, 0, 182, 249, 193, 71, 250, 171, 47, 48, 0, 0, 0, 128, 72, 2, 0, 128, 48, 18, 0, 128, 0, 0, 0, 128, 0, 0, 0, 128, 0, 0, 0, 128, 2, 48, 147, 2, 36, 22, 200, 192, 0, 0, 0, 0, 8, 0, 0, 0, 2, 12, 140, 192, 0, 0, 0, 0, 1, 0, 0, 0, 2, 48, 147, 2, 168, 240, 192, 0, …]
-```
-This is the entry in the codeCache which will later be used by `tools/generate_code_cache.js` when it iterates over these entries and populates `out/Debug/obj/gen/node_code_cache.cc`:
+So when is `LoadJavaScriptSource()` called?
+There is a GYP action named mkcodecache which is a dependency on the node target.
+This is an executable (source can be found in tools/code_cache/mkcodecache.cc).
+mkcodecache includes cache_builder.h and cache_builder.cc includes node_native_module.h, 
+which in turn has a global variable in node_native_module.cc:
 ```c++
-static uint8_t internal_bootstrap_cache_raw[] = {
-180,3,222,192,116,162,238,172,211,6,0,0,255,3,0,0,41,164,235,155,6,0,0,0,0,0,0,0,168,14,0,0,187,44,142,148,255,195,113,114,0,0,0,128,72,2,0,128,48,18,0,128,0,0,0,128,0,0,0,128,     0,0,0,128,2,48,147,2,36,22,200,192,0,0,0,0,8,0,0,0,2,12,140,192,0,0,0,0,1,0,0,0,2,48,147,2,168,240,192,0...
+NativeModuleLoader NativeModuleLoader::instance_;
+```
+NativeModuleLoader's constructor calls LoadJavaScriptSource() which is how the 
+source_ variable is populated using the byte arrays generated by j2sc. This will 
+happen in the initialisation stage before the main function has been entered.
+
+This is actually called before entering the main function of mkcodecache.
+```console
+ thread #1, queue = 'com.apple.main-thread', stop reason = breakpoint 3.1
+  * frame #0: 0x000000010039bf01 mkcodecache`node::native_module::NativeModuleLoader::NativeModuleLoader(this=0x00000001017bac78) at node_native_module.cc:25 [opt]
+    frame #1: 0x000000010039dd5f mkcodecache`_GLOBAL__sub_I_node_native_module.cc [inlined] node::native_module::NativeModuleLoader::NativeModuleLoader(this=0x00000001017bac78) at node_native_module.cc:24 [opt]
+    frame #2: 0x000000010039dd4e mkcodecache`_GLOBAL__sub_I_node_native_module.cc [inlined] __cxx_global_var_init at node_native_module.cc:22 [opt]
+    frame #3: 0x000000010039dd4e mkcodecache`_GLOBAL__sub_I_node_native_module.cc at node_native_module.cc:0 [opt]
+    frame #4: 0x00000001026b5cc8 dyld`ImageLoaderMachO::doModInitFunctions(ImageLoader::LinkContext const&) + 518
+    frame #5: 0x00000001026b5ec6 dyld`ImageLoaderMachO::doInitialization(ImageLoader::LinkContext const&) + 40
+    frame #6: 0x00000001026b10da dyld`ImageLoader::recursiveInitialization(ImageLoader::LinkContext const&, unsigned int, char const*, ImageLoader::InitializerTimingList&, ImageLoader::UninitedUpwards&) + 358
+    frame #7: 0x00000001026b0254 dyld`ImageLoader::processInitializers(ImageLoader::LinkContext const&, unsigned int, ImageLoader::InitializerTimingList&, ImageLoader::UninitedUpwards&) + 134
+    frame #8: 0x00000001026b02e8 dyld`ImageLoader::runInitializers(ImageLoader::LinkContext const&, ImageLoader::InitializerTimingList&) + 74
+    frame #9: 0x000000010269f774 dyld`dyld::initializeMainExecutable() + 199
+    frame #10: 0x00000001026a478f dyld`dyld::_main(macho_header const*, unsigned long, int, char const**, char const**, char const**, unsigned long*) + 6237
+    frame #11: 0x000000010269e4f6 dyld`dyldbootstrap::start(macho_header const*, int, char const**, long, macho_header const*, unsigned long*) + 1154
+    frame #12: 0x000000010269e036 dyld`_dyld_start + 54
+
+```
+If we look in `src/node_native_module.cc` we have a global named `instance_`:
+```c++
+NativeModuleLoader NativeModuleLoader::instance_;
+```
+This will call NativeModuleLoader's constructor which is what calls LoadJavaScriptSource
+which populates the `source_` variable. 
+`out/Release/obj/gen/node_javascript.cc` includes `node_native_module.h` which is
+how this works. Notice that `source_` is of type:
+```c++
+using NativeModuleRecordMap = std::map<std::string, UnionBytes>
+...
+NativeModuleRecordMap source_;
 ```
 
-Back now in `tools/generate_code_cache.js we have:
-```javascript
-for (const key of cachableBuiltins) {
-  const cachedData = getCodeCache(key);
-  if (!cachedData.length) {
-    console.error(`Failed to generate code cache for '${key}'`);
-    process.exit(1);
-  }
+```c++
+void NativeModuleLoader::LoadJavaScriptSource() {
+  source_.emplace("internal/bootstrap/environment", UnionBytes{internal_bootstrap_environment_raw, 374});
+```
+So we can now see how the source_ variable is getting populates and that we have
+only been dealing with transforming the JavaScript sources into C byte arrays, 
+there has been now compilation or caching yet.
 
-  const length = cachedData.length;
-  totalCacheSize += length;
-  const { definition, initializer } = getInitalizer(key, cachedData);
-  cacheDefinitions.push(definition);
-  cacheInitializers.push(initializer);
-  console.log(`Generated cache for '${key}', size = ${formatSize(length)}` +
-              `, total = ${formatSize(totalCacheSize)}`);
+Previously, the code caching was controlled by the --code-cache-path configure
+option. This was a path but it is now just hard coded as yes in configure.py:
+```
+o['variables']['node_code_cache_path'] = 'yes'
+```
+So it will always be set regardless and what ever is specified as the path (it
+takes an option) will be ignored.
+
+There is a GYP action named 'mkcodecache' which is a dependency on the node
+target.
+
+```console
+$ /Users/danielbevenius/work/nodejs/node-poc/out/Release/mkcodecache /Users/danielbevenius/work/nodejs/node-poc/out/Release/obj/gen/node_code_cache.cc
+```
+Lets debug this and take a closer look at what is happending:
+
+```console
+$ lldb out/Release/mkcodecache out/Release/obj/gen/node_code_cache.cc
+(lldb) br s -n main
+```
+First a V8 isolate is created and initialized. We later have the following function
+call:
+```c++
+std::string cache = CodeCacheBuilder::Generate(context);
+```
+This function can be found in `tools/code_cache/cache_builder.cc`.
+
+```c++
+NativeModuleLoader* loader = NativeModuleLoader::GetInstance();
+std::vector<std::string> ids = loader->GetModuleIds();
+```
+GetModuleIds will iterate through the source_ map and add the keys to the ids
+vector:
+```console
+(lldb) expr ids
+(std::__1::vector<std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char> >, std::__1::allocator<std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char> > > >) $2 = size=203 {
+  [0] = "_http_agent"
+  [1] = "_http_client"
+  [2] = "_http_common"
+  [3] = "_http_incoming"
+  [4] = "_http_outgoing"
+  ...
+```
+In the loop there is the following call:
+```c++
+if (loader->CanBeRequired(id.c_str()))
+```
+`CanBeRequired` is 
+
+```c++
+bool NativeModuleLoader::CanBeRequired(const char* id) {
+  return GetCanBeRequired().count(id) == 1;
 }
 ```
-We are iterating through all the cacheableBuiltins which are defined in `lib/internal/bootstrap/cache.js` (well really the ones that 
-are excluded are shown in there).
+There are some modules that are not allowed to be required, and in some configurations
+like when configuring --without-ssl there are some that should not be allowed to
+be required. This is what this check is about.
 
-Take the following example:
-```javascript
-const f = process.binding('fs');
-console.log(f);
+Next, the module will be compiled:
+```c++
+std::map<std::string, ScriptCompiler::CachedData*> data;
+...
+for (const auto& id : ids) {
+    // TODO(joyeecheung): we can only compile the modules that can be
+    // required here because the parameters for other types of builtins
+    // are still very flexible. We should look into auto-generating
+    // the paramters from the source somehow.
+    if (loader->CanBeRequired(id.c_str())) {
+      NativeModuleLoader::Result result;
+      USE(loader->CompileAsModule(context, id.c_str(), &result));
+      ScriptCompiler::CachedData* cached_data = loader->GetCodeCache(id.c_str());
+      if (cached_data == nullptr) {
+        // TODO(joyeecheung): display syntax errors
+        std::cerr << "Failed to complile " << id << "\n";
+      } else {
+        data.emplace(id, cached_data);
+      }
+    }
+  }
 ```
+Then the actual code cache is generated by calling:
+```c++
+return GenerateCodeCache(data, log_progress);
+```
+This can also be found in cache_builder.cc and 
+
+```c++
+ss << R"(#include <cinttypes>
+#include "node_native_module_env.h"
+
+// This file is generated by tools/mkcodecache
+// and is used when configure is run with \`--code-cache-path\`
+
+namespace node {
+namespace native_module {
+
+const bool has_code_cache = true;
+
+)";
+```
+Notice this usage of a Raw String in which escape characters will not be 
+processed and whitespace will be preserved too. So this is what will end up 
+in generated string (later written to a node_javascript.cc) by mkcodecache.cc.
+
+When is the cache used?
+During the startup process of node we have:
+```console
+(lldb) bt
+* thread #1, queue = 'com.apple.main-thread', stop reason = step in
+  * frame #0: 0x000000010195c174 node`node::native_module::NativeModuleEnv::InitializeCodeCache() at node_code_cache.cc:650
+    frame #1: 0x000000010014c5c3 node`node::InitializeNodeWithArgs(argv=0x00007ffeefbfe9c8 size=1, exec_argv=0x00007ffeefbfe9e0 size=0, errors=0x00007ffeefbfe570 size=0) at node.cc:908
+    frame #2: 0x000000010014d454 node`node::InitializeOncePerProcess(argc=1, argv=0x0000000103f16840) at node.cc:981
+    frame #3: 0x000000010014e1b4 node`node::Start(argc=1, argv=0x00007ffeefbfeb38) at node.cc:1039
+    frame #4: 0x000000010195c15e node`main(argc=1, argv=0x00007ffeefbfeb38) at node_main.cc:126
+    frame #5: 0x00007fff5d2f7085 libdyld.dylib`start + 1
+    frame #6: 0x00007fff5d2f7085 libdyld.dylib`start + 1
+```
+So `InitializeNodeWithArgs` has the following call:
+```c++
+NativeModuleEnv::InitializeCodeCache();
+```
+The implementation for this function can be found in out/Debug/obj/gen/node_code_cache.cc.
+```c++
+NativeModuleCacheMap& code_cache = *NativeModuleLoader::GetInstance()->code_cache();
+```
+```console
+(lldb) expr code_cache
+(node::native_module::NativeModuleCacheMap) $0 = size=0 {}
+```
+The rest of the InitializeCodeCache will populate the cache with statements like:
+```c++
+ code_cache.emplace(
+    "_http_agent",
+    std::make_unique<v8::ScriptCompiler::CachedData>(
+      _http_agent,
+      static_cast<int>(arraysize(_http_agent)), policy
+    )
+  );
+```
+After this there are some more things done but they are not related to caching.
+Instead we will be back in node::Start
+```c++
+  {
+    Isolate::CreateParams params;
+    // TODO(joyeecheung): collect external references and set it in
+    // params.external_references.
+    std::vector<intptr_t> external_references = { reinterpret_cast<intptr_t>(nullptr)};
+
+    v8::StartupData* blob = NodeMainInstance::GetEmbeddedSnapshotBlob();
+    const std::vector<size_t>* indexes = NodeMainInstance::GetIsolateDataIndexes();
+    if (blob != nullptr) {
+      params.external_references = external_references.data();
+      params.snapshot_blob = blob;
+    }
+
+    NodeMainInstance main_instance(&params,
+                                   uv_default_loop(),
+                                   per_process::v8_platform.Platform(),
+                                   result.args,
+                                   result.exec_args,
+                                   indexes);
+    result.exit_code = main_instance.Run();
+```
+
+```console
+(lldb) bt
+* thread #1, queue = 'com.apple.main-thread', stop reason = step in
+  * frame #0: 0x000000010024129c node`node::NodeMainInstance::CreateMainEnvironment(this=0x00007ffeefbfe8c0, exit_code=0x00007ffeefbfe5a4) at node_main_instance.cc:208
+    frame #1: 0x00000001002404d5 node`node::NodeMainInstance::Run(this=0x00007ffeefbfe8c0) at node_main_instance.cc:101
+    frame #2: 0x000000010014e45d node`node::Start(argc=1, argv=0x00007ffeefbfeb38) at node.cc:1064
+    frame #3: 0x000000010195c15e node`main(argc=1, argv=0x00007ffeefbfeb38) at nod
+```
+```c++
+  if (env->RunBootstrapping().IsEmpty()) {
+    *exit_code = 1;
+  }
+```
+This will bring us back in node.cc:
+```
+MaybeLocal<Value> Environment::RunBootstrapping() {
+  EscapableHandleScope scope(isolate_);
+
+  CHECK(!has_run_bootstrapping_code());
+
+  if (BootstrapInternalLoaders().IsEmpty()) {
+    return MaybeLocal<Value>();
+  }
+
+  Local<Value> result;
+  if (!BootstrapNode().ToLocal(&result)) {
+    return MaybeLocal<Value>();
+  }
+
+  // Make sure that no request or handle is created during bootstrap -
+  // if necessary those should be done in pre-execution.
+  // TODO(joyeecheung): print handles/requests before aborting
+  CHECK(req_wrap_queue()->IsEmpty());
+  CHECK(handle_wrap_queue()->IsEmpty());
+
+  set_has_run_bootstrapping_code(true);
+
+  return scope.Escape(result);
+}
+```
+Lets take a closer look at BootstrapInternalLoaders which will first set up the
+arguments for calling ExecuteBootstrapper:
+```c++
+  // Create binding loaders
+  std::vector<Local<String>> loaders_params = {
+      process_string(),
+      FIXED_ONE_BYTE_STRING(isolate_, "getLinkedBinding"),
+      FIXED_ONE_BYTE_STRING(isolate_, "getInternalBinding"),
+      primordials_string()};
+  std::vector<Local<Value>> loaders_args = {
+      process_object(),
+      NewFunctionTemplate(binding::GetLinkedBinding)->GetFunction(context()).ToLocalChecked(),
+      NewFunctionTemplate(binding::GetInternalBinding)->GetFunction(context()).ToLocalChecked(),
+      primordials()};
+
+ if (!ExecuteBootstrapper(
+           this, "internal/bootstrap/loaders", &loaders_params, &loaders_args)
+           .ToLocal(&loader_exports)) {
+    return MaybeLocal<Value>();
+  }
+```
+Notice that we are passing `internal/bootstrap/loaders` into this with the arguments.
+```c++
+MaybeLocal<Value> ExecuteBootstrapper(Environment* env,
+                                      const char* id,
+                                      std::vector<Local<String>>* parameters,
+                                      std::vector<Local<Value>>* arguments) {
+
+  MaybeLocal<Function> maybe_fn = NativeModuleEnv::LookupAndCompile(env->context(), id, parameters, env);
+```
+Now, this will calling into the NativeModuleEnv class, which will use the 
+`source_` map to try to find the module:
+```c++
+const auto source_it = source_.find(id);
+...
+std::string filename_s = id + std::string(".js");
+```
+```console
+(lldb) expr filename_s
+(std::__1::string) $7 = "internal/bootstrap/loaders.js"
+```
+
+
+There is --link-module configuration option available when building Node which
+adds a variable (a gyp python build variable that is) named library_files. This is
+just like adding a file to node.gyp and the library_files section.
+```console
+$ ./configure --link-module=beve.js --debug
+$ NODE_DEBUG=mkcodecache out/Debug/mkcodecache out/Debug/obj/gen/node_code_cache.c
+```
+
+Node snapshot:
+Much like the run_mkcodecache there is a node_mksnapshot action in node.gpy. This
+will be run as part of the build.
+```console
+$ ./out/Debug/node_mksnapshot
+Usage: ./out/Debug/node_mksnapshot <path/to/output.cc>
+```
+
 ```console
 $ lldb -- out/Debug/node --inspect-brk --inspect-brk-node testing.js
 (lldb) br s -f node.cc -l 1722
@@ -17242,7 +17566,8 @@ you increase rounds, it exponentially increases calculation time and memory spac
 generate the hash. Scrypt was created as response to evolving attacks on bcrypt and is 
 completely unfeasable when using FPGAs or GPUs due to memory constraints. 
 Scrypt requires the storage of a series of intermediate state data snapshots, which are used 
-in further derivation operations. These snapshots, stored in memory, grow exponentially compared when rounds increase. So adding a round, will make it exponentially harder to brute force the password. 
+in further derivation operations. These snapshots, stored in memory, grow exponentially compared
+when rounds increase. So adding a round, will make it exponentially harder to brute force the password. 
 
 ### FPGA
 A field-programmable gate array (FPGA) is an integrated circuit designed to be configured by 
@@ -17785,7 +18110,7 @@ Now clone ngtcp and configure and build::
 ```console
 $ autoreconf -i
 $ ./configure PKG_CONFIG_PATH=$PWD/../openssl/build/lib/pkgconfig LDFLAGS="-Wl,-rpath,$PWD/../openssl/build/lib" --enable-debug --disable-shared
-$ ./configure PKG_CONFIG_PATH=$PWD/../openssl/build/lib/pkgconfig LDFLAGS="-O0 -Wl,-rpath,$PWD/../openssl/build/lib" --enable-debug --disable-shared CFLAGS="-O0" CXXFLAGS="-O0"
+$ ./configure PKG_CONFIG_PATH=$PWD/../openssl/build/lib/pkgconfig:$PWD/../nghttp3/build/lib/pkgconfig LDFLAGS="-O0 -Wl,-rpath,$PWD/../openssl/build/lib" --enable-debug --disable-shared CFLAGS="-O0" CXXFLAGS="-O0"
 $ make -j8 check
 ```
 The above will build as a static library which made debbugging a little easier.
@@ -18222,3 +18547,39 @@ by both.
 
 On receiving a PATH_CHALLENGE frame, an endpoint MUST respond immediately by echoing 
 the data contained in the PATH_CHALLENGE frame in a PATH_RESPONSE frame.
+
+### Error handling
+This section takes a closer look at node's internal error handling.
+Lets take a look at a spcecific error `ERR_CRYPTO_FIPS_FORCED`. This is defined in
+lib/internal/errors.js:
+```js
+E('ERR_CRYPTO_FIPS_FORCED',
+  'Cannot set FIPS mode, it was forced with --force-fips at startup.', Error);
+```
+And the function `E` looks like this:
+```js
+function E(sym, val, def, ...otherClasses) {
+  // Special case for SystemError that formats the error message differently
+  // The SystemErrors only have SystemError as their base classes.
+  messages.set(sym, val);
+  if (def === SystemError) {
+    def = makeSystemErrorWithCode(sym);
+  } else {
+    def = makeNodeErrorWithCode(def, sym);
+  }
+
+  if (otherClasses.length !== 0) {
+    otherClasses.forEach((clazz) => {
+      def[clazz.name] = makeNodeErrorWithCode(clazz, sym);
+    });
+  }
+  codes[sym] = def;
+}
+```
+The first thing that happens is that an entry is added to the `messages` map, in 
+our case:
+```js
+  messages.set('ERR_CRYPTO_FIPS_FORCED', 'Cannot set FIPS mode, it was forced with --force-fips at startup.');
+```
+
+All codes are function (constructors)
