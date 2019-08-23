@@ -18106,7 +18106,7 @@ $ ./config enable-tls1_3 --prefix=$PWD/build
 $ make -j8
 $ make install_sw
 ```
-Now clone ngtcp and configure and build::
+Now clone ngtcp2 and configure and build::
 ```console
 $ autoreconf -i
 $ ./configure PKG_CONFIG_PATH=$PWD/../openssl/build/lib/pkgconfig LDFLAGS="-Wl,-rpath,$PWD/../openssl/build/lib" --enable-debug --disable-shared
@@ -18583,3 +18583,87 @@ our case:
 ```
 
 All codes are function (constructors)
+
+
+```console
+../deps/v8/src/inspector/v8-runtime-agent-impl.cc: In member function 'virtual v8_inspector::protocol::Response v8_inspector::V8RuntimeAgentImpl::getIsolateId(v8_inspector::String16*)':
+../deps/v8/src/inspector/v8-runtime-agent-impl.cc:626:38: error: expected ')' before 'PRIx64'
+   std::snprintf(buf, sizeof(buf), "%" PRIx64, m_inspector->isolateId());
+                ~                     ^~~~~~~
+                                      )
+```
+deps/v8/src/inspector/v8-runtime-agent-impl.cc:
+```c++
+#include <inttypes.h>
+```
+These are the include paths used by gcc
+```console
+bash-4.2# echo | g++ -E -Wp,-v -
+ignoring nonexistent directory "/opt/rh/devtoolset-8/root/usr/lib/gcc/x86_64-redhat-linux/8/include-fixed"
+ignoring nonexistent directory "/opt/rh/devtoolset-8/root/usr/lib/gcc/x86_64-redhat-linux/8/../../../../x86_64-redhat-linux/include"
+#include "..." search starts here:
+#include <...> search starts here:
+ /opt/rh/devtoolset-8/root/usr/lib/gcc/x86_64-redhat-linux/8/include
+ /usr/local/include
+ /opt/rh/devtoolset-8/root/usr/include
+ /usr/include
+End of search list.
+# 1 "<stdin>"
+# 1 "<built-in>"
+# 1 "<command-line>"
+# 31 "<command-line>"
+# 1 "/usr/include/stdc-predef.h" 1 3 4
+# 32 "<command-line>" 2
+# 1 "<stdin>"
+```
+
+```console
+bash-4.2# find / -name 'inttypes.h'
+/opt/rh/devtoolset-8/root/usr/include/c++/8/tr1/inttypes.h
+/usr/include/c++/4.8.2/tr1/inttypes.h
+/usr/include/inttypes.h
+```
+Now, `/usr/include/inttypes.h` contains the `PRIx64` macro.
+
+This issue can be simulated using:
+```c++
+#include <inttypes.h>
+//#include <cinttypes>
+#include <stdio.h>
+
+int main(int argc, char** argv) {
+  uint64_t val = 0x123;
+  printf("val = 0x%" PRIx64 "\n", val);
+}
+```
+```console
+bash-4.2# g++ -std=c++11 pri.cc -o pri
+pri.cc: In function 'int main(int, char**)':
+pri.cc:7:21: error: expected ')' before 'PRIx64'
+   printf("val = 0x%" PRIx64 "\n", val);
+         ~           ^~~~~~~
+                     )
+```
+Run preprocessor:
+```console
+gcc -E pri.cc > output
+```
+It looks like /usr/include/inttypes.h is being used:
+```
+# 1 "/usr/include/inttypes.h" 1 3 4
+```
+And it has `PRIx64`:
+
+Adding `-D__STDC_FORMAT_MACROS` seems to to the trick:
+```console
+bash-4.2# g++ -D__STDC_FORMAT_MACROS  pri.cc -o pri
+```
+But why?
+Define __STDC_FORMAT_MACROS in order to enable all macros defined by inttypes.h 
+in C++ mode, as was required by the C99 standard and was enforced by multiple old glibc versions.
+
+If we look in /usr/include/inttypes.h:
+```c++
+#if !defined __cplusplus || defined __STDC_FORMAT_MACROS
+```
+So if this is not the case PRIx64 and others macros will not be defined.
