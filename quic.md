@@ -65,10 +65,6 @@ Lets start with the server:
 ```console
 $ lldb -- ./examples/server --show-secret localhost 7777 examples/server.key examples/server.cert
 (lldb) br s -n main
-
-```console
-$ openssl req -nodes -new -x509 -keyout server.key -out server.cert
-$ ./examples/server localhost 7777 examples/server.key examples/server.cert
 ```
 
 After the arguments have been parsed the ssl context will be initialized passing
