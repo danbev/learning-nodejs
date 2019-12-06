@@ -155,7 +155,7 @@ IMPLEMENT_tls_meth_func(TLS_ANY_VERSION, 0, 0,
                         ossl_statem_accept,
                         ssl_undefined_function, TLSv1_2_enc_data)
 ```
-Notice that this has `ssl_undefined_function` instead of ossl_stateme_connect`.
+Notice that this has `ssl_undefined_function` instead of `ossl_stateme_connect`.
 And `TLS_client_method` looks like this:
 ```c
 IMPLEMENT_tls_meth_func(TLS_ANY_VERSION, 0, 0,
@@ -164,7 +164,7 @@ IMPLEMENT_tls_meth_func(TLS_ANY_VERSION, 0, 0,
                         ossl_statem_connect, TLSv1_2_enc_data)
 ```
 And here we can see that it does not have a accept function.
-So what are these `ossl_statem_accept` and ossl_statem_connect`?  
+So what are these `ossl_statem_accept` and `ossl_statem_connect`?  
 We'll the names imply some kind of state machines and their implementation look
 like this:
 
