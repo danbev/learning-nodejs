@@ -51,7 +51,7 @@ Early data allows a QUIC client to send data in the 0-RTT handshake.
 This section will attempt to walk through the ngtcp2 client/server example and
 explain what is going on (roughly). This will be done by first stepping through
 the server until the point where it is listening for connections. At this point
-we will turn our attention to the client side as it is the some that initiates
+we will turn our attention to the client side as it is one that initiates
 the connection to the server.
 
 First, we need to create a private key and a cerificate for the server:
@@ -155,7 +155,7 @@ IMPLEMENT_tls_meth_func(TLS_ANY_VERSION, 0, 0,
                         ossl_statem_accept,
                         ssl_undefined_function, TLSv1_2_enc_data)
 ```
-Notice that this has `ssl_undefined_function` instead of `ossl_stateme_connect`.
+Notice that this has `ssl_undefined_function` instead of `ossl_statem_connect`.
 And `TLS_client_method` looks like this:
 ```c
 IMPLEMENT_tls_meth_func(TLS_ANY_VERSION, 0, 0,
