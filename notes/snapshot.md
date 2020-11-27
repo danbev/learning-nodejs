@@ -102,6 +102,148 @@ Notice that we are calling `AddData` on the SnapshotCreator which allows for
 attaching arbitary to the `isolate` snapshot. This data can later be retrieved
 using Isolate::GetDataFromSnapshotOnce.
 
+After this we are back SnapshotBuilder::Generate and will create a new Context
+and enter a ContextScope. A new Environent instance will be created:
+```c++
+      env = new Environment(main_instance->isolate_data(),
+                            context,
+                            args,
+                            exec_args,
+                            nullptr,
+                            node::EnvironmentFlags::kDefaultFlags,
+                            {});
+      env->RunBootstrapping().ToLocalChecked();
+      if (per_process::enabled_debug_list.enabled(DebugCategory::MKSNAPSHOT)) {
+        env->PrintAllBaseObjects();
+        printf("Environment = %p\n", env);
+      }
+      env_info = env->Serialize(&creator);
+      size_t index = creator.AddContext(context, {SerializeNodeContextInternalFields, env});
+```
+After the bootstrapping has run, notice the call to `env->Serialize` which can
+be found in env.cc.
+```c++
+EnvSerializeInfo Environment::Serialize(SnapshotCreator* creator) {
+  EnvSerializeInfo info;
+  Local<Context> ctx = context();
+
+  info.native_modules = std::vector<std::string>(
+      native_modules_without_cache.begin(), native_modules_without_cache.end());
+
+  info.async_hooks = async_hooks_.Serialize(ctx, creator);
+  info.immediate_info = immediate_info_.Serialize(ctx, creator);
+  info.tick_info = tick_info_.Serialize(ctx, creator);
+  info.performance_state = performance_state_->Serialize(ctx, creator);
+  info.stream_base_state = stream_base_state_.Serialize(ctx, creator);
+  info.should_abort_on_uncaught_toggle =
+      should_abort_on_uncaught_toggle_.Serialize(ctx, creator);
+}
+```
+First the non-cachable native modules are gathered and then Serialize is called
+on different object. Notice that they all take a context and the SnapshotCreator.
+The functions will be adding data to the context, for example:
+```c++
+return creator->AddData(context, GetJSArray());
+```
+After that There is a macro that will 
+```c++
+ size_t id = 0;
+#define V(PropertyName, TypeName)
+  do {
+    Local<TypeName> field = PropertyName();
+    if (!field.IsEmpty()) {
+      size_t index = creator->AddData(field);
+      info.persistent_templates.push_back({#PropertyName, id, index});
+    }
+    id++;
+  } while (0);
+  ENVIRONMENT_STRONG_PERSISTENT_TEMPLATES(V)
+#undef V
+```
+This expands to (just showing one example below and not all):
+```c++
+do {
+  Local<v8::FunctionTemplate> field = async_wrap_ctor_template();
+  if (!field.IsEmpty()) {
+    size_t index = creator->AddData(field);
+    info.persistent_templates.push_back({"async_wrap_ctor_template", id, index});
+  }
+  id++;
+} while (0);
+```
+Notice that `info.persistent_templates. is declared as:
+```c++
+std::vector<PropInfo> persistent_templates;
+```
+And the PropInfo struct look like this:
+```c++
+struct PropInfo {
+  std::string name;     // name for debugging
+  size_t id;            // In the list - in case there are any empty entires
+  SnapshotIndex index;  // In the snapshot
+}; 
+typedef size_t SnapshotIndex;
+```
+So we are adding new PropInfo instances with the name given by the PropertyName,
+the id just a counter that starts from 0, and index is the value returned from
+`AddData` which is the index used to retrieve the value from the snapshot data
+later when calling isolate->GetDataFromSnapshotOnce<Type>(index). Note that
+there is no context passed to `AddData` which means we are adding this to the
+isolate.
+
+After all of the template have been added, there is another macro that adds
+properties:
+```c++
+id = 0;
+#define V(PropertyName, TypeName)
+  do {
+    Local<TypeName> field = PropertyName();
+    if (!field.IsEmpty()) {
+      size_t index = creator->AddData(ctx, field);
+      info.persistent_values.push_back({#PropertyName, id, index});
+    }
+    id++;
+  } while (0);
+  ENVIRONMENT_STRONG_PERSISTENT_VALUES(V)
+#undef V
+```
+And expanded this will become (again only showing one):
+```c++
+id = 0;
+do {
+  Local<v8::Function> field = async_hooks_after_function();
+  if (!field.IsEmpty()) {
+    size_t index = creator->AddData(ctx, field);
+    info.persistent_values.push_back({"async_hooks_after_function", id, index});
+  }
+  id++;
+} while (0);
+```
+Finally the context is added before the `EnvSerializeInfo` is returned:
+```c++
+info.context = creator->AddData(ctx, context());
+```
+After this we will be back ing SnapshotBuilder::Generate:
+```c++
+size_t index = creator.AddContext(
+          context, {SerializeNodeContextInternalFields, env});
+```
+This is adding the context created and passing in a new
+SerializeInternalFieldsCallback with the callback being
+SerializeNodeContextInternalFields and the arguments to be passed to that
+callback the pointer to the Environment:
+```c++
+  struct SerializeInternalFieldsCallback {
+    typedef StartupData (*CallbackFunction)(Local<Object> holder, int index,
+                                            void* data);
+    SerializeInternalFieldsCallback(CallbackFunction function = nullptr,
+                                    void* data_arg = nullptr)
+        : callback(function), data(data_arg) {}
+    CallbackFunction callback;
+    void* data;
+  };
+```
+TODO: Take a closer look at this and how it can be used.
 
 So far we have collected addresses to functions that are external to V8 and
 added them all to a vector. These will then be passed to the SnapshotCreator
