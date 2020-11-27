@@ -52,6 +52,57 @@ SnapshotCreator creator(isolate, external_references.data());
 ```
 SnapshotCreator is a class in V8 which takes a pointer to external references
 and is declared in v8.h.
+After this a NodeMainInstance will be created:
+```c++
+  const std::vector<intptr_t>& external_references =
+        NodeMainInstance::CollectExternalReferences();
+    SnapshotCreator creator(isolate, external_references.data());
+    Environment* env;
+    {
+      main_instance =
+          NodeMainInstance::Create(isolate,
+                                   uv_default_loop(),
+                                   per_process::v8_platform.Platform(),
+                                   args,
+                                   exec_args);
+
+      HandleScope scope(isolate);
+      creator.SetDefaultContext(Context::New(isolate));
+      isolate_data_indexes = main_instance->isolate_data()->Serialize(&creator);
+```
+Notice the call to IsolateData::Serialize (src/env.cc). This fuction has uses
+macros which can be expanded using:
+```console
+$ g++ -DNODE_WANT_INTERNALS=true -E -Ideps/uv/include -Ideps/v8/include -Isrc src/env.cc
+```
+
+```c++
+v8::Eternal<v8::Private> alpn_buffer_private_symbol_;
+v8::Eternal<v8::Private> arrow_message_private_symbol_;
+...
+
+std::vector<size_t> IsolateData::Serialize(SnapshotCreator* creator) {
+  Isolate* isolate = creator->GetIsolate();
+  std::vector<size_t> indexes;
+  HandleScope handle_scope(isolate);
+  indexes.push_back(creator->AddData(alpn_buffer_private_symbol_.Get(isolate)));
+  indexes.push_back(creator->AddData(arrow_message_private_symbol_.Get(isolate)));
+  indexes.push_back(creator->AddData(contextify_context_private_symbol_.Get(isolate)));
+  indexes.push_back(creator->AddData(contextify_global_private_symbol_.Get(isolate)));
+  indexes.push_back(creator->AddData(decorated_private_symbol_.Get(isolate)));
+  ...
+
+  for (size_t i = 0; i < AsyncWrap::PROVIDERS_LENGTH; i++)
+    indexes.push_back(creator->AddData(async_wrap_provider(i)));
+
+  return indexes;
+}
+```
+Notice that we are calling `AddData` on the SnapshotCreator which allows for
+attaching arbitary to the `isolate` snapshot. This data can later be retrieved
+using Isolate::GetDataFromSnapshotOnce.
+
+
 So far we have collected addresses to functions that are external to V8 and
 added them all to a vector. These will then be passed to the SnapshotCreator
 constructor making them available when it serialized the Isolate/Context.
@@ -284,7 +335,35 @@ In our case we will be calling `DeserializeProperties` which can be found in
 src/env.cc:
 ```c++
 void IsolateData::DeserializeProperties(const std::vector<size_t>* indexes) {
-
+  size_t i = 0;
+  HandleScope handle_scope(isolate_);
+  do {
+    MaybeLocal<Private> field = isolate_->GetDataFromSnapshotOnce<Private>((*indexes)[i++]);
+    if (field.IsEmpty()) {
+      fprintf(stderr, "Failed to deserialize " "alpn_buffer_private_symbol" "\n");
+    }
+    alpn_buffer_private_symbol_.Set(isolate_, field.ToLocalChecked());
+  } while (0);
+  do {
+    MaybeLocal<Private> field = isolate_->GetDataFromSnapshotOnce<Private>((*indexes)[i++]);
+    if (field.IsEmpty()) {
+      fprintf(stderr, "Failed to deserialize " "arrow_message_private_symbol" "\n");
+    }
+    arrow_message_private_symbol_.Set(isolate_, field.ToLocalChecked());
+  } while (0);
+   ...
 }
+```
+What is happening here is that we are extracting data from the snapshot and
+then populating External's. These are defined using macros in IsolateData:
+```c++
+#define VP(PropertyName, StringValue) V(v8::Private, PropertyName)
+#define V(TypeName, PropertyName)                                              \
+  inline v8::Local<TypeName> PropertyName() const;
+  PER_ISOLATE_PRIVATE_SYMBOL_PROPERTIES(VP)
+```
+So for example arrow_message_private_symbol_ would be defined as:
+```c++
+v8::Eternal<v8::Private> arrow_message_private_symbol_;
 ```
 
