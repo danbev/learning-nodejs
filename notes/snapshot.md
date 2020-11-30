@@ -1,5 +1,5 @@
 ### Node snapshot
-This document contains notes about Node's usage of V8 snapshots
+This document contains notes about Node's usage of V8 snapshots features.
 
 ### node_snapshot executable
 This is an executable that is run as part of Node's build. The result of running
@@ -7,6 +7,7 @@ this is a generated C++ source file that by default can be found in
 `out/Release/obj/gen/node_snapshot.cc`. This will then be compiled with the
 rest of Node at a later stage in the build process.
 
+### node_mkshapshot walkthrough
 ```console
 $ lldb -- ./out/Debug/node_mksnapshot out/Debug/obj/gen/node_snapshot.cc
 (lldb) settings set target.env-vars NODE_DEBUG_NATIVE=mksnapshot
@@ -100,7 +101,8 @@ std::vector<size_t> IsolateData::Serialize(SnapshotCreator* creator) {
 ```
 Notice that we are calling `AddData` on the SnapshotCreator which allows for
 attaching arbitary to the `isolate` snapshot. This data can later be retrieved
-using Isolate::GetDataFromSnapshotOnce.
+using Isolate::GetDataFromSnapshotOnce and passing in the size_t returned from
+`AddData`.
 
 After this we are back SnapshotBuilder::Generate and will create a new Context
 and enter a ContextScope. A new Environent instance will be created:
@@ -120,6 +122,26 @@ and enter a ContextScope. A new Environent instance will be created:
       env_info = env->Serialize(&creator);
       size_t index = creator.AddContext(context, {SerializeNodeContextInternalFields, env});
 ```
+Environment's constructor calls Environment::InitializeMainContext and at this
+stage we are passing in `nullptr` for the forth argument which is the
+EnvSerializeInfo pointer: 
+```c++
+void Environment::InitializeMainContext(Local<Context> context,
+                                        const EnvSerializeInfo* env_info) {
+  ...
+  if (env_info != nullptr) {
+    DeserializeProperties(env_info);
+  } else {
+    CreateProperties();
+  }
+  ...
+```
+The properies here are the properties that are avilable to all scripts, like
+the `primordials`, and the `process` object. We will take a look at 
+DeserializeProperties when we startup node with the snapshot blob created by
+the current process (remember that we are currently executing node_mksnapshot
+to produces this blob).
+
 After the bootstrapping has run, notice the call to `env->Serialize` which can
 be found in env.cc.
 ```c++
@@ -145,7 +167,7 @@ The functions will be adding data to the context, for example:
 ```c++
 return creator->AddData(context, GetJSArray());
 ```
-After that There is a macro that will 
+After that there is a macro that will 
 ```c++
  size_t id = 0;
 #define V(PropertyName, TypeName)
@@ -185,11 +207,26 @@ struct PropInfo {
 typedef size_t SnapshotIndex;
 ```
 So we are adding new PropInfo instances with the name given by the PropertyName,
-the id just a counter that starts from 0, and index is the value returned from
+the `id` just a counter that starts from 0, `index` is the value returned from
 `AddData` which is the index used to retrieve the value from the snapshot data
 later when calling isolate->GetDataFromSnapshotOnce<Type>(index). Note that
 there is no context passed to `AddData` which means we are adding this to the
-isolate.
+isolate. This also explains the values that can be found in
+out/Debug/obj/gen/node_snapshot.cc:
+```c++
+// -- persistent_templates begins --                                            
+{                                                                               
+  { "async_wrap_ctor_template", 0, 337 },                                       
+  { "base_object_ctor_template", 2, 338 },                                      
+  { "binding_data_ctor_template", 3, 339 },                                     
+  { "handle_wrap_ctor_template", 11, 340 },                                     
+  { "i18n_converter_template", 16, 341 },                                       
+  { "message_port_constructor_template", 18, 342 },                             
+  { "promise_wrap_template", 21, 343 },                                         
+  { "worker_heap_snapshot_taker_template", 31, 344 },                           
+},                                                                              
+// persistent_templates ends -- 
+```
 
 After all of the template have been added, there is another macro that adds
 properties:
@@ -243,7 +280,12 @@ callback the pointer to the Environment:
     void* data;
   };
 ```
-TODO: Take a closer look at this and how it can be used.
+In Node there are non-V8 objects attached to V8 objects by using embedder/internal
+fields. V8 does not know how to handle this callback is a way to enable Node
+to extract the object from the `holder`, serialize the object into the an instance
+of the returned `StartupData` which will then be added as part of the blob.
+Later when deserializeing. An example can be found
+[here](https://github.com/danbev/learning-v8/blob/cb07dfd3aac4d76bbd3a14bdb1b268fdc4fd6587/test/snapshot_test.cc#L289-L306)
 
 So far we have collected addresses to functions that are external to V8 and
 added them all to a vector. These will then be passed to the SnapshotCreator
