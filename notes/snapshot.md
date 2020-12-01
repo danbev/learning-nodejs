@@ -634,7 +634,7 @@ Next, a new IsolateData instance will be created:
                                                 array_buffer_allocator_.get(),  
                                                 per_isolate_data_indexes);
 ```
-IsolateData is of type node::IsolateData declared in src/evn.h (not to be
+IsolateData is of type `node::IsolateData` declared in src/env.h (not to be
 confused with v8::internal::IsolateData). The members that are of interest to
 us are the following:
 ```c++
@@ -668,7 +668,8 @@ IsolateData::IsolateData(Isolate* isolate,
   }                                                                                 
 ```
 In our case `indexes` will not be null so we will be calling
-`DeserializeProperties` which can be found in src/env.cc. Like :
+`DeserializeProperties` which can be found in src/env.cc. This function uses
+a macro and below is just showing a few of them expanded:
 ```c++
 void IsolateData::DeserializeProperties(const std::vector<size_t>* indexes) {
   size_t i = 0;
@@ -690,7 +691,8 @@ void IsolateData::DeserializeProperties(const std::vector<size_t>* indexes) {
    ...
 }
 ```
-What is happening here is that we are extracting data from the snapshot and
+What is happening here is that we are extracting data from the snapshot,
+specifying the indexes that were returned when `AddData` was called, and
 then populating External's. These are defined using macros in IsolateData:
 ```c++
 #define VP(PropertyName, StringValue) V(v8::Private, PropertyName)
@@ -702,4 +704,134 @@ So for example arrow_message_private_symbol_ would be defined as:
 ```c++
 v8::Eternal<v8::Private> arrow_message_private_symbol_;
 ```
+Back in node.cc and `node::Start` after returning from NodeMainInstance constructor
+we have:
+```c++
+  result.exit_code = main_instance.Run(env_info);
+```
+NodeMainInstance::Run will create a new Environment:
+```c++
+int NodeMainInstance::Run(const EnvSerializeInfo* env_info) {
+  ...
+  DeleteFnPtr<Environment, FreeEnvironment> env = CreateMainEnvironment(&exit_code, env_info);
+}
+```
+And in CreateMainEnvironment we have the following:
+```c++
+  if (deserialize_mode_) {
+    env.reset(new Environment(isolate_data_.get(),
+                              isolate_,
+                              args_,
+                              exec_args_,
+                              env_info,
+                              EnvironmentFlags::kDefaultFlags,
+                              {}));
+    context = Context::FromSnapshot(isolate_,
+                                    kNodeContextIndex,
+                                    {DeserializeNodeInternalFields, env.get()})
+                  .ToLocalChecked();
+
+    InitializeContextRuntime(context);
+    SetIsolateErrorHandlers(isolate_, {});
+   }
+   ...
+   env->InitializeMainContext(context, env_info);
+```
+This time we are passing in a non-null `env_info` which was not the case when
+we looked at node_mksnapshot. 
+Next the context will be created from the snapshot and then `InitializeMainContext`
+will be called.
+```c++
+void Environment::InitializeMainContext(Local<Context> context,
+                                        const EnvSerializeInfo* env_info) {
+  ...
+  if (env_info != nullptr) {
+    DeserializeProperties(env_info);
+  } else {
+    CreateProperties();
+  }
+  ...
+```
+In this case `env_info` will be non-null so `DeserializeProperties` will be called
+which will read data from the isolate snapshot and the context snapshot to
+populate the persistent tempalates and values.
+```c++
+void Environment::DeserializeProperties(const EnvSerializeInfo* info) {
+  Local<Context> ctx = context();
+
+  async_hooks_.Deserialize(ctx);
+  immediate_info_.Deserialize(ctx);
+  tick_info_.Deserialize(ctx);
+  performance_state_->Deserialize(ctx);
+  stream_base_state_.Deserialize(ctx);
+  should_abort_on_uncaught_toggle_.Deserialize(ctx);
+
+  ...
+  MaybeLocal<Context> maybe_ctx_from_snapshot =
+      ctx->GetDataFromSnapshotOnce<Context>(info->context);
+  Local<Context> ctx_from_snapshot;
+  if (!maybe_ctx_from_snapshot.ToLocal(&ctx_from_snapshot)) {
+    fprintf(stderr,
+            "Failed to deserialize context back reference from the snapshot\n");
+  }
+  CHECK_EQ(ctx_from_snapshot, ctx);
+```
+Lets take a look at one of these, `async_hooks_.Deserialize` and focus on 
+`async_hooks_.async_ids_stack. Prior to calling the Derialize call this field
+contains the following data:
+```console
+(node::AliasedBufferBase<double, v8::Float64Array>) $5 = {
+  isolate_ = 0x0000000005db88e0
+  count_ = 32
+  byte_offset_ = 0
+  buffer_ = 0x0000000000000000
+  js_array_ = {
+    v8::PersistentBase<v8::Float64Array> = (val_ = 0x0000000000000000)
+  }
+  index_ = 0x0000000005d415b8
+}
+```
+Notice that the `buffer_` and `js_array_` fields are null. If we step-into
+async_hooks_Deserialize we have:
+```c++
+void AsyncHooks::Deserialize(Local<Context> context) {
+  async_ids_stack_.Deserialize(context);
+  ...
+```
+And stepping into again will land us in aliased_buffer.h:
+```c++
+inline void Deserialize(v8::Local<v8::Context> context) {
+  v8::Local<V8T> arr = context->GetDataFromSnapshotOnce<V8T>(*info_).ToLocalChecked();
+  uint8_t* raw = static_cast<uint8_t*>(arr->Buffer()->GetBackingStore()->Data());
+  buffer_ = reinterpret_cast<NativeT*>(raw + byte_offset_);
+  js_array_.Reset(isolate_, arr);
+  info_ = nullptr;
+}
+```
+The way I've used GetDataFromSnapshotOnce was with a size_t type index to that
+was retured when calling SnapshotCreator::AddData.
+Notice that `info_` is of type `AliasedBufferInfo` which is a typedef:
+```c++
+  typedef size_t AliasedBufferInfo;
+  const AliasedBufferInfo* info_ = nullptr;
+```
+This was a little surprising as I was expecting something like index. I've
+created a PR with a suggestion to change this to AliasedBufferIndex and see if
+other agree or not. So, we are using the "index" to retreive the data from the
+context snapshot, then getting the BackingStore for the array and setting
+the `buffer_` field to that value. Finally the js_array is reset to the array
+read from the snapshot:
+```console
+(node::AliasedBufferBase<double, v8::Float64Array>) $6 = {
+  isolate_ = 0x0000000005db88e0
+  count_ = 32
+  byte_offset_ = 0
+  buffer_ = 0x0000000005e414f0
+  js_array_ = {
+    v8::PersistentBase<v8::Float64Array> = (val_ = 0x0000000005e44060)
+  }
+  index_ = 0x0000000005d415b8
+}
+```
+
 
