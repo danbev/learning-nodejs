@@ -59,6 +59,69 @@ void MemoryTracker::Track(const MemoryRetainer* retainer,
   CHECK_NE(n->size_, 0);
   PopNode();
 ```
+If the MemoryRetainer passed in is in the `seen_` map then an edge/link from
+the current node to it will be added to the graph. 
+If the MemoryRetainer was not in the map a new MemoryRetainerNode will be
+created by calling `PushNode`.
+```c++
+MemoryRetainerNode* MemoryTracker::PushNode(const MemoryRetainer* retainer,
+                                            const char* edge_name) {
+  MemoryRetainerNode* n = AddNode(retainer, edge_name);
+  node_stack_.push(n);
+  return n;
+}
+```
+After the MemoryRetainerNode has been created and added, `retainer->MemoryInfo`
+will be called allowing the current MemoryRetainer to add fields to the
+MemoryTracker. For example, for Environment this will call
+`Environment::MemoryInfo(MemoryTracker* tracker)`:
+```c++
+  tracker->TrackField("isolate_data", isolate_data_);
+```
+So we are passing `isolate_data` as the `edge_name`, and in our case this
+retainers (isolate_data) has not been added to the map so `Track` will 
+create a new MemoryRetainerNode by using PushNode like we saw earlier and
+then call isolate_data->MemoryInfo(this) which has a few macros which can
+be expanded using:
+```console
+$ g++ -DNODE_WANT_INTERNALS=true -E -Ideps/uv/include -Ideps/v8/include -Isrc src/env.cc
+```
+```c++
+void IsolateData::MemoryInfo(MemoryTracker* tracker) const {
+  tracker->TrackField("async_id_symbol", async_id_symbol());
+  ...
+```
+This will call `TrackField` in memory_tracker-inl.h:
+```c++
+template <typename T>
+void MemoryTracker::TrackField(const char* edge_name,
+                               const v8::Local<T>& value,
+                               const char* node_name) {
+  if (!value.IsEmpty())
+    graph_->AddEdge(CurrentNode(), graph_->V8Node(value), edge_name);
+}
+```
+TODO: continue this walkthrough.
+
+
+When debugging you might not see correct values for std::string's. For example
+you might see:
+```console
+(lldb) expr name_
+(std::string) $0 = "error: summary string parsing error"
+
+```
+This can be fixed by specifying `-fno-limit-debug-info` in `node.gypi`:
+```
+    [ 'debug_node=="true"', {
+      'cflags!': [ '-O3' ],
+      'cflags': [ '-g', '-O0', '-fno-limit-debug-info' ],
+```
+Note that this makes debug build time longer.
+```console
+(lldb) expr name_
+(std::string) $0 = "Environment"
+```
 
 #### MemoryTracker
 This class is declared in src/memory-tracker.h
