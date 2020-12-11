@@ -1030,3 +1030,142 @@ So this is setting Private properties on the peristent_handle, not that the
 SnapshotCreator is not used. Also the arrays are released.
 After that we are done and will break out of the iteration of all the baseobject.
 
+In `Snapshot::NewContextFromSnapshot` we have the following call:
+```c++
+MaybeHandle<Context> Snapshot::NewContextFromSnapshot(
+    Isolate* isolate, Handle<JSGlobalProxy> global_proxy, size_t context_index,
+    v8::DeserializeEmbedderFieldsCallback embedder_fields_deserializer) {
+  const v8::StartupData* blob = isolate->snapshot_blob();
+  bool can_rehash = ExtractRehashability(blob);
+  Vector<const byte> context_data = SnapshotImpl::ExtractContextData(
+      blob, static_cast<uint32_t>(context_index));
+  SnapshotData snapshot_data(MaybeDecompress(context_data));
+
+  MaybeHandle<Context> maybe_result = ContextDeserializer::DeserializeContext(
+      isolate, &snapshot_data, can_rehash, global_proxy,
+      embedder_fields_deserializer);
+  ...
+}
+```
+`ContextDeserializer::DeserializeContext` will call:
+```c++
+MaybeHandle<Context> ContextDeserializer::DeserializeContext(
+    Isolate* isolate, const SnapshotData* data, bool can_rehash,
+    Handle<JSGlobalProxy> global_proxy,
+    v8::DeserializeEmbedderFieldsCallback embedder_fields_deserializer) {
+  ContextDeserializer d(data);
+  d.SetRehashability(can_rehash);
+
+  MaybeHandle<Object> maybe_result =
+      d.Deserialize(isolate, global_proxy, embedder_fields_deserializer);
+```
+Which will call
+```c++
+MaybeHandle<Object> ContextDeserializer::Deserialize(
+    Isolate* isolate, Handle<JSGlobalProxy> global_proxy,
+    v8::DeserializeEmbedderFieldsCallback embedder_fields_deserializer) {
+  Handle<Object> result;
+  {
+    ...
+    DeserializeEmbedderFields(embedder_fields_deserializer);
+    ...
+}
+
+void ContextDeserializer::DeserializeEmbedderFields(
+    v8::DeserializeEmbedderFieldsCallback embedder_fields_deserializer) {
+  ...
+  for (int code = source()->Get(); code != kSynchronize; code = source()->Get()) {
+    HandleScope scope(isolate());
+    SnapshotSpace space = NewObject::Decode(code);
+    Handle<JSObject> obj(JSObject::cast(GetBackReferencedObject(space)), isolate());
+    int index = source()->GetInt();
+    int size = source()->GetInt();
+    byte* data = new byte[size];
+    source()->CopyRaw(data, size);
+    embedder_fields_deserializer.callback(v8::Utils::ToLocal(obj), index,
+                                          {reinterpret_cast<char*>(data), size},
+                                          embedder_fields_deserializer.data);
+    delete[] data;
+}
+```
+This will land in node_main_instance.cc in DeserializeNodeInternalFields.
+```c++
+void DeserializeNodeInternalFields(Local<Object> holder,
+                                   int index,
+                                   v8::StartupData payload,
+                                   void* env) {
+  ... 
+  Environment* env_ptr = static_cast<Environment*>(env);
+  const InternalFieldInfo* info =
+      reinterpret_cast<const InternalFieldInfo*>(payload.data);
+
+  switch (info->type) {
+    case InternalFieldType::kFSBindingData: {
+      env_ptr->EnqueueDeserializeRequest({fs::BindingData::Deserialize,
+                                          {env_ptr->isolate(), holder},
+                                          info->Copy()});
+      break;
+    }
+    default: { UNREACHABLE(); }
+  }
+```
+`EnqueueDeserializeRequest` does the following:
+```c++
+void Environment::EnqueueDeserializeRequest(DeserializeRequest request) {
+  deserialize_requests_.push_back(std::move(request));
+}
+```
+And this is a std::list 
+```c++
+  std::list<DeserializeRequest> deserialize_requests_;
+```
+```c++
+struct DeserializeRequest {
+  DeserializeRequestCallback cb;
+  v8::Global<v8::Object> holder;
+  InternalFieldInfo* info;  // Owned by the request
+}
+
+typedef void (*DeserializeRequestCallback)(v8::Local<v8::Context>,
+                                           v8::Local<v8::Object> holder,
+                                           InternalFieldInfo* info);
+```
+Later when Environment::InitializeMainContext is called, DeserializeProperties
+will be called:
+```c++
+void Environment::DeserializeProperties(const EnvSerializeInfo* info) {
+  Local<Context> ctx = context();
+
+  RunDeserializeRequests();
+```
+```c++
+void Environment::RunDeserializeRequests() {
+  HandleScope scope(isolate());
+  Local<Context> ctx = context();
+  Isolate* is = isolate();
+  while (!deserialize_requests_.empty()) {
+    DeserializeRequest request(std::move(deserialize_requests_.front()));
+    deserialize_requests_.pop_front();
+    Local<Object> holder = request.holder.Get(is);
+    request.cb(ctx, holder, request.info);
+    request.holder.Reset();  // unnecessary?
+    request.info->Delete();
+  }
+}
+```
+`request.cb` will land in node_file.cc BindingData::BindingData:
+```c++
+void BindingData::Deserialize(Local<Context> context,
+                              Local<Object> holder,
+                              InternalFieldInfo* info) {
+  HandleScope scope(context->GetIsolate());
+  Environment* env = Environment::GetCurrent(context);
+  BindingData* binding = env->AddBindingData<BindingData>(context, holder);
+
+  Local<Value> stats_arr = holder->GetPrivate(context, env->fs_stats_field_array_symbol())
+                           .ToLocalChecked();
+  binding->stats_field_array.Deserialize(stats_arr.As<Float64Array>());
+```
+Notice that we are now extracting the Private value that was added when
+serializing, and the passing that to AliasedBufferBase::Deserialize in
+aliased_buffer.h which will populate the binding...TODO:
