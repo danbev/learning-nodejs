@@ -34,10 +34,11 @@ needs to be resolved when V8 deserialzes a blob.
 ExternalReferenceRegistry constructor will call all the registered external
 references (see ExternalReferenceRegistry for details about this). These are
 functions that exist in Node that need to be registered as external so that
-when the object being serialized does not store the address to the function
-but instead an index into this array. After the snapshot has been created it
-will be stored on disk and the snapshot blob cannot contains the function
-addresses as they will most probably change when loaded into another processs.
+the object being serialized does not store the address to the function but
+instead an index into this array of external references. After the snapshot has
+been created it will be stored on disk and the snapshot blob cannot contains the
+function addresses as they will most probably change when loaded into another
+processs.
 
 ```console
 (lldb) expr external_references
