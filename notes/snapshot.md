@@ -56,9 +56,9 @@ Next, we create a new SnapshotCreator:
 ```c++
 SnapshotCreator creator(isolate, external_references.data());
 ```
-SnapshotCreator is a class in V8 which takes a pointer to external references
+`SnapshotCreator` is a class in V8 which takes a pointer to external references
 and is declared in v8.h.
-After this a NodeMainInstance will be created:
+After this a `NodeMainInstance` will be created:
 ```c++
   const std::vector<intptr_t>& external_references =
         NodeMainInstance::CollectExternalReferences();
@@ -76,7 +76,7 @@ After this a NodeMainInstance will be created:
       creator.SetDefaultContext(Context::New(isolate));
       isolate_data_indexes = main_instance->isolate_data()->Serialize(&creator);
 ```
-Notice the call to IsolateData::Serialize (src/env.cc). This function uses
+Notice the call to `IsolateData::Serialize` (src/env.cc). This function uses
 macros which can be expanded using:
 ```console
 $ g++ -DNODE_WANT_INTERNALS=true -E -Ideps/uv/include -Ideps/v8/include -Isrc src/env.cc
@@ -106,10 +106,10 @@ std::vector<size_t> IsolateData::Serialize(SnapshotCreator* creator) {
 ```
 Notice that we are calling `AddData` on the SnapshotCreator which allows for
 attaching arbitary to the `isolate` snapshot. This data can later be retrieved
-using Isolate::GetDataFromSnapshotOnce and passing in the size_t returned from
-`AddData`.
+using `Isolate::GetDataFromSnapshotOnce` and passing in the index (size_t)
+returned from `AddData`.
 
-After this we are back SnapshotBuilder::Generate and will create a new Context
+After this we are back `SnapshotBuilder::Generate` and will create a new Context
 and enter a ContextScope. A new Environent instance will be created:
 ```c++
       env = new Environment(main_instance->isolate_data(),
@@ -141,11 +141,11 @@ void Environment::InitializeMainContext(Local<Context> context,
   }
   ...
 ```
-The properies here are the properties that are avilable to all scripts, like
+The properies here are the properties that are available to all scripts, like
 the `primordials`, and the `process` object. We will take a look at 
-DeserializeProperties when we startup node with the snapshot blob created by
+`DeserializeProperties` when we startup node with the snapshot blob created by
 the current process (remember that we are currently executing node_mksnapshot
-to produces this blob).
+to produce that blob).
 
 After the bootstrapping has run, notice the call to `env->Serialize` which can
 be found in env.cc.
@@ -212,11 +212,11 @@ struct PropInfo {
 typedef size_t SnapshotIndex;
 ```
 So we are adding new PropInfo instances with the name given by the PropertyName,
-the `id` just a counter that starts from 0, `index` is the value returned from
+the `id` is just a counter that starts from 0, `index` is the value returned from
 `AddData` which is the index used to retrieve the value from the snapshot data
 later when calling isolate->GetDataFromSnapshotOnce<Type>(index). Note that
 there is no context passed to `AddData` which means we are adding this to the
-isolate. This also explains the values that can be found in
+isolate. This explains the values that can be found in
 out/Debug/obj/gen/node_snapshot.cc:
 ```c++
 // -- persistent_templates begins --                                            
@@ -233,7 +233,7 @@ out/Debug/obj/gen/node_snapshot.cc:
 // persistent_templates ends -- 
 ```
 
-After all of the template have been added, there is another macro that adds
+After all of the templates have been added, there is another macro that adds
 properties:
 ```c++
 id = 0;
@@ -261,17 +261,20 @@ do {
   id++;
 } while (0);
 ```
+Notice that this time the Context is passed to `AddData` so we are adding these
+to the context.
+
 Finally the context is added before the `EnvSerializeInfo` is returned:
 ```c++
 info.context = creator->AddData(ctx, context());
 ```
-After this we will be back ing SnapshotBuilder::Generate:
+After this we will be back in `SnapshotBuilder::Generate`:
 ```c++
 size_t index = creator.AddContext(
           context, {SerializeNodeContextInternalFields, env});
 ```
 This is adding the context created and passing in a new
-SerializeInternalFieldsCallback with the callback being
+`SerializeInternalFieldsCallback` with the callback being
 SerializeNodeContextInternalFields and the arguments to be passed to that
 callback the pointer to the Environment:
 ```c++
@@ -286,19 +289,20 @@ callback the pointer to the Environment:
   };
 ```
 In Node there are non-V8 objects attached to V8 objects by using embedder/internal
-fields. V8 does not know how to handle this callback is a way to enable Node
-to extract the object from the `holder`, serialize the object into the an instance
-of the returned `StartupData` which will then be added as part of the blob.
-Later when deserializeing. An example can be found
-[here](https://github.com/danbev/learning-v8/blob/cb07dfd3aac4d76bbd3a14bdb1b268fdc4fd6587/test/snapshot_test.cc#L289-L306)
+fields. V8 does not know how to handle this, so this callback is a way to enable
+Node to extract the object from the `holder`, serialize the object into the an
+instance of the returned `StartupData` which will then be added as part of the
+blob.  Later when deserializeing there will be a callback to recreate and
+instance of this type and then populate it with the data from the StartupData
+that was stored..
+
+A standalone example can be found
+[here](https://github.com/danbev/learning-v8/blob/cb07dfd3aac4d76bbd3a14bdb1b268fdc4fd6587/test/snapshot_test.cc#L289-L306) which may help to clarify this.
 
 So far we have collected addresses to functions that are external to V8 and
 added them all to a vector. These will then be passed to the SnapshotCreator
 constructor making them available when it serialized the Isolate/Context.
  
-Some more details and some exploration code can be found here:
-https://github.com/danbev/learning-v8/blob/master/notes/snapshots.md#snapshot-usage
-
 ### ExternalReferenceRegistry
 To see what the preprocessor generates for node_external_reference.cc the
 following command can be used:
@@ -336,8 +340,8 @@ Lets take a look at one of these, `_register_external_reference_async_wrap`:
 ```c++
 void _register_external_reference_async_wrap(node::ExternalReferenceRegistry* registry);
 ```
-So that is the declaration, and to see the the implementation we have to look
-in src/async_wrap.cc:
+So that is the declaration, and to see the implementation we have to look in
+src/async_wrap.cc:
 ```c++
 NODE_MODULE_EXTERNAL_REFERENCE(async_wrap,                                      
                                node::AsyncWrap::RegisterExternalReferences)
@@ -371,7 +375,7 @@ void AsyncWrap::RegisterExternalReferences(ExternalReferenceRegistry* registry) 
 }
 ```
 Now, in `node_external_reference.h` we have a number of types that can be
-registered, for example `SetupHooks` is of type v8::FunctionCallback (its a
+registered, for example `SetupHooks` is of type v8::FunctionCallback (it's a
 function pointer) so this is what will be called:
 ```c++
 void Register(v8::FunctionCallback addr) {
@@ -419,7 +423,7 @@ Next, we have `AsyncHooks::SerializeInfo` which is a struct in AsyncHooks:
     std::vector<SnapshotIndex> native_execution_async_resources;                
   };
 ```
-`src/aliased_buffer.h` has a typedef AliasedBufferInfo:
+`src/aliased_buffer.h` has a typedef `AliasedBufferInfo`:
 ```c++
 typedef size_t AliasedBufferInfo; 
 ```
@@ -430,8 +434,9 @@ typedef size_t SnapshotIndex;
 ```
 
 ### Snapshot usage during startup
-When Node.js starts it will check if the is a startup blob (StartupData) available
-when calling `NodeMainInstance::GetEmbeddedSnapshotBlob` (in src/node.cc):
+When Node.js starts it will check if the is a startup blob (StartupData)
+available when calling `NodeMainInstance::GetEmbeddedSnapshotBlob`
+(in src/node.cc):
 ```c++
 int Start(int argc, char** argv) {
   ...
@@ -442,7 +447,8 @@ int Start(int argc, char** argv) {
     env_info = NodeMainInstance::GetEnvSerializeInfo();                     
   }     
 ```
-These functions are the ones that were generated by node_mksnapshot:
+These functions are the ones that were generated by node_mksnapshot and
+can be found in out/{BUILD_TYPE}/obj/gen/node_snapshot.cc:
 ```c++
 static const int blob_size = 539943;                                            
 static v8::StartupData blob = { blob_data, blob_size };                         
@@ -500,8 +506,9 @@ And a little further down we have:
 ```c++
   i_isolate->set_api_external_references(params.external_references);
 ```
-And this is where we set the list of external references/addresses.
-Next, Isolate::Initialize will call StartupDeserializer::DeserializeInto
+And this is where we set the list of external references/addresses on the
+isolate.
+Next, `Isolate::Initialize` will call `StartupDeserializer::DeserializeInto`:
 ```c++
 void StartupDeserializer::DeserializeInto(Isolate* isolate) {
   ...
@@ -517,15 +524,15 @@ void Heap::IterateRoots(RootVisitor* v, base::EnumSet<SkipRoot> options) {
                        roots_table().strong_roots_begin(),
                        roots_table().strong_roots_end());
 ```
-Now, v is of type `v8::internal::StartupDeserializer` which extends
-Deserializer which implements VisitRootPointers:
+Now, `v` is of type `v8::internal::StartupDeserializer` which extends
+`Deserializer` which implements `VisitRootPointers`:
 ```c++
 void Deserializer::VisitRootPointers(Root root, const char* description,
                                      FullObjectSlot start, FullObjectSlot end) {
   ReadData(FullMaybeObjectSlot(start), FullMaybeObjectSlot(end), kNullAddress);
 }
 ```
-And  `ReadData` look like this (also in deserializer.cc):
+And  `ReadData` looks like this (also in deserializer.cc):
 ```c++
 template <typename TSlot>
 void Deserializer::ReadData(TSlot current, TSlot limit,
@@ -537,7 +544,7 @@ void Deserializer::ReadData(TSlot current, TSlot limit,
   CHECK_EQ(limit, current);
 }
 ```
-`source_` is which reads the snapshot (src/snapshot/snapshot-source-sink.h):
+`source_` is what reads the snapshot (src/snapshot/snapshot-source-sink.h):
 ```c++
 class SnapshotByteSource final {
  public:
@@ -551,7 +558,8 @@ class SnapshotByteSource final {
   int position_;
 };
 ```
-So we will get the next byte from the snapshot and then call ReadSingleBytecodeData
+So we will get the next byte from the snapshot and then call
+`ReadSingleBytecodeData`:
 ```c++
 template <typename TSlot>
 TSlot Deserializer::ReadSingleBytecodeData(byte data, TSlot current,
@@ -622,10 +630,10 @@ Lets look at the content of this case and remove the debug checks:
       }
     }
 ```
-Notice the first thing that happes is that an int is read from the `source_`
+Notice the first thing that happens is that an int is read from the `source_`
 which is the reference id that should be used to lookup the reference in the
-list of external references. This address will then be written to the current
-position. So that was how external references are handled.
+list of external references. This address will then be written to the `current`
+position. So that is how external references are handled.
 
 Next, a new IsolateData instance will be created:
 ```c++
@@ -818,10 +826,11 @@ Notice that `info_` is of type `AliasedBufferInfo` which is a typedef:
 ```
 This was a little surprising as I was expecting something like index. I've
 created a PR with a suggestion to change this to AliasedBufferIndex and see if
-other agree or not. So, we are using the "index" to retreive the data from the
-context snapshot, then getting the BackingStore for the array and setting
-the `buffer_` field to that value. Finally the js_array is reset to the array
-read from the snapshot:
+other agree or not. 
+
+So, we are using the "index" to retreive the data from the context snapshot,
+then getting the BackingStore for the array and setting the `buffer_` field to
+that value. Finally the js_array is reset to the array read from the snapshot:
 ```console
 (node::AliasedBufferBase<double, v8::Float64Array>) $6 = {
   isolate_ = 0x0000000005db88e0
@@ -835,4 +844,189 @@ read from the snapshot:
 }
 ```
 
+### BaseObject data
+This section is going to look at the a work in progress which is about being
+able to snapshot BaseObject data.
+
+Notice that the following has been added to lib/internal/bootstrap/node.js:
+```javascript
+internalBinding('fs');
+```
+This will casue the native module fs to be initialized using GetInternalBindings
+in node_binding.cc. This function calls InitModule  which will call the
+initalizlier functions specified in node_file.cc.
+```c++
+void Initialize(Local<Object> target,
+                Local<Value> unused,
+                Local<Context> context,
+                void* priv) {
+  ...
+  Environment* env = Environment::GetCurrent(context);
+  Isolate* isolate = env->isolate();
+  BindingData* const binding_data = env->AddBindingData<BindingData>(context, target);
+```
+What is `BindingData`?  
+This is a class the extends BaseObject and is declared in node_file.h:
+```c++
+class BindingData : public BaseObject {
+ public:
+  AliasedFloat64Array stats_field_array;
+  AliasedBigUint64Array stats_field_bigint_array;
+```
+So it looks like the two arrays that are members of BindingData hold file 
+status stats (as in data like uv_stat_t).
+
+And `AddBindingData` can be found in env-inl.h:
+```c++
+template <typename T>
+inline T* Environment::AddBindingData(
+    v8::Local<v8::Context> context,
+    v8::Local<v8::Object> target) {
+  DCHECK_EQ(GetCurrent(context), this);
+  BaseObjectPtr<T> item = MakeDetachedBaseObject<T>(this, target);
+  BindingDataStore* map = static_cast<BindingDataStore*>(
+      context->GetAlignedPointerFromEmbedderData(
+          ContextEmbedderIndex::kBindingListIndex));
+  auto result = map->emplace(T::binding_data_name, item);
+  return item.get();
+```
+AddBindingData will create a new BindingData instance and in the proceses call
+BaseObject's constructor which will add an entry in the `cleanup_hooks_` map.
+This is how/why we have an entry when we call Environment::Serialize later
+(which we did not previously).
+
+Next we get an object from the context using the
+ContextEmbedderIndex::kBindingListIndex and note that `BindingDataStore` is
+just an unordered_map:
+```c++
+  typedef std::unordered_map<
+      FastStringKey,
+      BaseObjectPtr<BaseObject>,
+      FastStringKey::Hash> BindingDataStore;
+```
+
+If we take a look at tools/snapshot/snapshot_builder.cc we see that 
+SerializeNodeContextInternalFields has been updated to contain the following
+macro:
+```c++
+  switch (obj->type()) {
+#define V(TypeName, NativeType)                                                \
+  case InternalFieldType::k##TypeName: {                                       \
+    NativeType* ptr = static_cast<NativeType*>(obj);                           \
+    InternalFieldInfo* info = ptr->Serialize();                                \
+    per_process::Debug(DebugCategory::MKSNAPSHOT,                              \
+                       "Serializing " #NativeType "at %p, length=%d\n",        \
+                       ptr,                                                    \
+                       static_cast<int>(info->length));                        \
+    return StartupData{reinterpret_cast<const char*>(info),                    \
+                       static_cast<int>(info->length)};                        \
+  }
+
+    INTERNAL_FIELD_TYPES(V)
+#undef V
+    default: { UNREACHABLE(); }
+```
+The first thing to note is that every BaseObject has a InternalFieldType
+associated with it. And we can find the types in INTERNAL_FIELD_TYPES:
+```c++
+#define INTERNAL_FIELD_TYPES(V)              \
+  V(FSBindingData, fs::BindingData)
+#undef V
+```
+
+We can expand the macro using:
+```console
+$ g++ -DNODE_WANT_INTERNALS=true -E -Ideps/uv/include -Ideps/v8/include -Isrc src/env.cc
+```
+```c++
+switch (obj->type()) {                                                        
+    case InternalFieldType::kFSBindingData: {
+      fs::BindingData* ptr = static_cast<fs::BindingData*>(obj);
+      InternalFieldInfo* info = ptr->Serialize();
+      return StartupData{reinterpret_cast<const char*>(info), static_cast<int>(info->length)};
+}
+```
+So this is casting to the concrete type of the BaseObject and then calling it's
+`Serialize` function which is then added as StartupData to be stored in the
+snapshot (details about this can be found ealier in this document).
+
+`Environment::Serialize` has be updated with the following code:
+```c++
+  size_t i = 0;
+  ForEachBaseObject([&](BaseObject* obj) {
+    switch (obj->type()) {
+      case InternalFieldType::kFSBindingData: {
+        size_t index = creator->AddData(ctx, obj->object());
+        info.bindings.push_back({"FSBindingData", i++, index});
+        fs::BindingData* ptr = static_cast<fs::BindingData*>(obj);
+        ptr->Serialize(ctx, creator);
+        break;
+      }
+      default: { UNREACHABLE(); }
+    }
+  });
+```
+Notice that the closure is passed to `ForEachBaseObject` which will call it
+for each BaseObject in cleanup_hooks_. Recall that we arrived here from
+Environment::Serialialze and we are in the process of serializing this
+BaseObject:
+```console
+(lldb) expr *obj
+(node::BaseObject) $16 = {
+  type_ = kFSBindingData
+  persistent_handle_ = {
+    v8::PersistentBase<v8::Object> = (val_ = 0x0000000005a89b00)
+  }
+  env_ = 0x0000000005a7f930
+  pointer_data_ = 0x0000000005b34540
+}
+```
+First this is we are going to add the v8::Global<v8::Object> persistent_handle_
+to the snapshot context using `AddData`:
+```console
+(lldb) jlh obj->object()
+0x218677edf831: [JS_API_OBJECT_TYPE]
+ - map: 0x296d42c9aa51 <Map(HOLEY_ELEMENTS)> [DictionaryProperties]
+ - prototype: 0x24367d204821 <Object map = 0x296d42c91b71>
+ - elements: 0x1fd3c5ec1309 <FixedArray[0]> [HOLEY_ELEMENTS]
+ - embedder fields: 2
+ - properties: 0x218677ee0929 <NameDictionary[197]> {
+   StatWatcher: 0x12df1ab22811 <JSFunction StatWatcher (sfi = 0x12df1ab227d1)> (data, dict_index: 40, attrs: [WEC])
+   bigintStatValues: 0x218677edf941 <BigUint64Array map = 0x296d42c86b61> (data, dict_index: 39, attrs: [WEC])
+   openFileHandle: 0x12df1ab20099 <JSFunction openFileHandle (sfi = 0x12df1ab20059)> (data, dict_index: 4, attrs: [WEC])
+   statValues: 0x218677edf8a1 <Float64Array map = 0x296d42c868d9> (data, dict_index: 38, attrs: [WEC])
+   fdatasync: 0x12df1ab203f1 <JSFunction fdatasync (sfi = 0x12df1ab203b1)> (data, dict_index: 7, attrs: [WEC])
+   internalModuleReadJSON: 0x12df1ab20bc9 <JSFunction internalModuleReadJSON (sfi = 0x12df1ab20b89)> (data, dict_index: 14, attrs: [WEC])
+   writeString: 0x12df1ab21841 <JSFunction writeString (sfi = 0x12df1ab21801)> (data, dict_index: 25, attrs: [WEC])
+   fsync: 0x12df1ab20519 <JSFunction fsync (sfi = 0x12df1ab204d9)> (data, dict_index: 8, attrs: [WEC])
+   close: 0x12df1ab1fe89 <JSFunction close (sfi = 0x12df1ab1fe49)> (data, dict_index: 2, attrs: [WEC])
+   ...
+```
+Next, we have :
+```c++
+        info.bindings.push_back({"FSBindingData", i++, index});
+        fs::BindingData* ptr = static_cast<fs::BindingData*>(obj);
+        ptr->Serialize(ctx, creator);
+```
+`info` is of type EnvSerializeInfo which has a bindings field:
+```c++
+struct EnvSerializeInfo {
+  std::vector<PropInfo> bindings;
+```
+So we are adding an entry to this vector. After that we cast `obj` from BaseObject
+to `fs::BindingData` and call it's `Serialize` function which will land in
+node_file.cc `BindingData::Serialize`:
+```c++
+void BindingData::Serialize(Local<Context> context, v8::SnapshotCreator* creator) {
+  HandleScope scope(context->GetIsolate());
+  object()->SetPrivate(context, env()->fs_stats_field_array_symbol(), stats_field_array.GetJSArray()).FromJust();
+  stats_field_array.Release();
+
+  object()->SetPrivate(context, env()->fs_stats_field_bigint_array_symbol(), stats_field_bigint_array.GetJSArray()).FromJust();
+  stats_field_bigint_array.Release();
+}
+```
+So this is setting Private properties on the peristent_handle, not that the
+SnapshotCreator is not used. Also the arrays are released.
+After that we are done and will break out of the iteration of all the baseobject.
 
