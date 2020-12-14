@@ -845,16 +845,16 @@ that value. Finally the js_array is reset to the array read from the snapshot:
 ```
 
 ### BaseObject data
-This section is going to look at the a work in progress which is about being
+This section is going to look at the a work by Joyee which is about being
 able to snapshot BaseObject data.
 
-Notice that the following has been added to lib/internal/bootstrap/node.js:
+Notice that the following has been added to `lib/internal/bootstrap/node.js`:
 ```javascript
 internalBinding('fs');
 ```
-This will casue the native module fs to be initialized using GetInternalBindings
-in node_binding.cc. This function calls InitModule  which will call the
-initalizlier functions specified in node_file.cc.
+This will casue the native module `fs` to be initialized using
+`GetInternalBindings` in `node_binding.cc`. This function calls `InitModule`
+which will call the initalizlier functions specified in `node_file.cc`:
 ```c++
 void Initialize(Local<Object> target,
                 Local<Value> unused,
@@ -863,18 +863,19 @@ void Initialize(Local<Object> target,
   ...
   Environment* env = Environment::GetCurrent(context);
   Isolate* isolate = env->isolate();
-  BindingData* const binding_data = env->AddBindingData<BindingData>(context, target);
+  BindingData* const binding_data =
+      env->AddBindingData<BindingData>(context, target);
 ```
 What is `BindingData`?  
-This is a class the extends BaseObject and is declared in node_file.h:
+This is a class the extends `BaseObject` and is declared in `node_file.h`:
 ```c++
 class BindingData : public BaseObject {
  public:
   AliasedFloat64Array stats_field_array;
   AliasedBigUint64Array stats_field_bigint_array;
 ```
-So it looks like the two arrays that are members of BindingData hold file 
-status stats (as in data like uv_stat_t).
+So it looks like these two arrays that are members of BindingData hold file 
+status stats (as in data like [uv_stat_t](http://docs.libuv.org/en/v1.x/fs.html#c.uv_stat_t)).
 
 And `AddBindingData` can be found in env-inl.h:
 ```c++
@@ -892,10 +893,10 @@ inline T* Environment::AddBindingData(
 ```
 AddBindingData will create a new BindingData instance and in the proceses call
 BaseObject's constructor which will add an entry in the `cleanup_hooks_` map.
-This is how/why we have an entry when we call Environment::Serialize later
+This is how/why we have an entry when we call `Environment::Serialize` later
 (which we did not previously).
 
-Next we get an object from the context using the
+Next, we get an object from the context using the
 ContextEmbedderIndex::kBindingListIndex and note that `BindingDataStore` is
 just an unordered_map:
 ```c++
@@ -909,6 +910,11 @@ If we take a look at tools/snapshot/snapshot_builder.cc we see that
 SerializeNodeContextInternalFields has been updated to contain the following
 macro:
 ```c++
+static v8::StartupData SerializeNodeContextInternalFields(Local<Object> holder,
+                                                          int index,
+                                                          void* env) {
+  ...
+  BaseObject* obj = static_cast<BaseObject*>(ptr);
   switch (obj->type()) {
 #define V(TypeName, NativeType)                                                \
   case InternalFieldType::k##TypeName: {                                       \
@@ -934,10 +940,29 @@ associated with it. And we can find the types in INTERNAL_FIELD_TYPES:
 #undef V
 ```
 
-We can expand the macro using:
+We can expand this macro using:
 ```console
-$ g++ -DNODE_WANT_INTERNALS=true -E -Ideps/uv/include -Ideps/v8/include -Isrc src/env.cc
+$ g++ -DNODE_WANT_INTERNALS=true -E -Ideps/uv/include -Ideps/v8/include -Isrc tools/snapshot/snapshot_builder.cc
 ```
+```c++
+switch (obj->type()) {                                                        
+    case InternalFieldType::kFSBindingData: {
+      fs::BindingData* ptr = static_cast<fs::BindingData*>(obj);
+      InternalFieldInfo* info = ptr->Serialize();
+      return StartupData{reinterpret_cast<const char*>(info), static_cast<int>(info->length)}; }
+```
+Note that BindingData::Serialize() is defined in node_file.cc and that is
+should not be confused with 
+BindingData::Serialize(Local<Context> context, v8::SnapshotCreator* creator):
+```c++
+InternalFieldInfo* BindingData::Serialize() {
+  InternalFieldInfo* info = InternalFieldInfo::New(type());
+  return info;
+}
+```
+InternalFieldInfo is a struct with two members, an InternalFieldType and
+a size_t length.
+
 ```c++
 switch (obj->type()) {                                                        
     case InternalFieldType::kFSBindingData: {
@@ -948,9 +973,12 @@ switch (obj->type()) {
 ```
 So this is casting to the concrete type of the BaseObject and then calling it's
 `Serialize` function which is then added as StartupData to be stored in the
-snapshot (details about this can be found ealier in this document).
+snapshot. Just to be clear that what is getting added to the startup data
+in this case if the InternalFieldInfo so just the information about the type
+and and the size of this type.
 
-`Environment::Serialize` has be updated with the following code:
+Later we see that `Environment::Serialize` has be updated with the following
+code:
 ```c++
   size_t i = 0;
   ForEachBaseObject([&](BaseObject* obj) {
@@ -967,7 +995,10 @@ snapshot (details about this can be found ealier in this document).
   });
 ```
 Notice that the closure is passed to `ForEachBaseObject` which will call it
-for each BaseObject in cleanup_hooks_. Recall that we arrived here from
+for each BaseObject in cleanup_hooks_. And also note that this time we are
+calling BindingData::Serialize(Context, SnapshotCreator).
+
+Recall that we arrived here from
 Environment::Serialialze and we are in the process of serializing this
 BaseObject:
 ```console
@@ -1026,9 +1057,10 @@ void BindingData::Serialize(Local<Context> context, v8::SnapshotCreator* creator
   stats_field_bigint_array.Release();
 }
 ```
-So this is setting Private properties on the peristent_handle, not that the
+So this is setting Private properties on the peristent_handle, note that the
 SnapshotCreator is not used. Also the arrays are released.
-After that we are done and will break out of the iteration of all the baseobject.
+After that we are done and will break out of the iteration of all the
+base objects.
 
 In `Snapshot::NewContextFromSnapshot` we have the following call:
 ```c++
@@ -1166,6 +1198,6 @@ void BindingData::Deserialize(Local<Context> context,
                            .ToLocalChecked();
   binding->stats_field_array.Deserialize(stats_arr.As<Float64Array>());
 ```
-Notice that we are now extracting the Private value that was added when
-serializing, and the passing that to AliasedBufferBase::Deserialize in
+Notice that we are now extracting the Private value that were added when
+serializing, and then passing that to AliasedBufferBase::Deserialize in
 aliased_buffer.h which will populate the binding...TODO:
