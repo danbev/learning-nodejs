@@ -111,7 +111,7 @@ Now lets compare this with Node.js:
     | | |             | |               |      |          |                              |     |
     | | |             | |               |      |          |                              |     |
     | | +-------------+ +---------------+      |          |                              |     |
-    | |                                 |      |          |                              |     |
+    | |                                        |          |                              |     |
     | +----------------------------------------+          +------------------------------+     |
     |                                                                                          |
     |                                                                                          |
@@ -2280,7 +2280,8 @@ inline Reference& operator=(const T& val) {
   return *this;
 }
 ```
-`Reference` is used store the index for the elmenet being used (plus the AliasedBuffer pointer).
+`Reference` is used to store the index for the element being used (plus the
+AliasedBuffer pointer).
 
 So we can see that we are setting index_ which is kCheck, to value which is 1:
 ```console
@@ -2346,6 +2347,22 @@ Next `constants` property is populated.
 
 
 ### AliasedBuffer
+`AliasedBuffer` has overloaded the [] operator so this call will invoke AliasedBuffer::operator[]:
+```c++
+Reference operator[](size_t index) {
+  return Reference(this, index);
+}
+```
+And `Reference` in turn overloads the = operator so it will be invoked:
+```c++
+template <typename T>
+inline Reference& operator=(const T& val) {
+  aliased_buffer_->SetValue(index_, val);
+  return *this;
+}
+```
+`Reference` is used to store the index for the element being used (plus the
+AliasedBuffer pointer).
 
 ```c++
 v8::Isolate* isolate_;
@@ -16546,14 +16563,15 @@ t
 `EmbedderGraph` is a graph that contains node object (embedder) and V8 objects
 
 ### CodeCache
-There is a new feature in node where a code cache can be utilized for builtins. Note that these are the builtins that node provides, that is
-the one located in the lib directory.
+There is a new feature in node where a code cache can be utilized for builtins.
+Note that these are the builtins that node provides, that is the ones located in
+the lib directory.
 
 Just to keep things clear, there is an action named js2c which transforms the
 JavaScript source code in the `lib` directory into C byte arrays. These are then
 available in the Node.js binary. The output of the js2c action is a c++
-file named `out/Release/obj/gen/node_javascript.cc`. There was previously a placeholder
-for this in `src/node_javascript.cc` but not anymore.
+file named `out/Release/obj/gen/node_javascript.cc`. There was previously a
+placeholder for this in `src/node_javascript.cc` but not anymore.
 
 So when is `LoadJavaScriptSource()` called?
 There is a GYP action named mkcodecache which is a dependency on the node target.
@@ -16605,7 +16623,7 @@ void NativeModuleLoader::LoadJavaScriptSource() {
 ```
 So we can now see how the source_ variable is getting populated and that we have
 only been dealing with transforming the JavaScript sources into C byte arrays, 
-there has been now compilation or caching yet.
+there has been no compilation or caching yet.
 
 Previously, the code caching was controlled by the --code-cache-path configure
 option. This was a path but it is now just hard coded as yes in configure.py:
@@ -16709,7 +16727,8 @@ const bool has_code_cache = true;
 ```
 Notice this usage of a Raw String in which escape characters will not be 
 processed and whitespace will be preserved too. So this is what will end up 
-in generated string (later written to a node_javascript.cc) by mkcodecache.cc.
+in generated string (later written to a obj/gen/node_code_cache.cc) by
+mkcodecache.cc.
 
 When is the cache used?
 During the startup process of node we have:
@@ -16841,7 +16860,7 @@ MaybeLocal<Value> ExecuteBootstrapper(Environment* env,
 
   MaybeLocal<Function> maybe_fn = NativeModuleEnv::LookupAndCompile(env->context(), id, parameters, env);
 ```
-Now, this will calling into the NativeModuleEnv class, which will use the 
+Now, this is calling into the NativeModuleEnv class, which will use the 
 `source_` map to try to find the module:
 ```c++
 const auto source_it = source_.find(id);
@@ -18261,3 +18280,16 @@ std::unique_ptr<Value> DictionaryValue::clone() const
 ```
 This is generated from `lib/Values_cpp.template`
 
+
+### V8-CI
+I keep forgetting how to run this build so documenting it now.
+Take the following PR: 
+https://github.com/nodejs/node/pull/37225
+
+The build configuration for this task in ci are:
+```
+GITHUB_ORG: nodejs
+REPO_NAME: node
+GIT_REMOTE_REF: refs/pull/37225/head
+REBASE_ONTO: v14.x-staging
+```
