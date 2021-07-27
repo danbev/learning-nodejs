@@ -15,8 +15,8 @@ $ lldb -- ./out/Debug/node_mksnapshot out/Debug/obj/gen/node_snapshot.cc
 ```
 For a snapshot to be created `SnapshotBuilder::Generate` will create a new
 V8 runtime (Isolate, Platform etc). After the Isolate has been registered with
-the v8 platform a vector of external
-references will be collected by the following call:
+the v8 platform a vector of external references will be collected by the
+following call:
 ```c++
 const std::vector<intptr_t>& external_references =                             
         NodeMainInstance::CollectExternalReferences(); 
@@ -31,12 +31,12 @@ When we have functions that are not defined in V8 itself these functions will
 have addresses that V8 does not know about. The function will be a symbol that
 needs to be resolved when V8 deserialzes a blob.
 
-ExternalReferenceRegistry constructor will call all the registered external
+`ExternalReferenceRegistry` constructor will call all the registered external
 references (see ExternalReferenceRegistry for details about this). These are
 functions that exist in Node that need to be registered as external so that
 the object being serialized does not store the address to the function but
 instead an index into this array of external references. After the snapshot has
-been created it will be stored on disk and the snapshot blob cannot contains the
+been created it will be stored on disk and the snapshot blob cannot contain the
 function addresses as they will most probably change when loaded into another
 processs.
 
@@ -105,9 +105,9 @@ std::vector<size_t> IsolateData::Serialize(SnapshotCreator* creator) {
 }
 ```
 Notice that we are calling `AddData` on the SnapshotCreator which allows for
-attaching arbitary to the `isolate` snapshot. This data can later be retrieved
-using `Isolate::GetDataFromSnapshotOnce` and passing in the index (size_t)
-returned from `AddData`.
+attaching arbitary V8:Data to the `isolate` snapshot. This data can later be
+retrieved using `Isolate::GetDataFromSnapshotOnce` and passing in the index
+(size_t) returned from `AddData`.
 
 After this we are back `SnapshotBuilder::Generate` and will create a new Context
 and enter a ContextScope. A new Environent instance will be created:
@@ -141,7 +141,7 @@ void Environment::InitializeMainContext(Local<Context> context,
   }
   ...
 ```
-The properies here are the properties that are available to all scripts, like
+The properties here are the properties that are available to all scripts, like
 the `primordials`, and the `process` object. We will take a look at 
 `DeserializeProperties` when we startup node with the snapshot blob created by
 the current process (remember that we are currently executing node_mksnapshot
@@ -221,6 +221,7 @@ out/Debug/obj/gen/node_snapshot.cc:
 ```c++
 // -- persistent_templates begins --                                            
 {                                                                               
+  //      name                  id index
   { "async_wrap_ctor_template", 0, 337 },                                       
   { "base_object_ctor_template", 2, 338 },                                      
   { "binding_data_ctor_template", 3, 339 },                                     
