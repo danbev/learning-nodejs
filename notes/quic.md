@@ -70,12 +70,58 @@ $ lldb -- ./examples/server --show-secret localhost 7777 examples/server.key exa
 After the arguments have been parsed the ssl context will be initialized passing
 in the private key and the certificate.
 ```c
-auto ssl_ctx = create_ssl_ctx(private_key_file, cert_file);
+TLSServerContext tls_ctx;
+
+if (tls_ctx.init(private_key_file, cert_file, AppProtocol::H3) != 0) {
+  exit(EXIT_FAILURE);
+}
 ```
-The first things that happens in `create_ssl_ctx` is that a new SSL_CTX object
-is created. SSL_CTX is used to establish TLS connections. The TLS_method() passed
-is the connection method. OpenSSL has a generic TLS_METHOD() but also client and
-server specific methods named TLS_client_method() and TLS_server_method.
+server.cc includes `tls_server_context.h` which conditionally includes one of
+the tls_context implementations:
+```c
+#if defined(ENABLE_EXAMPLE_OPENSSL) && defined(WITH_EXAMPLE_OPENSSL)
+#  include "tls_server_context_openssl.h"
+#endif // ENABLE_EXAMPLE_OPENSSL && WITH_EXAMPLE_OPENSSL
+
+#if defined(ENABLE_EXAMPLE_GNUTLS) && defined(WITH_EXAMPLE_GNUTLS)
+#  include "tls_server_context_gnutls.h"
+#endif // ENABLE_EXAMPLE_GNUTLS && WITH_EXAMPLE_GNUTLS
+
+#if defined(ENABLE_EXAMPLE_BORINGSSL) && defined(WITH_EXAMPLE_BORINGSSL)
+#  include "tls_server_context_boringssl.h"
+#endif // ENABLE_EXAMPLE_BORINGSSL && WITH_EXAMPLE_BORINGSSL
+```
+In this case I'm using OpenSSL so lets take a closer look at it's init method.
+
+The TLSServerContext for OpenSSL is defined as follows:
+```
+class TLSServerContext {
+public:
+  TLSServerContext();
+  ~TLSServerContext();
+
+  int init(const char *private_key_file, const char *cert_file,
+           AppProtocol app_proto);
+
+  SSL_CTX *get_native_handle() const;
+
+  void enable_keylog();
+
+private:
+  SSL_CTX *ssl_ctx_;
+};
+```
+Notice that there is an `SSL_CTX` which is what the get_native_handle function
+returns. The BoringSSL implementation also uses SSL_CTX but the gnutls does not
+which makes sense. 
+
+`examples/tls_server_context_openssl.cc`
+
+The first things that happens in `TLSServerContext::init` is that a new
+SSL_CTX object is created. SSL_CTX is used to establish TLS connections. The
+TLS_method() passed is the connection method. OpenSSL has a generic TLS_METHOD()
+but also client and server specific methods named TLS_client_method() and
+TLS_server_method.
 
 If we take a look in `openssl/include/openssl/ssl.h` we find:
 ```c
@@ -83,7 +129,7 @@ __owur const SSL_METHOD *TLS_method(void);
 __owur const SSL_METHOD *TLS_server_method(void);
 __owur const SSL_METHOD *TLS_client_method(void);
 ```
-`__owur` is a macro that is only used when the flag `DEBUG_UNUSED` is set a 
+`__owur` is a macro that is only used when the flag `DEBUG_UNUSED` is set at 
 compile time (`-D"DEBUG_UNUSED=true"`) for OpenSSL. If enabled it will report
 a compiler warning if a call to these functions do not use the returned value.
 
@@ -191,7 +237,7 @@ if (s->server) {
 }
 ```
 So for a server `s->handshake_func` would be `ossl_statem_accept` which just
-calls `state_machine(s, 1)` and or a client it would be `ossl_statem_connect`
+calls `state_machine(s, 1)` and for a client it would be `ossl_statem_connect`
 which calls `state_machine(s, 0)`.
 
 So it looks like setting both, as in using TLS_method(), is not neccessary and
@@ -235,18 +281,37 @@ SSL_CTX_set_mode(ssl_ctx, SSL_MODE_RELEASE_BUFFERS);
 SSL_CTX_set_min_proto_version(ssl_ctx, TLS1_3_VERSION);
 SSL_CTX_set_max_proto_version(ssl_ctx, TLS1_3_VERSION);
 
-SSL_CTX_set_alpn_select_cb(ssl_ctx, alpn_select_proto_cb, nullptr);
+  switch (app_proto) {
+  case AppProtocol::H3:
+    SSL_CTX_set_alpn_select_cb(ssl_ctx_, alpn_select_proto_h3_cb, nullptr);
+    break;
+  case AppProtocol::HQ:
+    SSL_CTX_set_alpn_select_cb(ssl_ctx_, alpn_select_proto_hq_cb, nullptr);
+    break;
+  case AppProtocol::Perf:
+    SSL_CTX_set_alpn_select_cb(ssl_ctx_, alpn_select_proto_perf_cb, nullptr);
+    break;
+  }
 ```
 `SSL_CTX_set_alpn_select_cb` sets a callback on the ssl context that will
 be called during the ClientHello processing to select the ALPN protocol from
 the client's list of offered protocols. The nullptr is the argument to the
-callback which we don't have for `alpn_select_proto_cb`.
+callback which we don't have any of these callbacks. 
+The different application protocols are 'h3' which is QUIC over HTTP/3, 'hq'
+which is QUIC over HTTP/2 (I think). 
+
 Next, we have:
 ```c
   SSL_CTX_set_default_verify_paths(ssl_ctx);
+```
+This sets the default location from where CA certs are loaded.
+
+```c
 
   SSL_CTX_set_session_id_context(ssl_ctx, sid_ctx, sizeof(sid_ctx) - 1);
 ```
+The above sets the SSL session id.
+
 ```console
 (lldb) expr sid_ctx
 (const unsigned char [14]) $11 = "ngtcp2 server"
@@ -259,10 +324,9 @@ Next, we have:
 ```c
   SSL_CTX_set_max_early_data(ssl_ctx, std::numeric_limits<uint32_t>::max());
   SSL_CTX_set_quic_method(ssl_ctx, &quic_method);
-  SSL_CTX_set_client_hello_cb(ssl_ctx, client_hello_cb, nullptr);
-  return ssl_ctx;
 ```
-Lets take a cloer look at `SSL_CTX_set_quic_method`
+Lets take a cloer look at `SSL_CTX_set_quic_method` which is a function that
+exists in the fork of OpenSSL (also in quictls/openssl).
 Looking at `openssl/include/openssl/ssl.h` we have the following functions and
 structs:
 ```c
