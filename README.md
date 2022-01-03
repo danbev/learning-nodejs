@@ -18280,6 +18280,19 @@ std::unique_ptr<Value> DictionaryValue::clone() const
 ```
 This is generated from `lib/Values_cpp.template`
 
+### Applying a patch from V8 to node
+```console
+$ git am -3 --directory=deps/v8
+```
+
+### Applying a patch from Node V8 deps to V8
+Sometime we need to backport patches and normally this would mean working
+on the version of V8 that is shipped with Node. To verify that the test compile
+for this version of V8 it can be useful to apply the patch to a branch of V8
+and verify that it compiles and perhaps manually run tests.
+```console
+$ git apply -p3 ~/work/nodejs/node/aarch64-yarn-master.patch
+```
 
 ### V8-CI
 I keep forgetting how to run this build so documenting it now.
