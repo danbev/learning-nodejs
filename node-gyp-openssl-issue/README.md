@@ -167,7 +167,7 @@ $ make node-v19.0.0.tar-headers
 ```
 And then unzip this to replace thee headers used by node-gyp:
 ```console
-$ tar xvzf node-v17.0.0.tar-headers.gz -C ~.cache/node-gyp/17.8.0 --strip 1
+$ tar xvzf node-v17.9.1-headers.tar.gz -C ~/.cache/node-gyp/17.8.0 --strip 1
 ```
 
 There are addons in Node.js that include openssl/ssl.h but this error does not
