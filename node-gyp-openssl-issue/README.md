@@ -165,9 +165,27 @@ to allow this to be built for a non-release):
 ```
 $ make node-v19.0.0.tar-headers 
 ```
-And then unzip this to replace thee headers used by node-gyp:
+First we can revert the headers:
+```console
+$ node-gyp remove v17.8.0
+```
+And running node-gyp rebuild should fail with the above error message.
+
+And then unzip the new headers to replace the headers used by node-gyp:
 ```console
 $ tar xvzf node-v17.9.1-headers.tar.gz -C ~/.cache/node-gyp/17.8.0 --strip 1
+```
+And this running node-gyp should succeed:
+```console
+$ node-gyp build
+gyp info it worked if it ends with ok
+gyp info using node-gyp@9.0.0
+gyp info using node@17.8.0 | linux | x64
+gyp info spawn make
+gyp info spawn args [ 'BUILDTYPE=Release', '-C', 'build' ]
+make: Entering directory '/home/danielbevenius/work/nodejs/learning-nodejs/node-gyp-openssl-issue/build'
+make: Nothing to be done for 'all'.
+make: Leaving directory '/home/danielbevenius/work/nodejs/learning-nodejs/node-gyp-openssl-issue/build'
 ```
 
 There are addons in Node.js that include openssl/ssl.h but this error does not
