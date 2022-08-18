@@ -1,0 +1,240 @@
+## Node.js PPC64LE LTO issue
+This issue happens on RHEL 8.5 ppc64le using gcc:
+```console
+. /opt/rh/gcc-toolset-11/enable
+$ export CC=ccache gcc
+$ export CXX=ccache g++
+```
+And only when Node's build is configured for Link Time Optimizations:
+```console
+$ configure --enable-lto
+$ make -j $JOBS test
+```
+
+Logs from a CI [run](https://ci.nodejs.org/job/node-test-commit-linux-lto/23/nodes=rhel8-ppc64le/console):
+```console
+21:52:27 [ RUN      ] DebugSymbolsTest.ReqWrapList
+21:52:27 ../test/cctest/test_node_postmortem_metadata.cc:203: Failure
+21:52:27 Expected equality of these values:
+21:52:27   expected
+21:52:27     Which is: 140736537072320
+21:52:27   calculated
+21:52:27     Which is: 1099680328560
+21:52:27 [  FAILED  ] DebugSymbolsTest.ReqWrapList (43 ms)
+```
+
+### Running the test
+```console
+$ ./out/Debug/cctest --gtest_filter=DebugSymbolsTest.ReqWrapList
+```
+
+### Debugging the test
+```console
+$ lldb -- ./out/Debug/cctest --gtest_filter=DebugSymbolsTest.ReqWrapList
+(lldb) br s -f test_node_postmortem_metadata.cc -l 171
+(lldb) r
+```
+
+### Troubleshooting
+
+```console
+(lldb) target variable  nodedbg_offset_ListNode_ReqWrap__next___uintptr_t
+(uintptr_t) nodedbg_offset_ListNode_ReqWrap__next___uintptr_t = 8
+
+(lldb) image lookup -s nodedbg_offset_ListNode_ReqWrap__next___uintptr_t
+1 symbols match 'nodedbg_offset_ListNode_ReqWrap__next___uintptr_t' in /home/danielbevenius/work/nodejs/node-debug/out/Debug/cctest:
+        Address: cctest[0x000000000606ea58] (cctest.PT_LOAD[4]..bss + 29912)
+        Summary: cctest`nodedbg_offset_ListNode_ReqWrap__next___uintptr_t
+```
+
+```c++
+  v8::Local<v8::Object> object = obj_template->GetFunction(env.context())          
+                                     .ToLocalChecked()                             
+                                     ->NewInstance(env.context())                  
+                                     .ToLocalChecked();                            
+  TestReqWrap obj(*env, object);                                                   
+                                                                                   
+  // NOTE (mmarchini): Workaround to fix failing tests on ARM64 machines with   
+  // older GCC. Should be removed once we upgrade the GCC version used on our   
+  // ARM64 CI machinies.                                                           
+  for (auto it : *(*env)->req_wrap_queue()) (void) &it;                            
+                                                                                   
+  auto last = tail + nodedbg_offset_ListNode_ReqWrap__next___uintptr_t;         
+  last = *reinterpret_cast<uintptr_t*>(last);                                   
+                                                                                
+  auto expected = reinterpret_cast<uintptr_t>(&obj);                            
+  auto calculated =                                                             
+      last - nodedbg_offset_ReqWrap__req_wrap_queue___ListNode_ReqWrapQueue;       
+  EXPECT_EQ(expected, calculated);
+```
+
+In `src/node_postmortem_metadata.cc` we have:
+```c++
+extern "C" {                                                                    
+  ...
+  uintptr_t nodedbg_offset_ReqWrap__req_wrap_queue___ListNode_ReqWrapQueue;       
+  ...
+}
+```
+So the type of this is bacially a void pointer which is initialized by the
+function GenDebugSymbols:
+```c++
+int GenDebugSymbols() {                                                         
+ ...
+  nodedbg_offset_ReqWrap__req_wrap_queue___ListNode_ReqWrapQueue =              
+      OffsetOf<ListNode<ReqWrapBase>, ReqWrap<uv_req_t>>(                         
+          &ReqWrap<uv_req_t>::req_wrap_queue_);                                 
+  ...
+  return 1;                                                                        
+}                                                                                  
+                                                                                   
+const int debug_symbols_generated = GenDebugSymbols();                             
+```
+This is getting the offset of the pointer-to-member 
+`&ReqWrap<uv_req_t>::req_wrap_queue_` which is a private field in ReqWrapBase:
+```c++
+class ReqWrapBase {                                                             
+ public:                                                                        
+  explicit inline ReqWrapBase(Environment* env);                                
+                                                                                
+  virtual ~ReqWrapBase() = default;                                             
+                                                                                
+  virtual void Cancel() = 0;                                                    
+  virtual AsyncWrap* GetAsyncWrap() = 0;                                        
+                                                                                
+ private:                                                                       
+  friend int GenDebugSymbols();                                                 
+  friend class Environment;                                                     
+                                                                                
+  ListNode<ReqWrapBase> req_wrap_queue_;                                        
+};
+
+template <typename T>                                                           
+class ReqWrap : public AsyncWrap, public ReqWrapBase {                          
+ public:
+  ...
+ private:
+  friend int GenDebugSymbols();
+
+ public:
+  typedef void (*callback_t)();
+  callback_t original_callback_ = nullptr;
+
+ protected:                                                                     
+  // req_wrap_queue_ needs to be at a fixed offset from the start of the class  
+  // because it is used by ContainerOf to calculate the address of the embedding
+  // ReqWrap. ContainerOf compiles down to simple, fixed pointer arithmetic. It 
+  // is also used by src/node_postmortem_metadata.cc to calculate offsets and   
+  // generate debug symbols for ReqWrap, which assumes that the position of     
+  // members in memory are predictable. sizeof(req_) depends on the type of T,  
+  // so req_wrap_queue_ would no longer be at a fixed offset if it came after   
+  // req_. For more information please refer to                                 
+  // `doc/contributing/node-postmortem-support.md`                              
+  T req_;                                                                       
+};                       
+```
+Lets take a look at the value of
+`nodedbg_offset_ListNode_ReqWrap__next___uintptr_t` on my local machine:
+```console
+(lldb) expr nodedbg_offset_ListNode_ReqWrap__next___uintptr_t
+(uintptr_t) $11 = 8
+```
+So this is saying that the req_wrap_queue_ is a offset 8 from the start of the
+ReqWrap, which I think makes sense as the only other field is a function
+pointer, `callback_t` which would by 8 bytes just like any pointer:
+```console
+(lldb) expr sizeof(void*)
+(unsigned long) $12 = 8
+```
+Stepping up a little in the testcase we have:
+```c++
+auto queue = reinterpret_cast<uintptr_t>((*env)->req_wrap_queue());
+```
+```console
+(lldb) expr  env
+(EnvironmentTestFixture::Env) $14 = {
+  context_ = (val_ = 0x0000000006131e00)
+  isolate_data_ = 0x00000000060f9d30
+  environment_ = 0x00007ffff50598f0
+}
+
+(lldb) expr reinterpret_cast<uintptr_t>((*env)->req_wrap_queue())
+(uintptr_t) $17 = 140737304175080
+```
+So that is the address of the ReqWrapQueue which is a typedef:
+```c++
+  typedef ListHead<ReqWrapBase, &ReqWrapBase::req_wrap_queue_> ReqWrapQueue;
+  inline ReqWrapQueue* req_wrap_queue() { return &req_wrap_queue_; }
+```
+So `queue` will be a pointer to the env req_wrap_queue.
+Next, a variable named `head` is created:
+```c++
+  auto head =                                                                   
+      queue +                                                                   
+      nodedbg_offset_Environment_ReqWrapQueue__head___ListNode_ReqWrapQueue;
+```
+So here we take 140737304175080 and add to it:
+```console
+(lldb) expr nodedbg_offset_Environment_ReqWrapQueue__head___ListNode_ReqWrapQueue
+(uintptr_t) $20 = 0
+```
+So head in this case will be 140737304175080:
+```console
+(lldb) expr head
+(unsigned long) $25 = 140737304175080
+```
+Next, we have the variable `tail`:
+```c++
+  auto tail = head + nodedbg_offset_ListNode_ReqWrap__prev___uintptr_t;         
+```
+```console
+(lldb) expr tail
+(unsigned long) $32 = 140737304175080
+```
+```c++
+  tail = *reinterpret_cast<uintptr_t*>(tail);                          
+```
+And after the reinterpret_cast:
+```console
+lldb) expr tail
+(unsigned long) $33 = 140737304175080
+```
+
+```c++
+  auto last = tail + nodedbg_offset_ListNode_ReqWrap__next___uintptr_t;         
+```
+```console
+(lldb) expr last
+(unsigned long) $36 = 140737304175088
+(lldb) expr nodedbg_offset_ListNode_ReqWrap__next___uintptr_t
+(uintptr_t) $38 = 8
+(lldb) expr tail + nodedbg_offset_ListNode_ReqWrap__next___uintptr_t
+(unsigned long) $39 = 140737304175088
+```
+This `last` is reassigned to point to the dereferenced 
+```c++
+  last = *reinterpret_cast<uintptr_t*>(last); 
+```
+```console
+(lldb) memory read -fx -s 8 -c 1 last
+0x7ffff505a1f0: 0x00007fffffffd0a0
+```
+And after the reinterpret_cast last will point to:
+```console
+(lldb) memory read -fx -s 8 -c 1 last
+0x7fffffffd0a0: 0x00007ffff505a1e8
+```
+
+
+----------
+```
+(lldb) expr -f x -- (uintptr_t) expected
+(uintptr_t) $72     = 0x00007fffffffd060
+
+(lldb) expr &obj
+(TestReqWrap *) $73 = 0x00007fffffffd060
+
+(lldb) expr -f x --  last
+(unsigned long) $75 = 0x00007fffffffd0a0
+```
+
