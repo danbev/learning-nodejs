@@ -328,5 +328,5 @@ index 4cee7db4c8..d35e71f7f8 100644
        last - nodedbg_offset_ReqWrap__req_wrap_queue___ListNode_ReqWrapQueue;
    EXPECT_EQ(expected, calculated);
 
-``
+```
 Using this patch I was able to get the test to pass.
