@@ -29,10 +29,18 @@ $ ./out/Debug/cctest --gtest_filter=DebugSymbolsTest.ReqWrapList
 ```
 
 ### Debugging the test
+lldb:
 ```console
 $ lldb -- ./out/Debug/cctest --gtest_filter=DebugSymbolsTest.ReqWrapList
 (lldb) br s -f test_node_postmortem_metadata.cc -l 171
 (lldb) r
+```
+
+gdb:
+```console
+$ gdb --args ./out/Release/cctest --gtest_filter=DebugSymbolsTest.ReqWrapList
+(gdb) br test_node_postmortem_metadata.cc:203
+(gdb) r
 ```
 
 ### Troubleshooting
