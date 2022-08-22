@@ -1,7 +1,7 @@
 ## Node.js PPC64LE LTO issue
 This issue happens on RHEL 8.5 ppc64le using gcc:
 ```console
-. /opt/rh/gcc-toolset-11/enable
+$ . /opt/rh/gcc-toolset-11/enable
 $ export CC=ccache gcc
 $ export CXX=ccache g++
 ```
@@ -154,7 +154,10 @@ pointer, `callback_t` which would by 8 bytes just like any pointer:
 (lldb) expr sizeof(void*)
 (unsigned long) $12 = 8
 ```
-Stepping up a little in the testcase we have:
+So we have this pointer to a member which can be used to point an actual
+implementation.
+
+Stepping back up a little in the testcase we have:
 ```c++
 auto queue = reinterpret_cast<uintptr_t>((*env)->req_wrap_queue());
 ```
@@ -174,31 +177,40 @@ So that is the address of the ReqWrapQueue which is a typedef:
   typedef ListHead<ReqWrapBase, &ReqWrapBase::req_wrap_queue_> ReqWrapQueue;
   inline ReqWrapQueue* req_wrap_queue() { return &req_wrap_queue_; }
 ```
-So `queue` will be a pointer to the env req_wrap_queue.
+So `queue` will be a pointer to the env req_wrap_queue, so we have a pointer
+to this List.
+
 Next, a variable named `head` is created:
 ```c++
   auto head =                                                                   
       queue +                                                                   
       nodedbg_offset_Environment_ReqWrapQueue__head___ListNode_ReqWrapQueue;
 ```
-So here we take 140737304175080 and add to it:
+So here we take the pointer queue which is 140737304175080 and add to it:
 ```console
 (lldb) expr nodedbg_offset_Environment_ReqWrapQueue__head___ListNode_ReqWrapQueue
 (uintptr_t) $20 = 0
 ```
-So head in this case will be 140737304175080:
+So head in this case will be 140737304175080 (unchanged and still pointing to
+the List, so pointing to the start/head of the list):
 ```console
 (lldb) expr head
 (unsigned long) $25 = 140737304175080
 ```
+
 Next, we have the variable `tail`:
 ```c++
   auto tail = head + nodedbg_offset_ListNode_ReqWrap__prev___uintptr_t;         
 ```
 ```console
+(gdb) p nodedbg_offset_ListNode_ReqWrap__prev___uintptr_t
+$12 = 0
+
 (lldb) expr tail
 (unsigned long) $32 = 140737304175080
 ```
+So at this stage both head and tail are pointing to the same value.
+
 ```c++
   tail = *reinterpret_cast<uintptr_t*>(tail);                          
 ```
@@ -208,18 +220,24 @@ lldb) expr tail
 (unsigned long) $33 = 140737304175080
 ```
 
+Next we are taking the value of tail
 ```c++
   auto last = tail + nodedbg_offset_ListNode_ReqWrap__next___uintptr_t;         
 ```
 ```console
-(lldb) expr last
-(unsigned long) $36 = 140737304175088
+lldb) expr tail
+(unsigned long) $33 = 140737304175080
 (lldb) expr nodedbg_offset_ListNode_ReqWrap__next___uintptr_t
 (uintptr_t) $38 = 8
+
 (lldb) expr tail + nodedbg_offset_ListNode_ReqWrap__next___uintptr_t
 (unsigned long) $39 = 140737304175088
+
+lldb) expr tail
+(unsigned long) $40 = 140737304175088
 ```
-This `last` is reassigned to point to the dereferenced 
+
+This `last` is then reassigned to point to the dereferenced 
 ```c++
   last = *reinterpret_cast<uintptr_t*>(last); 
 ```
@@ -233,16 +251,82 @@ And after the reinterpret_cast last will point to:
 0x7fffffffd0a0: 0x00007ffff505a1e8
 ```
 
-
-----------
+```c++
+   auto expected = reinterpret_cast<uintptr_t>(&obj);                            
+   auto calculated =                                                             
+       last - nodedbg_offset_ReqWrap__req_wrap_queue___ListNode_ReqWrapQueue;
 ```
-(lldb) expr -f x -- (uintptr_t) expected
-(uintptr_t) $72     = 0x00007fffffffd060
+`expected` is a pointer to the TestReqWrap instance created earlier, and
+'calculated` is taking the pointer to `last` and then recasting that, then
+dereferencing it which is now a pointer to the member `req_` and which we know
+from above is at offset 8. This value is then subtracted to get the pointer to
+the instance holding `req_` which is expected to be the same, that is the
+TestReqWrap instance we created ealier.
 
-(lldb) expr &obj
-(TestReqWrap *) $73 = 0x00007fffffffd060
-
-(lldb) expr -f x --  last
-(unsigned long) $75 = 0x00007fffffffd0a0
+But this is what happends ppc64le:
+```console
+../test/cctest/test_node_postmortem_metadata.cc:203: Failure
+Expected equality of these values:
+  expected
+    Which is: 140737488346192
+  calculated
+    Which is: 353276184
 ```
+The calculated value look way off in this case. Locally this would be pointing
+to the same value since we are trying to peek at the last entry in the queue.
+The values for `queue`, `head`, `tail`, and `last` are optimized out for a 
+Release build which also happens locally, but the test does not fail. It only
+seems to fail on PPC64LE.
 
+Hmm, I've added print statements:
+```console
+queue: 0x1002fd1d8a8
+head: 0x1002fd1d8a8
+tail: 0x1002fd1d8a8
+tast before cast:: 0x1002fd1d8a8
+tast: 0x1002fd1d8a8
+
+expected:: 0x7fffce7d9d50
+calculated:: 0x7fffce7d9d50
+```
+And noticed that this allows the test to pass. So there is something that is
+causing these values to be incorrect when compiling with LTO. How about if we
+try to prevent the compiler from tampering with these values. For example by
+making the variables volatile:
+```console
+diff --git a/test/cctest/test_node_postmortem_metadata.cc b/test/cctest/test_node_postmortem_metadata.cc
+index 4cee7db4c8..d35e71f7f8 100644
+--- a/test/cctest/test_node_postmortem_metadata.cc
++++ b/test/cctest/test_node_postmortem_metadata.cc
+@@ -172,11 +172,11 @@ TEST_F(DebugSymbolsTest, ReqWrapList) {
+   const Argv argv;
+   Env env{handle_scope, argv};
+ 
+-  auto queue = reinterpret_cast<uintptr_t>((*env)->req_wrap_queue());
+-  auto head =
++  volatile uintptr_t queue = reinterpret_cast<uintptr_t>((*env)->req_wrap_queue());
++  volatile uintptr_t head =
+       queue +
+       nodedbg_offset_Environment_ReqWrapQueue__head___ListNode_ReqWrapQueue;
+-  auto tail = head + nodedbg_offset_ListNode_ReqWrap__prev___uintptr_t;
++  volatile uintptr_t tail = head + nodedbg_offset_ListNode_ReqWrap__prev___uintptr_t;
+   tail = *reinterpret_cast<uintptr_t*>(tail);
+ 
+   auto obj_template = v8::FunctionTemplate::New(isolate_);
+@@ -194,11 +194,11 @@ TEST_F(DebugSymbolsTest, ReqWrapList) {
+   // ARM64 CI machinies.
+   for (auto it : *(*env)->req_wrap_queue()) (void) &it;
+ 
+-  auto last = tail + nodedbg_offset_ListNode_ReqWrap__next___uintptr_t;
++  volatile uintptr_t last = tail + nodedbg_offset_ListNode_ReqWrap__next___uintptr_t;
+   last = *reinterpret_cast<uintptr_t*>(last);
+ 
+-  auto expected = reinterpret_cast<uintptr_t>(&obj);
+-  auto calculated =
++  volatile uintptr_t expected = reinterpret_cast<uintptr_t>(&obj);
++  volatile uintptr_t calculated =
+       last - nodedbg_offset_ReqWrap__req_wrap_queue___ListNode_ReqWrapQueue;
+   EXPECT_EQ(expected, calculated);
+
+``
+Using this patch I was able to get the test to pass.
