@@ -257,7 +257,7 @@ And after the reinterpret_cast last will point to:
        last - nodedbg_offset_ReqWrap__req_wrap_queue___ListNode_ReqWrapQueue;
 ```
 `expected` is a pointer to the TestReqWrap instance created earlier, and
-'calculated` is taking the pointer to `last` and then recasting that, then
+`calculated` is taking the pointer to `last` and then recasting that, then
 dereferencing it which is now a pointer to the member `req_` and which we know
 from above is at offset 8. This value is then subtracted to get the pointer to
 the instance holding `req_` which is expected to be the same, that is the
