@@ -7,7 +7,7 @@ you can view the whole content.
 ## Prerequisites
 You'll need to have checked out the node.js source.
 
-### Compiling Node.js with debug enbled:
+### Compiling Node.js with debug enabled:
 
     $ ./configure --debug
     $ make -C out BUILDTYPE=Debug
@@ -17,7 +17,7 @@ After compiling (with debugging enabled) start node using lldb:
     $ cd node/out/Debug
     $ lldb ./node
 
-Node uses Generate Your Projects (gyp) for which I was not familiar with so there is a 
+Node uses Generate Your Projects (gyp) for which I was not familiar with so there is an 
 example project in [gyp](./gyp) to look into it.
 
 ### Running the Node.js tests
@@ -25,8 +25,8 @@ example project in [gyp](./gyp) to look into it.
     $ make -j8 test
 
 ## Notes
-The rest of this page contains notes gathred while setting through the code base:
-(These are more sections than listed here but they might be hard to follow)
+The rest of this page contains notes gathered while setting through the code base:
+(These are more sections than listed here, but they might be hard to follow)
 
 1. [Background](#background)
 2. [Start up](#starting-node)
@@ -461,7 +461,7 @@ So ExecuteBootstrapper will call the function in `internal/bootstrap/loaders.js`
 ```console
 (lldb) jlh bootstrapper
 ```
-I'm not showing the output as it is a little long but you can see the contents of loaders.js.
+I'm not showing the output as it is a little long, but you can see the contents of loaders.js.
 We can see the arguments that the function takes:
 ```javascript
 - source code: (process, getBinding, getLinkedBinding, getInternalBinding) {
@@ -4200,7 +4200,7 @@ Also, notice that we are setting the processImmediate instance as a member of th
                                env->as_external()).FromJust());
 ```
 So when we do `process_.immediateCallback` `NeedImmediateCallbackSetter` will be invoked.
-Looking closer at this function and comparing it with a [libuv check example](https://github.com/danbev/learning-libuv/blob/master/check.c) we should see some similarties.
+Looking closer at this function and comparing it with a [libuv check example](https://github.com/danbev/learning-libuv/blob/master/check.c) we should see some similarities.
 
 ```c++
     uv_check_t* immediate_check_handle = env->immediate_check_handle();
